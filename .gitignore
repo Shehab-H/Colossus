@@ -1,0 +1,16 @@
+# .NET
+bin/
+obj/
+*.user
+
+# Node
+node_modules/
+web/dist/
+
+# Bake output (derived data — rebakeable from source)
+tiles/
+staging/
+
+# Env / local
+*.local
+.DS_Store

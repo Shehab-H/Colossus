@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Colossus.Bake/Colossus.Bake.csproj" />
+    <Project Path="src/Colossus.Core/Colossus.Core.csproj" />
+    <Project Path="src/Colossus.Seed/Colossus.Seed.csproj" />
+    <Project Path="src/Colossus.Server/Colossus.Server.csproj" />
+  </Folder>
+</Solution>
