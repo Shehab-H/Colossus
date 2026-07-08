@@ -9,7 +9,7 @@ const STOPS: [number, number, number][] = [
   [253, 231, 37],
 ];
 
-function rampColor(t: number): [number, number, number] {
+export function rampColor(t: number): [number, number, number] {
   const c = Math.max(0, Math.min(1, t)) * (STOPS.length - 1);
   const i = Math.floor(c);
   const f = c - i;

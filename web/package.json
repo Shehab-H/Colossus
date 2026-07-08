@@ -13,6 +13,7 @@
     "@deck.gl/core": "^9.3.6",
     "@deck.gl/layers": "^9.3.6",
     "@deck.gl/react": "^9.3.6",
+    "@duckdb/duckdb-wasm": "^1.33.1-dev57.0",
     "apache-arrow": "^21.1.0",
     "deck.gl": "^9.3.6",
     "maplibre-gl": "^5.24.0",

@@ -4,7 +4,55 @@
 
 Colossus is an internal tool for visualizing very large datasets (10M–100M+ rows, variable per dataset) with **no aggregation, bucketing, or simplification** of raw marks — every point is real and eventually renderable at full fidelity. It is **not** a geospatial tool: geographic-points-on-a-map is one view; **any chart type over arbitrary (non-geo) data is an equal peer**. Constraints from design: **on-prem, no cloud, no CDN spend**, sub-second interactivity, and a **source-agnostic** ingest side (ClickHouse first; Postgres/MySQL/warehouse/files later).
 
-The shared engine is one path regardless of what's being drawn: **bake → Arrow LOD tiles → static (immutable) serve → deck.gl binary attributes → GPU**, with zero per-mark JavaScript objects. Live streaming and multi-source adapters are later milestones layered on this skeleton.
+The shared engine is one path regardless of what's being drawn: **bake → Parquet LOD tiles → static (immutable) serve → DuckDB-WASM → deck.gl binary attributes → GPU**, with zero per-mark JavaScript objects. Live streaming and multi-source adapters are later milestones layered on this skeleton.
+
+---
+
+## Architecture amendment (2026-07 — supersedes the M1 specifics below)
+
+The walking skeleton shipped, and wiring the 300M-row `crowdsource` table exposed three assumptions
+baked into M1 that don't generalize. The design below still holds in spirit; these points override it
+where they conflict. **The hard invariants now live in [RULES.md](RULES.md) — that file is the
+authority. The view-config shape lives in [VIEW_CONFIG.md](VIEW_CONFIG.md).**
+
+1. **A source is the result of a query, not a table.** `SourceSpec` carries arbitrary SQL (the bake
+   wraps it in a subquery) plus a role mapping, executed through a pluggable **`ISourceAdapter`**
+   (ClickHouse first). This subsumes flat tables *and* aggregate cubes (`GROUP BY …`). (RULES R5)
+
+2. **The tile format is canonical and source-independent.** One on-disk schema — `(x, y, geometry?,
+   part_offsets?, channels[], id?)` — regardless of whether the source is x/y, lon/lat, quadkey, WKT,
+   geohash, or native geometry. The adapter **normalizes every column into a typed role** (geometry /
+   measure / dimension / temporal / identity), not just position. Source shape never leaks past the
+   extract. (RULES R3)
+
+3. **Views are uploadable config, not code.** The hardcoded `Views` catalog becomes a file-based
+   **registry** of JSON view configs under `views/`. Adding a view = uploading a file; zero redeploy.
+   Reduction is **dispatched** from `view.Reduction`, never hardcoded. (RULES R6)
+
+4. **The store is Parquet; the client is DuckDB-WASM.** The granular store is served as tuned,
+   spatially-tiled **Parquet** (Hilbert/Morton sort, row-group zone-maps, dictionary + bloom). The
+   browser runs **DuckDB-WASM** to query exactly the viewport (predicate/projection pushdown over
+   HTTP range requests) and emits **Arrow straight to deck.gl binary attributes**. (RULES R4)
+
+5. **Fidelity is hybrid.** Full-fidelity viewport queries are the default path; a **labeled,
+   resolvable preview** (fair sample of real marks) covers only extreme zoom-out. No lossy
+   aggregation is ever rendered as raw. (RULES R2)
+
+**Filtering** is two-stage: coarse `bakeFilters` folded into the source SQL (re-bake to change), and
+interactive `filters` declared per-view and applied live client-side over carried channels (DuckDB-WASM
+predicate pushdown + GPU `DataFilterExtension`) — no re-bake.
+
+### Execution slices (post-M1)
+
+- **S1 — config-driven foundation (this slice):** `ViewConfig` + `ViewRegistry`, `ISourceAdapter`
+  (ClickHouse, point geometry), reduction dispatch (`QuadtreeLod` + `RawPassthrough`), Server view API
+  incl. `viewId → URL`, one runnable **2-D map** view (`geo-points`). Docs: this amendment + VIEW_CONFIG.
+- **S2 — canonical tile schema:** grow `(x,y,value,category)` → geometry + N channels end-to-end.
+- **S3 — quadkey/WKT geometry + Polygon mark:** ship the `crowd-download` choropleth off the 300M cube.
+- **S4 — Parquet store + DuckDB-WASM client + preview UX.**
+
+Scope note: **only the 2-D map (geo) viewport is in scope right now**; the orthographic scatter and
+other marks return once the canonical schema (S2) lands.
 
 ## The core model — chart type is a config, not a pipeline
 

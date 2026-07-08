@@ -1,0 +1,16 @@
+{
+  "id": "ookla-fixed",
+  "title": "Ookla fixed broadband — 2024 Q1",
+  "viewport": "geo",
+  "mark": "polygon",
+  "source": {
+    "adapter": "clickhouse",
+    "query": "SELECT quadkey, avg_d_kbps / 1000.0 AS download_mbps, avg_u_kbps / 1000.0 AS upload_mbps, toFloat64(avg_lat_ms) AS latency_ms FROM colossus.ookla_fixed",
+    "geometry": { "kind": "quadkey", "column": "quadkey" },
+    "channels": [
+      { "name": "download_mbps", "column": "download_mbps", "role": "measure", "type": "f32" },
+      { "name": "upload_mbps", "column": "upload_mbps", "role": "measure", "type": "f32" },
+      { "name": "latency_ms", "column": "latency_ms", "role": "measure", "type": "f32" }
+    ]
+  }
+}

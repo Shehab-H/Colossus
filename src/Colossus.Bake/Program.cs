@@ -1,27 +1,53 @@
-using Colossus.Bake;
-using Colossus.Core;
+using Colossus.Application;
+using Colossus.Infrastructure;
+using Colossus.Infrastructure.Baking;
+using Colossus.Infrastructure.ClickHouse;
+using Colossus.Infrastructure.Reduction;
+using Colossus.Infrastructure.Sources;
+using Colossus.Infrastructure.Tiles;
+using Colossus.Infrastructure.Views;
 
-// Colossus.Bake — bakes one or more views into Arrow tile pyramids. With no args, bakes every view in
-// the catalog; pass view ids to bake a subset, e.g. `dotnet run --project src/Colossus.Bake -- geo-points`.
+// Bakes registered views into tile pyramids. No args bakes every view; pass ids to bake a subset,
+// e.g. `dotnet run --project src/Colossus.Bake -- geo-points`. `verify` checks the fidelity invariant.
 
-string tilesRoot = RepoPaths.TilesDir;
-string stagingRoot = RepoPaths.StagingDir;
+var views = new ViewRegistry();
+var store = new FileBakeStore();
 
-// `verify` mode reads the baked tiles back and checks the no-simplification invariant, then exits.
-if (args.Length > 0 && args[0] == "verify")
+if (args is ["verify", ..])
 {
-    bool ok = Verify.AllViews(tilesRoot);
-    Console.WriteLine(ok ? "\nFidelity: PASS" : "\nFidelity: FAIL");
-    return ok ? 0 : 1;
+    var reports = await new VerifyFidelityUseCase(views, store, new ArrowTileReader()).VerifyAllAsync();
+    bool pass = true;
+    foreach (var r in reports)
+    {
+        Console.WriteLine(
+            $"  [{(r.Passed ? "PASS" : "FAIL")}] {r.ViewId}: leafRows={r.LeafRows:N0} total={r.TotalPoints:N0} " +
+            $"leaves={r.Leaves} internal={r.Internal} overBudget={r.OverBudget}" +
+            (r.Message is null ? "" : $" — {r.Message}"));
+        pass &= r.Passed;
+    }
+    Console.WriteLine(pass ? "\nFidelity: PASS" : "\nFidelity: FAIL");
+    return pass ? 0 : 1;
 }
 
-var views = args.Length > 0 ? args.Select(Views.ById).ToArray() : Views.All.ToArray();
+var selected = args.Length > 0 ? args.Select(views.Get).ToArray() : views.All().ToArray();
+if (selected.Length == 0)
+{
+    Console.WriteLine($"No views registered under {RepoPaths.ViewsDir}. See docs/VIEW_CONFIG.md.");
+    return 0;
+}
 
-using var ch = new ClickHouseClient();
-await ch.WaitUntilReadyAsync(TimeSpan.FromMinutes(2));
+using var clickHouse = new ClickHouseClient();
+await clickHouse.WaitUntilReadyAsync(TimeSpan.FromMinutes(2));
 
-foreach (var view in views)
-    await BakePipeline.BakeAsync(ch, view, tilesRoot, stagingRoot);
+var bake = new BakeViewUseCase(new SourceAdapterCatalog(clickHouse), new ReductionCatalog(), store);
+foreach (var view in selected)
+{
+    var outcome = await bake.BakeAsync(view);
+    Console.WriteLine(outcome.IsEmpty
+        ? $"  {outcome.ViewId}: empty source — skipped"
+        : $"  {outcome.ViewId} → {outcome.Version}: {outcome.SourceRows:N0} rows, " +
+          $"{outcome.TileCount} tiles ({outcome.LeafCount} leaves), maxZoom={outcome.MaxZoom}");
+}
 
 Console.WriteLine("\nBake complete.");
 return 0;

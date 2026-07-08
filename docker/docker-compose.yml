@@ -3,7 +3,7 @@ services:
     image: clickhouse/clickhouse-server:24.8
     container_name: colossus-clickhouse
     ports:
-      - "8123:8123"   # HTTP interface (used by Seed + Bake)
+      - "8123:8123"   # HTTP interface (used by Bake)
       - "9000:9000"   # native protocol
     ulimits:
       nofile:

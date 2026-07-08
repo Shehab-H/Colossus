@@ -1,13 +1,41 @@
-// Manifest contract — mirrors Colossus.Core.Model (camelCase). The client reads this and obeys it;
-// the same code path serves a geo map and a non-geo scatter because only the descriptor differs.
+// Mirrors the baked manifest.json (camelCase, lowercase enums). The client reads the descriptor and
+// obeys it — one code path renders every mark and viewport because only the config differs.
 
-export type Viewport = 'Geo' | 'Orthographic';
+export type Viewport = 'geo' | 'orthographic';
+export type Mark = 'point' | 'line' | 'arc' | 'rect' | 'polygon' | 'heat' | 'text';
 
 export interface Bbox {
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
+}
+
+export interface ChannelSpec {
+  name: string;
+  column: string;
+  role: 'measure' | 'dimension' | 'temporal' | 'identity';
+  type: string;
+}
+
+export interface GeometrySpec {
+  kind: string;
+}
+
+export interface SourceSpec {
+  adapter: string;
+  query: string;
+  geometry: GeometrySpec;
+  channels: ChannelSpec[];
+}
+
+export interface ViewConfig {
+  id: string;
+  title?: string;
+  viewport: Viewport;
+  mark: Mark;
+  reduction: string;
+  source: SourceSpec;
 }
 
 export interface TileMeta {
@@ -18,16 +46,11 @@ export interface TileMeta {
   isLeaf: boolean;
 }
 
-export interface ViewDescriptor {
-  id: string;
-  viewport: Viewport;
-  mark: string;
-  reduction: string;
-}
-
 export interface Manifest {
   version: string;
-  view: ViewDescriptor;
+  view: ViewConfig;
+  /** The reduction the bake planner chose (e.g. 'aggregate', 'quadtreeLod'). Drives the fidelity label. */
+  reduction: string;
   regime: string;
   root: Bbox;
   minZoom: number;

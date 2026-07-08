@@ -3,7 +3,7 @@
 Render very large datasets (10M–100M+ rows) with **no aggregation or simplification** of raw marks — on a map or in any chart — over a single engine:
 
 ```
-source (ClickHouse) → bake → Arrow LOD tiles → static immutable serve → deck.gl binary attributes → GPU
+source query (ClickHouse) → bake → Parquet LOD tiles → static immutable serve → DuckDB-WASM + deck.gl → GPU
 ```
 
 A chart type is not a pipeline; it's `(mark + channel mapping) × reduction primitive`. See [docs/PLAN.md](docs/PLAN.md) for the full design and milestone plan.
@@ -12,29 +12,28 @@ A chart type is not a pipeline; it's `(mark + channel mapping) × reduction prim
 
 | Path | What |
 |------|------|
-| `src/Colossus.Core` | Shared models + utils: `ViewDescriptor`, reduction strategies, tile math, Hilbert, Arrow helpers, manifest |
-| `src/Colossus.Seed` | Synthetic dataset generator → ClickHouse |
-| `src/Colossus.Bake` | Planner + extract + quadtree LOD reduction → Arrow tiles + manifest |
-| `src/Colossus.Server` | ASP.NET Core dev host serving tiles (immutable cache) |
-| `web/` | Vite + React + deck.gl + MapLibre; View-descriptor-driven renderer |
+| `src/Colossus.Core` | Domain models + ports: view config, reduction strategies, tile math, manifest |
+| `src/Colossus.Bake` | Planner + extract + reduction → tiles + manifest |
+| `src/Colossus.Server` | Dev host: static tiles + view registry API |
+| `web/` | Vite + React + deck.gl + MapLibre; config-driven renderer |
+| `views/` | View config files (the registry) |
 | `docker/` | Local ClickHouse (dev) |
 
 ## Dev quickstart
+
+Colossus reads from your own ClickHouse tables — there is no bundled data generator. Point a view at your data ([docs/VIEW_CONFIG.md](docs/VIEW_CONFIG.md)), then:
 
 ```bash
 # 1. ClickHouse
 docker compose -f docker/docker-compose.yml up -d
 
-# 2. Seed synthetic data
-dotnet run --project src/Colossus.Seed
+# 2. Bake a view's tiles
+dotnet run --project src/Colossus.Bake -- <view-id>
 
-# 3. Bake tiles
-dotnet run --project src/Colossus.Bake
-
-# 4. Serve tiles
+# 3. Serve tiles + view API (Swagger UI at /swagger)
 dotnet run --project src/Colossus.Server
 
-# 5. Frontend
+# 4. Frontend
 cd web && npm run dev
 ```
 
