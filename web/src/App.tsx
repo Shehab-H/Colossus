@@ -9,9 +9,11 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import Hud from './components/Hud';
 import InspectPanel, { type Selection } from './components/InspectPanel';
 import LegendBox from './components/Legend';
+import ThemeToggle from './components/ThemeToggle';
 import { useTiles } from './hooks/useTiles';
 import { useViewData } from './hooks/useViewData';
 import { basemapStyle } from './lib/basemap';
+import { useTheme } from './lib/theme';
 import { tileDeckData } from './lib/deckData';
 import type { Manifest } from './lib/manifest';
 import type { TileData } from './lib/tileData';
@@ -34,6 +36,7 @@ const inspectValue = (v: number | string | undefined): string =>
   v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v;
 
 export default function App() {
+  const { theme, toggle } = useTheme();
   const [views, setViews] = useState<ViewSummary[]>([]);
   const [viewsError, setViewsError] = useState<string | null>(null);
   const [viewId, setViewId] = useState<string | null>(urlViewId());
@@ -151,11 +154,11 @@ export default function App() {
   }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorOf, scaleKey, inspect]);
 
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#0a0a0a' }}>
+    <div style={{ position: 'absolute', inset: 0, background: 'var(--app-bg)' }}>
       {/* Geo views: MapLibre is the root (owns camera + sizing); deck marks overlay on top. */}
       {isGeo && camera && (
         <BaseMap
-          mapStyle={basemapStyle}
+          mapStyle={basemapStyle(theme)}
           {...(camera as object)}
           onMove={(e: { viewState: CameraState }) => setCamera(e.viewState)}
           onLoad={(e: { target: { resize: () => void } }) => e.target.resize()}
@@ -197,6 +200,7 @@ export default function App() {
 
       {selection && <InspectPanel selection={selection} onClose={() => setSelection(null)} />}
       {manifest && legend && <LegendBox legend={legend} />}
+      <ThemeToggle theme={theme} onToggle={toggle} />
     </div>
   );
 }

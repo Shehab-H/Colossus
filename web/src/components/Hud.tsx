@@ -34,7 +34,7 @@ export default function Hud(p: HudProps) {
         ))}
       </div>
 
-      {p.error && <div style={{ color: '#f77', marginBottom: 8, maxWidth: 220 }}>{p.error}</div>}
+      {p.error && <div style={{ color: 'var(--error)', marginBottom: 8, maxWidth: 220 }}>{p.error}</div>}
 
       {p.colorChannels.length > 0 && (
         <div style={{ marginBottom: 6 }}>
@@ -87,7 +87,7 @@ export default function Hud(p: HudProps) {
           <div>
             in view: {p.tilesInView} tiles · {p.marksLoaded.toLocaleString()} cells
           </div>
-          <div style={{ marginTop: 4, fontWeight: 600, color: p.atFullFidelity ? '#7ee787' : '#e3b341' }}>
+          <div style={{ marginTop: 4, fontWeight: 600, color: p.atFullFidelity ? 'var(--good)' : 'var(--warn)' }}>
             {p.atFullFidelity ? '● full fidelity — every cell' : '◐ aggregated — zoom in to resolve'}
           </div>
           <div style={{ opacity: 0.5, fontSize: 11, marginTop: 4 }}>
@@ -104,28 +104,29 @@ const hud: React.CSSProperties = {
   top: 12,
   left: 12,
   padding: '10px 12px',
-  background: 'rgba(20,20,20,0.82)',
-  color: '#eee',
+  background: 'var(--card-bg)',
+  color: 'var(--card-fg)',
   font: '12px system-ui, sans-serif',
   borderRadius: 8,
-  border: '1px solid #333',
+  border: '1px solid var(--card-border)',
+  boxShadow: 'var(--card-shadow)',
   userSelect: 'none',
   minWidth: 160,
 };
 const btn: React.CSSProperties = {
   padding: '4px 8px',
-  background: '#222',
-  color: '#ccc',
-  border: '1px solid #444',
+  background: 'var(--btn-bg)',
+  color: 'var(--btn-fg)',
+  border: '1px solid var(--btn-border)',
   borderRadius: 6,
   cursor: 'pointer',
 };
-const btnOn: React.CSSProperties = { ...btn, background: '#2d6', color: '#022', border: '1px solid #2d6', fontWeight: 700 };
+const btnOn: React.CSSProperties = { ...btn, background: 'var(--btn-on-bg)', color: 'var(--btn-on-fg)', border: '1px solid var(--btn-on-bg)', fontWeight: 700 };
 const select: React.CSSProperties = {
   width: '100%',
   padding: '3px 4px',
-  background: '#1a1a1a',
-  color: '#ddd',
-  border: '1px solid #444',
+  background: 'var(--input-bg)',
+  color: 'var(--input-fg)',
+  border: '1px solid var(--input-border)',
   borderRadius: 4,
 };

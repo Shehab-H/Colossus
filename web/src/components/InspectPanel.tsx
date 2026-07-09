@@ -35,14 +35,15 @@ export default function InspectPanel({ selection, onClose }: { selection: Select
 
 const panel: React.CSSProperties = {
   position: 'absolute',
-  top: 12,
+  top: 56, // clears the theme toggle pinned at the top-right corner
   right: 12,
   padding: '10px 12px',
-  background: 'rgba(20,20,20,0.82)',
-  color: '#eee',
+  background: 'var(--card-bg)',
+  color: 'var(--card-fg)',
   font: '12px system-ui, sans-serif',
   borderRadius: 8,
-  border: '1px solid #333',
+  border: '1px solid var(--card-border)',
+  boxShadow: 'var(--card-shadow)',
   minWidth: 180,
 };
 const head: React.CSSProperties = {
@@ -54,12 +55,12 @@ const head: React.CSSProperties = {
 };
 const close: React.CSSProperties = {
   background: 'transparent',
-  color: '#aaa',
+  color: 'var(--card-muted)',
   border: 'none',
   cursor: 'pointer',
   fontSize: 13,
   lineHeight: 1,
   padding: 0,
 };
-const keyCell: React.CSSProperties = { opacity: 0.7, padding: '2px 12px 2px 0', whiteSpace: 'nowrap' };
+const keyCell: React.CSSProperties = { color: 'var(--card-muted)', padding: '2px 12px 2px 0', whiteSpace: 'nowrap' };
 const valCell: React.CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 };

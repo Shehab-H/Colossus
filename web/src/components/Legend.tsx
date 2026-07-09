@@ -43,18 +43,19 @@ const box: React.CSSProperties = {
   bottom: 12,
   left: 12,
   padding: '8px 10px',
-  background: 'rgba(20,20,20,0.82)',
-  color: '#eee',
+  background: 'var(--card-bg)',
+  color: 'var(--card-fg)',
   font: '12px system-ui, sans-serif',
   borderRadius: 8,
-  border: '1px solid #333',
+  border: '1px solid var(--card-border)',
+  boxShadow: 'var(--card-shadow)',
   userSelect: 'none',
   minWidth: 140,
   maxWidth: 220,
 };
 const head: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, marginBottom: 6 };
-const note: React.CSSProperties = { opacity: 0.55, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 };
-const bar: React.CSSProperties = { height: 10, borderRadius: 3, border: '1px solid rgba(255,255,255,0.12)' };
-const axis: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', marginTop: 3, opacity: 0.7, fontVariantNumeric: 'tabular-nums' };
+const note: React.CSSProperties = { color: 'var(--card-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 };
+const bar: React.CSSProperties = { height: 10, borderRadius: 3, border: '1px solid var(--swatch-border)' };
+const axis: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', marginTop: 3, color: 'var(--card-muted)', fontVariantNumeric: 'tabular-nums' };
 const row: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6 };
-const swatch: React.CSSProperties = { width: 12, height: 12, borderRadius: 3, flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.12)' };
+const swatch: React.CSSProperties = { width: 12, height: 12, borderRadius: 3, flex: '0 0 auto', border: '1px solid var(--swatch-border)' };
