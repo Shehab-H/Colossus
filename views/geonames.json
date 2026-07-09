@@ -1,0 +1,25 @@
+{
+  "id": "geonames",
+  "title": "GeoNames — global places & features (~13M points)",
+  "viewport": "geo",
+  "mark": "point",
+  "source": {
+    "adapter": "clickhouse",
+    "query": "SELECT longitude, latitude, feature_class, feature_code, country_code, population, elevation, name, modification_date FROM colossus.geonames",
+    "geometry": { "kind": "lonLat", "lon": "longitude", "lat": "latitude" },
+    "channels": [
+      { "name": "feature_class", "column": "feature_class", "role": "dimension", "type": "dict" },
+      { "name": "feature_code", "column": "feature_code", "role": "dimension", "type": "dict" },
+      { "name": "country_code", "column": "country_code", "role": "dimension", "type": "dict" },
+      { "name": "population", "column": "population", "role": "measure", "type": "f64" },
+      { "name": "elevation", "column": "elevation", "role": "measure", "type": "i32" },
+      { "name": "modification_date", "column": "modification_date", "role": "temporal", "type": "date" },
+      { "name": "name", "column": "name", "role": "identity", "type": "dict" }
+    ]
+  },
+  "encoding": { "color": { "channel": "feature_class", "type": "categorical" } },
+  "inspect": {
+    "title": "name",
+    "channels": ["feature_class", "feature_code", "country_code", "population", "elevation"]
+  }
+}
