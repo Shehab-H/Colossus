@@ -151,7 +151,10 @@ export default function App() {
           coordinateSystem,
           opacity: 0.85,
           pickable,
-          autoHighlight: pickable,
+          // autoHighlight is intentionally OFF: it forces a full picking pass + synchronous
+          // gl.readPixels on every pointermove (re-rasterizing every on-screen mark), which is the
+          // dominant pan/hover stall. Click still picks on demand via onClick — inspection is intact.
+          autoHighlight: false,
         });
       }
       return new ScatterplotLayer({
@@ -165,8 +168,7 @@ export default function App() {
         stroked: false,
         opacity: 0.85,
         pickable,
-        autoHighlight: pickable,
-        highlightColor: [255, 255, 255, 120],
+        autoHighlight: false, // see the polygon layer above — per-pointermove picking is the pan stall
       });
     });
   }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorOf, scaleKey, inspect]);
