@@ -1,20 +1,32 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadManifest, type ColorSpec, type Manifest } from '../lib/manifest';
 import { ALL, buildWhere, colorChannelName, describeColorDomain, discoverOptions, filterableChannels } from '../lib/channels';
 import { buildColorScale, describeLegend, type ColorDomain } from '../lib/colorScale';
 
 const EMPTY_DOMAIN: ColorDomain = { kind: 'numeric', min: 0, max: 1 };
 
+/** Optional startup overrides (from an embed URL): pin the color channel and/or pre-apply filters so an
+ *  embedded map paints its intended state on the first frame instead of the authored default. */
+export interface ViewDataInitial {
+  color?: string | null;
+  colorSpec?: Partial<ColorSpec> | null;
+  filters?: Record<string, string>;
+}
+
 /** Loads a view's manifest and derives the data-shaping state around it: filter options + defaults, the
  *  active color channel, its observed domain, and the color scale built from the authored encoding. A
  *  polygon view defaults to one clean slice (first value of each dimension); a point view is unfiltered. */
-export function useViewData(viewId: string | null) {
+export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [options, setOptions] = useState<Record<string, string[]>>({});
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [colorChannel, setColorChannel] = useState('');
   const [domain, setDomain] = useState<ColorDomain>(EMPTY_DOMAIN);
+
+  // Read the overrides fresh on each view load without making them an effect dependency.
+  const initialRef = useRef(initial);
+  initialRef.current = initial;
 
   useEffect(() => {
     if (!viewId) return;
@@ -23,8 +35,9 @@ export function useViewData(viewId: string | null) {
     loadManifest(viewId)
       .then(async (m) => {
         if (!alive) return;
+        const seed = initialRef.current;
         setManifest(m);
-        setColorChannel(colorChannelName(m.view));
+        setColorChannel(seed?.color || colorChannelName(m.view));
         const o = await discoverOptions(m.view, m.version);
         if (!alive) return;
         setOptions(o);
@@ -34,7 +47,7 @@ export function useViewData(viewId: string | null) {
           const pick = ch.role === 'temporal' ? opts[opts.length - 1] : opts[0];
           defaults[ch.name] = m.view.mark === 'polygon' ? pick ?? ALL : ALL;
         }
-        setFilters(defaults);
+        setFilters({ ...defaults, ...seed?.filters });
       })
       .catch((e) => {
         if (alive) setError(`${viewId}: ${e instanceof Error ? e.message : 'not baked yet'}`);
@@ -59,7 +72,9 @@ export function useViewData(viewId: string | null) {
   // for whatever channel the user picked.
   const colorSpec = useMemo<ColorSpec>(() => {
     const authored = manifest?.view.encoding?.color;
-    return authored && authored.channel === colorChannel ? authored : { channel: colorChannel };
+    const base = authored && authored.channel === colorChannel ? authored : { channel: colorChannel };
+    const ov = initialRef.current?.colorSpec;
+    return ov && ov.channel === colorChannel ? { ...base, ...ov, channel: colorChannel } : base;
   }, [manifest, colorChannel]);
 
   const colorOf = useMemo(() => buildColorScale(colorSpec, domain), [colorSpec, domain]);

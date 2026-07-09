@@ -14,6 +14,7 @@ import { useTiles } from './hooks/useTiles';
 import { useViewData } from './hooks/useViewData';
 import { basemapStyle } from './lib/basemap';
 import { useTheme } from './lib/theme';
+import { buildEmbedUrl, embedSnippet, readEmbedParams } from './lib/embed';
 import { tileDeckData } from './lib/deckData';
 import type { Manifest } from './lib/manifest';
 import type { TileData } from './lib/tileData';
@@ -36,6 +37,8 @@ const inspectValue = (v: number | string | undefined): string =>
   v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v;
 
 export default function App() {
+  const embed = useMemo(() => readEmbedParams(), []);
+  const chrome = !embed.embed; // embed=1 → chromeless: only the map + legend
   const { theme, toggle } = useTheme();
   const [views, setViews] = useState<ViewSummary[]>([]);
   const [viewsError, setViewsError] = useState<string | null>(null);
@@ -64,16 +67,19 @@ export default function App() {
     setUrlViewId(id);
   };
 
+  const initial = useMemo(() => ({ color: embed.color, colorSpec: embed.colorSpec, filters: embed.filters }), [embed]);
   const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorOf, scaleKey, legend, filterSql } =
-    useViewData(viewId);
+    useViewData(viewId, initial);
   const [selection, setSelection] = useState<Selection | null>(null);
 
   // Reset the camera in the same render the manifest lands, so tile selection never sees a new
-  // manifest through the previous view's camera. A new manifest also drops any pinned inspection.
+  // manifest through the previous view's camera. An embed URL's camera (geo) overrides the default
+  // framing. A new manifest also drops any pinned inspection.
   const [prevManifest, setPrevManifest] = useState<Manifest | null>(null);
   if (manifest !== prevManifest) {
     setPrevManifest(manifest);
-    setCamera(manifest ? initialViewState(manifest) : null);
+    const base = manifest ? initialViewState(manifest) : null;
+    setCamera(base && embed.camera && manifest!.view.viewport === 'geo' ? { ...base, ...embed.camera } : base);
     setSelection(null);
   }
 
@@ -112,6 +118,18 @@ export default function App() {
     () => new OrthographicView({ id: 'main', controller: true, flipY: false }),
     [],
   );
+
+  // Build a shareable embed for the current view state (called by the HUD's Embed button at click time,
+  // so it captures the live camera / color / theme / filters).
+  const getEmbed = useCallback(() => {
+    const base = window.location.origin + window.location.pathname;
+    const cam =
+      isGeo && camera
+        ? { longitude: Number(camera.longitude), latitude: Number(camera.latitude), zoom: Number(camera.zoom) }
+        : null;
+    const url = buildEmbedUrl(base, { view: viewId ?? '', color: colorChannel, theme, camera: cam, filters });
+    return { url, snippet: embedSnippet(url) };
+  }, [isGeo, camera, viewId, colorChannel, theme, filters]);
 
   const layers = useMemo(() => {
     if (!manifest) return [];
@@ -180,27 +198,30 @@ export default function App() {
         />
       )}
 
-      <Hud
-        views={views}
-        viewId={viewId}
-        onViewChange={selectView}
-        error={error ?? loadError ?? (viewId ? null : viewsError)}
-        colorChannels={manifest ? colorableChannels(manifest.view) : []}
-        colorChannel={colorChannel}
-        onColorChannelChange={setColorChannel}
-        channels={manifest ? filterableChannels(manifest.view) : []}
-        options={options}
-        filters={filters}
-        onFilterChange={(name, value) => setFilters((f) => ({ ...f, [name]: value }))}
-        manifest={manifest}
-        tilesInView={selKeys.length}
-        marksLoaded={marksLoaded}
-        atFullFidelity={atFullFidelity}
-      />
+      {chrome && (
+        <Hud
+          views={views}
+          viewId={viewId}
+          onViewChange={selectView}
+          error={error ?? loadError ?? (viewId ? null : viewsError)}
+          colorChannels={manifest ? colorableChannels(manifest.view) : []}
+          colorChannel={colorChannel}
+          onColorChannelChange={setColorChannel}
+          channels={manifest ? filterableChannels(manifest.view) : []}
+          options={options}
+          filters={filters}
+          onFilterChange={(name, value) => setFilters((f) => ({ ...f, [name]: value }))}
+          manifest={manifest}
+          tilesInView={selKeys.length}
+          marksLoaded={marksLoaded}
+          atFullFidelity={atFullFidelity}
+          getEmbed={manifest ? getEmbed : undefined}
+        />
+      )}
 
       {selection && <InspectPanel selection={selection} onClose={() => setSelection(null)} />}
       {manifest && legend && <LegendBox legend={legend} />}
-      <ThemeToggle theme={theme} onToggle={toggle} />
+      {chrome && <ThemeToggle theme={theme} onToggle={toggle} />}
     </div>
   );
 }

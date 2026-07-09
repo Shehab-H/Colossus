@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Colossus — embed gallery</title>
+    <style>
+      :root {
+        --bg: #0c0e12;
+        --panel: #161a21;
+        --fg: #e8ebf0;
+        --muted: #9aa4b2;
+        --border: #262c36;
+        --accent: #4ea1ff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.5 system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      header {
+        padding: 28px 24px 8px;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      header h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.01em; }
+      header p { margin: 4px 0; color: var(--muted); max-width: 70ch; }
+      code { background: #0000; color: var(--accent); font-family: ui-monospace, Menlo, monospace; }
+      main {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 16px 24px 64px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+        gap: 20px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .card h2 { margin: 0; font-size: 15px; padding: 12px 14px 2px; }
+      .card .desc { color: var(--muted); font-size: 12.5px; padding: 0 14px 10px; }
+      .frame { position: relative; aspect-ratio: 16 / 10; background: #000; }
+      .frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+      .meta { padding: 10px 14px 14px; border-top: 1px solid var(--border); }
+      .meta .snip {
+        width: 100%;
+        height: 54px;
+        resize: vertical;
+        background: #0d1016;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font: 11px/1.4 ui-monospace, Menlo, monospace;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+      button, a.btn {
+        font: inherit;
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #1d232c;
+        color: var(--fg);
+        cursor: pointer;
+        text-decoration: none;
+      }
+      button:hover, a.btn:hover { border-color: var(--accent); }
+      .tag {
+        display: inline-block;
+        font-size: 11px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 1px 8px;
+        margin: 0 4px 4px 0;
+      }
+      .warn {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 10px 24px;
+        color: #e3b341;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Colossus — embed gallery</h1>
+      <p>
+        Each frame below is the <em>same</em> renderer as the full app, loaded chromeless via
+        <code>?embed=1</code>. A map is fully described by its URL — the view, camera, color-by channel and
+        scale, theme, and any coarse filters — so an <code>&lt;iframe&gt;</code> reproduces it exactly. This
+        page is plain HTML/CSS/JS (no build step) and is the stress test: one baked table rendered many ways.
+      </p>
+      <p>
+        Add datasets by baking more views and appending to the <code>MAPS</code> array in this file — nothing
+        else changes. Params: <code>view</code>, <code>color</code>, <code>scale</code>, <code>bins</code>,
+        <code>midpoint</code>, <code>scheme</code>, <code>reverse</code>, <code>theme</code>,
+        <code>lng/lat/z</code>, <code>f_&lt;dim&gt;</code>.
+      </p>
+    </header>
+    <div class="warn" id="warn" hidden></div>
+    <main id="grid"></main>
+
+    <script>
+      // The app is served from this same origin; the gallery is a sibling static file.
+      const APP = location.origin + '/';
+
+      // Each entry is one embedded map. Extend this list as more views are baked (points, polygons,
+      // categorical dimensions, other tables) — the layout is data-driven.
+      const MAPS = [
+        {
+          title: 'Download speed — viridis gradient',
+          desc: 'The authored default: a continuous sequential ramp over Mbps, dark basemap, whole world.',
+          tags: ['polygon', 'linear', 'viridis', 'dark'],
+          params: { view: 'ookla-fixed', color: 'download_mbps', theme: 'dark', lng: 0, lat: 25, z: 1.3 },
+        },
+        {
+          title: 'Download speed — 6-bin quantize',
+          desc: 'Same measure, binned into six equal-width classes — a classic choropleth read. Light basemap, Europe.',
+          tags: ['quantize', 'bins=6', 'light'],
+          params: { view: 'ookla-fixed', color: 'download_mbps', scale: 'quantize', bins: 6, theme: 'light', lng: 10, lat: 50, z: 3.6 },
+        },
+        {
+          title: 'Upload speed — plasma',
+          desc: 'A different channel and scheme entirely, proving color is config not code. Dark, North America.',
+          tags: ['upload_mbps', 'plasma', 'dark'],
+          params: { view: 'ookla-fixed', color: 'upload_mbps', scheme: 'plasma', theme: 'dark', lng: -98, lat: 39, z: 3.1 },
+        },
+        {
+          title: 'Latency — diverging around 40 ms',
+          desc: 'A diverging scale splits blue↔red at a meaningful midpoint (good vs poor latency). Light, world.',
+          tags: ['latency_ms', 'diverging', 'midpoint=40', 'light'],
+          params: { view: 'ookla-fixed', color: 'latency_ms', scale: 'diverging', scheme: 'blueRed', midpoint: 40, theme: 'light', lng: 0, lat: 25, z: 1.3 },
+        },
+        {
+          title: 'Download speed — magma reversed',
+          desc: 'Reverse flips the ramp so bright = slow. Same data, opposite emphasis. Dark, East Asia.',
+          tags: ['magma', 'reverse', 'dark'],
+          params: { view: 'ookla-fixed', color: 'download_mbps', scheme: 'magma', reverse: 1, theme: 'dark', lng: 120, lat: 32, z: 3.0 },
+        },
+        {
+          title: 'Download speed — 5 quantiles',
+          desc: 'Quantile bins split by the data distribution, robust to skew. Light basemap, city-scale zoom.',
+          tags: ['quantile', 'bins=5', 'light'],
+          params: { view: 'ookla-fixed', color: 'download_mbps', scale: 'quantile', bins: 5, theme: 'light', lng: -0.12, lat: 51.5, z: 8 },
+        },
+      ];
+
+      const qs = (p) =>
+        Object.entries(p)
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+          .join('&');
+
+      const embedUrl = (p) => `${APP}?embed=1&${qs(p)}`;
+      const snippet = (url) =>
+        `<iframe src="${url}" width="100%" height="480" style="border:0;border-radius:8px" loading="lazy" title="Colossus map"></iframe>`;
+
+      const grid = document.getElementById('grid');
+      for (const m of MAPS) {
+        const url = embedUrl(m.params);
+        const snip = snippet(url);
+        const card = document.createElement('section');
+        card.className = 'card';
+        card.innerHTML = `
+          <h2>${m.title}</h2>
+          <div class="desc">${m.desc}</div>
+          <div class="frame"><iframe src="${url}" loading="lazy" title="${m.title}"></iframe></div>
+          <div class="meta">
+            <div>${m.tags.map((t) => `<span class="tag">${t}</span>`).join('')}</div>
+            <textarea class="snip" readonly>${snip}</textarea>
+            <div class="row">
+              <button class="copy">copy &lt;iframe&gt;</button>
+              <a class="btn" href="${url}" target="_blank" rel="noreferrer">open ↗</a>
+            </div>
+          </div>`;
+        const ta = card.querySelector('.snip');
+        card.querySelector('.copy').addEventListener('click', (e) => {
+          ta.select();
+          navigator.clipboard?.writeText(snip).then(
+            () => (e.target.textContent = '✓ copied'),
+            () => (e.target.textContent = 'select + ⌘C'),
+          );
+        });
+        card.querySelector('.snip').addEventListener('focus', (e) => e.target.select());
+        grid.appendChild(card);
+      }
+
+      // Nudge if the API server isn't up — the frames need it for manifests + tiles.
+      fetch(APP + 'api/views').catch(() => {});
+    </script>
+  </body>
+</html>

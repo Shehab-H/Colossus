@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { ChannelSpec, Manifest } from '../lib/manifest';
 import { ALL } from '../lib/channels';
 import type { ViewSummary } from '../lib/views';
@@ -18,11 +19,14 @@ export interface HudProps {
   tilesInView: number;
   marksLoaded: number;
   atFullFidelity: boolean;
+  getEmbed?: () => { url: string; snippet: string };
 }
 
 /** The control/status panel: view picker, measure + filter controls, and the fidelity readout. */
 export default function Hud(p: HudProps) {
   const viewIds = p.views.length > 0 ? p.views.map((v) => v.id) : p.viewId ? [p.viewId] : [];
+  const [embed, setEmbed] = useState<{ url: string; snippet: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   return (
     <div style={hud}>
       <div style={{ fontWeight: 700, marginBottom: 6 }}>Colossus</div>
@@ -95,6 +99,41 @@ export default function Hud(p: HudProps) {
           </div>
         </div>
       )}
+
+      {p.getEmbed && (
+        <div style={{ marginTop: 10, borderTop: '1px solid var(--card-border)', paddingTop: 8 }}>
+          <button
+            style={btn}
+            onClick={() => {
+              setEmbed((e) => (e ? null : p.getEmbed!()));
+              setCopied(false);
+            }}
+          >
+            {embed ? '✕ close embed' : '⧉ embed this map'}
+          </button>
+          {embed && (
+            <div style={{ marginTop: 6 }}>
+              <textarea readOnly value={embed.snippet} onFocus={(e) => e.currentTarget.select()} style={code} />
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                <button
+                  style={btn}
+                  onClick={() => {
+                    navigator.clipboard?.writeText(embed.snippet).then(
+                      () => setCopied(true),
+                      () => setCopied(false),
+                    );
+                  }}
+                >
+                  {copied ? '✓ copied' : 'copy'}
+                </button>
+                <a href={embed.url} target="_blank" rel="noreferrer" style={{ ...btn, textDecoration: 'none', display: 'inline-block' }}>
+                  open ↗
+                </a>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -129,4 +168,17 @@ const select: React.CSSProperties = {
   color: 'var(--input-fg)',
   border: '1px solid var(--input-border)',
   borderRadius: 4,
+};
+const code: React.CSSProperties = {
+  width: '100%',
+  height: 64,
+  resize: 'vertical',
+  padding: '4px 6px',
+  background: 'var(--input-bg)',
+  color: 'var(--input-fg)',
+  border: '1px solid var(--input-border)',
+  borderRadius: 4,
+  font: '11px ui-monospace, SFMono-Regular, Menlo, monospace',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
 };

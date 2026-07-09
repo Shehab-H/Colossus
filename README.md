@@ -43,8 +43,24 @@ cd web && npm run dev
 Run the tests with `dotnet test`; verify a bake's fidelity invariant with
 `dotnet run --project src/Colossus.Bake -- verify`.
 
+## Embedding maps
+
+Every map is fully described by its URL, so an `<iframe>` reproduces it exactly. Add `embed=1` for a
+chromeless frame (map + legend only), and pin the rest with query params:
+
+```
+/?embed=1&view=ookla-fixed&color=download_mbps&scale=quantize&bins=6&theme=light&lng=10&lat=50&z=3.6
+```
+
+`view`, `color`, `scale` (`linear`/`log`/`sqrt`/`diverging`/`quantize`/`quantile`/`threshold`/…),
+`bins`, `midpoint`, `scheme`, `reverse`, `theme` (`dark`/`light`), camera `lng`/`lat`/`z`, and coarse
+`f_<dim>=<value>` filters. The app's HUD has an **Embed** button that copies the `<iframe>` snippet for
+the current view state. [web/public/embed.html](web/public/embed.html) is a raw HTML/CSS/JS gallery that
+embeds one baked table many ways — the design's stress test; open it at `/embed.html`.
+
 ## Status
 
 Batch engine works end-to-end: planner-chosen reduction, Arrow IPC LOD tiles, a config-driven renderer
-with a full color-scale system (+ legend) and click-to-inspect. Interactive filtering and the queryable
-store are next — see the roadmap in [docs/PLAN.md](docs/PLAN.md).
+with a full color-scale system (+ legend), click-to-inspect, a dark/light basemap toggle, and
+URL-addressable embeddable maps. Interactive filtering and the queryable store are next — see the
+roadmap in [docs/PLAN.md](docs/PLAN.md).
