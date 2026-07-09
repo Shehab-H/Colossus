@@ -12,6 +12,19 @@ export interface ViewBounds {
 
 export const tileKey = (z: number, x: number, y: number) => `${z}/${x}/${y}`;
 
+// The tile lookup is rebuilt on demand but cached per manifest: selectTiles runs on every camera frame,
+// and re-mapping every tile each frame is pure waste. Keyed by manifest identity, so a new bake rebuilds.
+const indexCache = new WeakMap<Manifest, Map<string, TileMeta>>();
+function tileIndex(manifest: Manifest): Map<string, TileMeta> {
+  let index = indexCache.get(manifest);
+  if (!index) {
+    index = new Map();
+    for (const t of manifest.tiles) index.set(tileKey(t.z, t.x, t.y), t);
+    indexCache.set(manifest, index);
+  }
+  return index;
+}
+
 export function tileRect(root: Bbox, z: number, x: number, y: number) {
   const n = 2 ** z;
   const cw = (root.maxX - root.minX) / n;
@@ -37,8 +50,7 @@ export function pointToTile(root: Bbox, z: number, px: number, py: number): [num
  * `targetPx` matches the bake's grid (GRID_PER_TILE cells per tile), so a merged mark is always ≤1 px.
  */
 export function selectTiles(manifest: Manifest, vb: ViewBounds, targetPx = GRID_PER_TILE): string[] {
-  const index = new Map<string, TileMeta>();
-  for (const t of manifest.tiles) index.set(tileKey(t.z, t.x, t.y), t);
+  const index = tileIndex(manifest);
 
   const vbSpanX = vb.maxX - vb.minX || 1;
   const chosen: string[] = [];
