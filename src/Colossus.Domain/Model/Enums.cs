@@ -20,8 +20,7 @@ public enum Mark
     Text,
 }
 
-/// <summary>The closed set of reduction primitives — the axis that makes 100M feasible, chosen from
-/// the data and encoding, never the chart's name.</summary>
+
 public enum ReductionKind
 {
     RawPassthrough,
@@ -30,8 +29,6 @@ public enum ReductionKind
     Aggregate,
 }
 
-/// <summary>How a source expresses the spatial role; an adapter normalizes each to a representative
-/// (x, y) plus vertices for shapes.</summary>
 public enum GeometryKind
 {
     Xy,

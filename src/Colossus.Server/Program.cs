@@ -1,21 +1,27 @@
-using Colossus.Domain.Model;
-using Colossus.Infrastructure;
+using Colossus.Infrastructure.DependencyInjection;
 using Colossus.Infrastructure.Serialization;
-using Colossus.Infrastructure.Views;
+using Colossus.Server.Configuration;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 
-// Dev stand-in for nginx: serve the baked tile tree as static immutable files, plus a small read/write
-// API over the view registry (list / get / url / upload).
-
-string tilesRoot = RepoPaths.TilesDir;
-Directory.CreateDirectory(tilesRoot);
-string webBase = (Environment.GetEnvironmentVariable("COLOSSUS_WEB_URL") ?? "http://localhost:5173").TrimEnd('/');
-var views = new ViewRegistry();
+// Dev stand-in for nginx: serves the baked tile tree as static immutable files and hosts the view
+// registry API (see Controllers/ViewsController). Prod swaps to nginx for the static tiles, identical
+// headers. All wiring is here; endpoints live in controllers.
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls(Environment.GetEnvironmentVariable("COLOSSUS_SERVER_URL") ?? "http://localhost:5174");
+
+builder.Services.AddOptions<ServerOptions>()
+    .Bind(builder.Configuration.GetSection(ServerOptions.Section))
+    .PostConfigure(o => o.ApplyEnvOverrides());
+var server = new ServerOptions();
+builder.Configuration.GetSection(ServerOptions.Section).Bind(server);
+server.ApplyEnvOverrides();
+
+builder.WebHost.UseUrls(server.ServerUrl);
+builder.Services.AddColossus(builder.Configuration);
+builder.Services.AddControllers().AddJsonOptions(o => ColossusJson.Apply(o.JsonSerializerOptions));
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddOpenApi(o => o.AddDocumentTransformer((doc, _, _) =>
 {
@@ -39,12 +45,12 @@ app.UseSwaggerUI(o =>
     o.DocumentTitle = "Colossus Server API";
 });
 
+Directory.CreateDirectory(server.TilesRoot);
 var contentTypes = new FileExtensionContentTypeProvider();
 contentTypes.Mappings[".arrow"] = "application/vnd.apache.arrow.stream";
-
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new PhysicalFileProvider(tilesRoot),
+    FileProvider = new PhysicalFileProvider(server.TilesRoot),
     RequestPath = "/tiles",
     ContentTypeProvider = contentTypes,
     ServeUnknownFileTypes = true,
@@ -58,62 +64,7 @@ app.UseStaticFiles(new StaticFileOptions
     },
 });
 
-string ViewUrl(string id) => $"{webBase}/?view={Uri.EscapeDataString(id)}";
-bool HasBake(string id) => File.Exists(Path.Combine(tilesRoot, id, "latest.json"));
-IResult Json<T>(T value) => Results.Text(ColossusJson.Serialize(value), "application/json");
-
-app.MapGet("/api/views", () => Json(views.All().Select(v => new
-{
-    id = v.Id,
-    title = v.Title,
-    viewport = v.Viewport,
-    mark = v.Mark,
-    reduction = v.Reduction,
-    url = ViewUrl(v.Id),
-    baked = HasBake(v.Id),
-})))
-    .WithTags("Views")
-    .WithSummary("List registered views")
-    .WithDescription("Every view config in the registry with its render URL and whether tiles have been baked.");
-
-app.MapGet("/api/views/{id}", (string id) =>
-{
-    try { return Json(views.Get(id)); }
-    catch (ArgumentException e) { return Results.NotFound(new { error = e.Message }); }
-})
-    .WithTags("Views")
-    .WithSummary("Get a view config")
-    .WithDescription("The full canonical view descriptor: viewport, mark, reduction, source query, geometry, and channels.");
-
-app.MapGet("/api/views/{id}/url", (string id) =>
-{
-    try
-    {
-        var view = views.Get(id);
-        return Json(new { id = view.Id, url = ViewUrl(view.Id), baked = HasBake(view.Id) });
-    }
-    catch (ArgumentException e) { return Results.NotFound(new { error = e.Message }); }
-})
-    .WithTags("Views")
-    .WithSummary("Get a view's render URL")
-    .WithDescription("Resolves a view id to the frontend URL that renders it.");
-
-app.MapPost("/api/views", async (HttpRequest req) =>
-{
-    using var reader = new StreamReader(req.Body);
-    string body = await reader.ReadToEndAsync();
-    try
-    {
-        var view = ColossusJson.Deserialize<ViewConfig>(body);
-        string path = views.Save(view);
-        return Json(new { id = view.Id, url = ViewUrl(view.Id), saved = path });
-    }
-    catch (Exception e) { return Results.BadRequest(new { error = e.Message }); }
-})
-    .WithTags("Views")
-    .WithSummary("Register a view config")
-    .WithDescription("Validates and persists a view descriptor to the registry. Body is a canonical view config (see docs/VIEW_CONFIG.md).")
-    .Accepts<ViewConfig>("application/json");
+app.MapControllers();
 
 app.MapGet("/", () => Results.Text(
     "Colossus server.\n" +
@@ -126,5 +77,5 @@ app.MapGet("/", () => Results.Text(
     "  POST /api/views                    register a view config\n", "text/plain"))
     .ExcludeFromDescription();
 
-Console.WriteLine($"Serving tiles from {tilesRoot}; Swagger UI → /swagger; view URLs → {webBase}");
+Console.WriteLine($"Serving tiles from {server.TilesRoot}; Swagger UI → /swagger; view URLs → {server.WebBaseUrl}");
 app.Run();

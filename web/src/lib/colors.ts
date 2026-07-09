@@ -1,37 +1,27 @@
-// Value → RGB ramp (viridis-ish, 5 stops). Applied once per tile at load time into a Uint8Array,
-// so color lives in a binary attribute — no per-point JS objects reach the render loop.
+// Low-level color primitives. No scheme or scale knowledge — just hex parsing and stop interpolation,
+// the pieces schemes.ts and colorScale.ts build on.
 
-const STOPS: [number, number, number][] = [
-  [68, 1, 84],
-  [59, 82, 139],
-  [33, 145, 140],
-  [94, 201, 98],
-  [253, 231, 37],
-];
+export type RGB = [number, number, number];
 
-export function rampColor(t: number): [number, number, number] {
-  const c = Math.max(0, Math.min(1, t)) * (STOPS.length - 1);
+export function hexToRgb(hex: string): RGB {
+  let h = hex.trim().replace(/^#/, '');
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  const n = Number.parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** Piecewise-linear interpolation across an ordered list of RGB stops; `t` is clamped to [0,1]. */
+export function interpolate(stops: readonly RGB[], t: number): RGB {
+  if (stops.length === 0) return [0, 0, 0];
+  if (stops.length === 1) return stops[0];
+  const c = Math.max(0, Math.min(1, t)) * (stops.length - 1);
   const i = Math.floor(c);
   const f = c - i;
-  const a = STOPS[i];
-  const b = STOPS[Math.min(i + 1, STOPS.length - 1)];
+  const a = stops[i];
+  const b = stops[Math.min(i + 1, stops.length - 1)];
   return [
     Math.round(a[0] + (b[0] - a[0]) * f),
     Math.round(a[1] + (b[1] - a[1]) * f),
     Math.round(a[2] + (b[2] - a[2]) * f),
   ];
-}
-
-/** Builds a packed RGB buffer (size 3·n) from a value column, normalizing over [min, max]. */
-export function valuesToColors(values: ArrayLike<number>, min = 0, max = 100): Uint8Array {
-  const n = values.length;
-  const out = new Uint8Array(n * 3);
-  const span = max - min || 1;
-  for (let i = 0; i < n; i++) {
-    const [r, g, b] = rampColor((values[i] - min) / span);
-    out[i * 3] = r;
-    out[i * 3 + 1] = g;
-    out[i * 3 + 2] = b;
-  }
-  return out;
 }

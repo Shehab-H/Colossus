@@ -1,10 +1,12 @@
+using System.Text.Json.Serialization;
+
 namespace Colossus.Domain.Model;
 
 /// <summary>Axis-aligned bounds over a view's two primary dimensions (lon/lat or arbitrary x/y).</summary>
 public readonly record struct Bbox(double MinX, double MinY, double MaxX, double MaxY)
 {
-    public double SpanX => MaxX - MinX;
-    public double SpanY => MaxY - MinY;
+    [JsonIgnore] public double SpanX => MaxX - MinX;
+    [JsonIgnore] public double SpanY => MaxY - MinY;
 
     /// <summary>Pad to a square with a small margin so points on the max edge stay inside tile arithmetic.</summary>
     public Bbox ToPaddedSquare(double marginFraction = 0.001)

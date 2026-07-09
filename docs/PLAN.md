@@ -1,137 +1,76 @@
-# Colossus — Implementation Plan (Milestone 1: Walking Skeleton)
+# Colossus — Design & Roadmap
 
-## Context
+Colossus renders very large datasets (10M–100M+ rows) with **no aggregation or simplification of raw
+marks** — on a map or in any chart — through one engine. It is a **visualization product**, not a fixed
+map: geographic points are one view; any mark over arbitrary data is an equal peer.
 
-Colossus is an internal tool for visualizing very large datasets (10M–100M+ rows, variable per dataset) with **no aggregation, bucketing, or simplification** of raw marks — every point is real and eventually renderable at full fidelity. It is **not** a geospatial tool: geographic-points-on-a-map is one view; **any chart type over arbitrary (non-geo) data is an equal peer**. Constraints from design: **on-prem, no cloud, no CDN spend**, sub-second interactivity, and a **source-agnostic** ingest side (ClickHouse first; Postgres/MySQL/warehouse/files later).
+The invariants are in [RULES.md](RULES.md) (the authority); the code layout and the two internal
+authorities are in [ARCHITECTURE.md](ARCHITECTURE.md); the authored config surface is in
+[VIEW_CONFIG.md](VIEW_CONFIG.md). This file is the design in brief and the forward roadmap.
 
-The shared engine is one path regardless of what's being drawn: **bake → Parquet LOD tiles → static (immutable) serve → DuckDB-WASM → deck.gl binary attributes → GPU**, with zero per-mark JavaScript objects. Live streaming and multi-source adapters are later milestones layered on this skeleton.
+## The core model — a chart is a config, not a pipeline
 
----
+Every visualization decomposes onto two orthogonal axes, so the engine never has a "map mode":
 
-## Architecture amendment (2026-07 — supersedes the M1 specifics below)
+- **Mark / geometry** — how it's drawn: a deck.gl layer + a channel mapping (which columns → x, y,
+  color, size). Point, polygon today; line, arc, rect, heat, text are new descriptors, not new code.
+- **Reduction primitive** — what makes it feasible, chosen from the data's shape (not the chart's
+  name) by the [bake planner](../src/Colossus.Application/BakePlanner.cs): `rawPassthrough` (under
+  budget), `quadtreeLod` (overplotting points), `aggregate` (pixel pyramid for area marks); `signalM4`
+  (1-D min/max) is the next primitive.
 
-The walking skeleton shipped, and wiring the 300M-row `crowdsource` table exposed three assumptions
-baked into M1 that don't generalize. The design below still holds in spirit; these points override it
-where they conflict. **The hard invariants now live in [RULES.md](RULES.md) — that file is the
-authority. The view-config shape lives in [VIEW_CONFIG.md](VIEW_CONFIG.md).**
+A **view** is therefore a declarative descriptor — `viewport + mark + channel mapping + source` — and
+adding "candlestick over 200M ticks" or an arc flow map is authoring a file, not writing a pipeline.
 
-1. **A source is the result of a query, not a table.** `SourceSpec` carries arbitrary SQL (the bake
-   wraps it in a subquery) plus a role mapping, executed through a pluggable **`ISourceAdapter`**
-   (ClickHouse first). This subsumes flat tables *and* aggregate cubes (`GROUP BY …`). (RULES R5)
-
-2. **The tile format is canonical and source-independent.** One on-disk schema — `(x, y, geometry?,
-   part_offsets?, channels[], id?)` — regardless of whether the source is x/y, lon/lat, quadkey, WKT,
-   geohash, or native geometry. The adapter **normalizes every column into a typed role** (geometry /
-   measure / dimension / temporal / identity), not just position. Source shape never leaks past the
-   extract. (RULES R3)
-
-3. **Views are uploadable config, not code.** The hardcoded `Views` catalog becomes a file-based
-   **registry** of JSON view configs under `views/`. Adding a view = uploading a file; zero redeploy.
-   Reduction is **dispatched** from `view.Reduction`, never hardcoded. (RULES R6)
-
-4. **The store is Parquet; the client is DuckDB-WASM.** The granular store is served as tuned,
-   spatially-tiled **Parquet** (Hilbert/Morton sort, row-group zone-maps, dictionary + bloom). The
-   browser runs **DuckDB-WASM** to query exactly the viewport (predicate/projection pushdown over
-   HTTP range requests) and emits **Arrow straight to deck.gl binary attributes**. (RULES R4)
-
-5. **Fidelity is hybrid.** Full-fidelity viewport queries are the default path; a **labeled,
-   resolvable preview** (fair sample of real marks) covers only extreme zoom-out. No lossy
-   aggregation is ever rendered as raw. (RULES R2)
-
-**Filtering** is two-stage: coarse `bakeFilters` folded into the source SQL (re-bake to change), and
-interactive `filters` declared per-view and applied live client-side over carried channels (DuckDB-WASM
-predicate pushdown + GPU `DataFilterExtension`) — no re-bake.
-
-### Execution slices (post-M1)
-
-- **S1 — config-driven foundation (this slice):** `ViewConfig` + `ViewRegistry`, `ISourceAdapter`
-  (ClickHouse, point geometry), reduction dispatch (`QuadtreeLod` + `RawPassthrough`), Server view API
-  incl. `viewId → URL`, one runnable **2-D map** view (`geo-points`). Docs: this amendment + VIEW_CONFIG.
-- **S2 — canonical tile schema:** grow `(x,y,value,category)` → geometry + N channels end-to-end.
-- **S3 — quadkey/WKT geometry + Polygon mark:** ship the `crowd-download` choropleth off the 300M cube.
-- **S4 — Parquet store + DuckDB-WASM client + preview UX.**
-
-Scope note: **only the 2-D map (geo) viewport is in scope right now**; the orthographic scatter and
-other marks return once the canonical schema (S2) lands.
-
-## The core model — chart type is a config, not a pipeline
-
-The engine never has a "time-series mode" or a "map mode." Every visualization decomposes onto two orthogonal axes:
-
-**Axis 1 — Mark / geometry (how it's drawn).** A deck.gl layer choice plus a channel mapping (which columns → x, y, color, size, …): point, line, arc, rect/bar, polygon, heat, text. This axis is **feasibility-neutral** — it does not affect how we survive 100M rows.
-
-**Axis 2 — Reduction primitive (what makes it feasible).** A **small closed set**, selected from the data + encoding, *not* from the chart's name:
-- **Raw pass-through** — mark count under budget: ship all, no reduction.
-- **Quadtree spatial LOD** — marks land on a 2-D continuous plane and overplot (maps by lon/lat, scatter/bubble by arbitrary x/y, arc endpoints). Random-prefix pyramid; sampling only where marks exceed pixels, only as fair ordering.
-- **1-D signal downsampling (M4 / min-max)** — dense marks along one ordered axis mapped to pixel columns (line, area, candlestick). Per-pixel-column min/max/first/last → **pixel-lossless** at screen resolution.
-- **Semantic aggregation / binning** — the chart *is* an aggregate (histogram, bar, heatmap grid, choropleth, box plot). Computed in DuckDB/ClickHouse; result is tiny. (Not a "no-bucketing" violation — the bar chart is definitionally the aggregate; nothing raw is hidden.)
-
-A **View** is therefore a declarative descriptor: `viewport (geo | orthographic) + mark + channelMapping + reductionStrategy`. Adding "candlestick over 200M ticks" or "arc flow map" or "bubble scatter" is a new descriptor, not a new code path.
-
-## M1 goal (proposed)
-
-Prove the shared engine and the **hardest, highest-leverage reduction primitive (quadtree spatial LOD)** end-to-end, rendered through **two different viewports from the same tiling code** — a geographic map (MapLibre) and a non-geo orthographic scatter (arbitrary x/y) — driven purely by a View descriptor. This de-risks the "one engine, any chart" claim directly. Also stub the reduction-primitive **plugin interface** so M4 downsampling and aggregation slot in later without touching the engine. (Open item, non-blocking: whether to also ship a thin server-side aggregation example in M1 or defer to M2 — defaulting to defer.)
-
-## Stack
-
-- **Backend / bake / services: .NET (C#).** `DuckDB.NET` (out-of-core sort/partition/IO engine), `Apache.Arrow` (C# IPC read/write), `Parquet.NET` (staging). ClickHouse read via its **HTTP interface + `FORMAT Parquet`/`ArrowStream`** (`HttpClient` + Apache.Arrow); ClickHouse **`hilbertEncode`** does the spatial sort server-side. **ASP.NET Core (Kestrel)** serves tiles in dev (and later the API/WebSocket fan-out).
-- **Frontend: React + TypeScript + Vite + deck.gl + MapLibre GL.** MapLibre (no token, no spend). `apache-arrow` (JS) parses tile bytes into typed arrays fed to deck.gl **binary attributes**. Geo uses a `GeoJsonLayer`/`ScatterplotLayer` under MapLibre; non-geo uses the same `ScatterplotLayer` under an `OrthographicView`.
-
-## Repository layout (create under `C:\Users\pc\Desktop\Colossus`)
+## The pipeline
 
 ```
-Colossus.sln
-src/
-  Colossus.Core/      # models + shared utils: ViewDescriptor, ReductionStrategy interface,
-                      #   LOD/tile math, Hilbert util, Arrow helpers, Manifest
-  Colossus.Seed/      # console: synthetic dataset generator -> ClickHouse (geo table + non-geo x/y table)
-  Colossus.Bake/      # console: planner + extract + reduction (quadtree LOD builder) + manifest
-  Colossus.Server/    # ASP.NET Core: static tile/manifest host (dev), later API/fan-out
-web/                  # Vite + React + TS + deck.gl + MapLibre; View-descriptor-driven renderer
-tiles/                # bake output (gitignored): latest.json + <version>/manifest.json + <version>/z/x/y.arrow
-docker/               # docker-compose: ClickHouse (dev), nginx (prod parity)
-docs/PLAN.md          # this plan, committed as the first step
-README.md
-.gitignore
+source query (ClickHouse) → bake (DuckDB, out-of-core) → Arrow IPC LOD tiles
+  → static immutable serve → deck.gl binary attributes → GPU
 ```
 
-## Milestone 1 steps
+Zero per-mark JavaScript objects reach the render loop: a tile is `tableFromIPC` (a memcpy) and its
+column buffers *are* the typed arrays deck.gl wants. Polygons are **tessellated at bake time** — the
+client hands deck external triangle indices and never runs earcut on the main thread. Tiles are
+immutable, content-addressed by version; a bake writes a fresh `<version>/` and atomically flips
+`latest.json`. On-prem only — no cloud, no CDN spend.
 
-1. **Scaffold** solution, projects, `web/` (Vite React-TS), `docker/docker-compose.yml` (ClickHouse), `.gitignore`, commit **this plan to `docs/PLAN.md`**, `git init`.
+## Status — what works today
 
-2. **`Colossus.Core`** (reused by Bake + Server + shared with web via JSON contracts):
-   - `ViewDescriptor` (viewport type, mark, channel mapping, reductionStrategy) and `ReductionStrategy` interface (the plugin seam; M1 implements `QuadtreeLod` + `RawPassthrough`, leaves `SignalM4` + `Aggregate` as declared-but-unimplemented).
-   - `Manifest`, `TileId(z,x,y)`, `Bbox` (generic min/max over the view's two primary dims — lon/lat *or* x/y), `ColumnSchema`.
-   - LOD/tile-coordinate math + tile-relative `float32`/`uint16` quantization; `HilbertIndex` util (fallback sort key for non-ClickHouse sources).
-   - Arrow IPC read/write helpers (positions `float32`, value `float32`, category `uint8`).
+- **Engine & serve:** planner-chosen reduction (`rawPassthrough` / `quadtreeLod` / `aggregate`),
+  Arrow IPC tiles, immutable static serve + atomic `latest.json`, cross-language tiling conformance
+  (C# ↔ SQL ↔ TS pinned by a shared fixture), the fidelity invariant test (Σ leaves == source).
+- **Source:** a source is arbitrary SQL behind `ISourceAdapter` (ClickHouse); geometry `xy`, `lonLat`,
+  `quadkey`; typed channels (measure / dimension / temporal / identity); coarse `bakeFilters`.
+- **Client:** geo (MapLibre) viewport with an orthographic path in place; `point` + `polygon` marks;
+  a framework-free tile cache via `useSyncExternalStore`; the view registry API (list / get / upload).
+- **Color:** a full scale subsystem — `linear` / `log` / `sqrt` / `diverging` / `quantize` / `quantile`
+  / `threshold` / `ordinal` / `categorical`, across any datatype, with named sequential / diverging /
+  categorical schemes (colorblind-safe default) and an explicit-palette closed set. Every color-by
+  map shows a **legend** derived from the same scale.
+- **Interaction:** click-to-inspect panel (`inspect` config, nullable).
 
-3. **`Colossus.Seed`** — generate two synthetic datasets to exercise generality: (a) ~20M **geo** points (clustered metros) and (b) ~20M **non-geo** points with arbitrary numeric `x,y,value,category`; bulk-insert into ClickHouse.
+## Roadmap — the next cycles
 
-4. **`Colossus.Bake`** — engine + quadtree primitive:
-   - **Planner**: ClickHouse `count(*)` + `min/max` over the descriptor's two primary dims → regime + `tilePointBudget` (~250k–500k/leaf) + `maxZoom`.
-   - **Extract**: ClickHouse HTTP `SELECT <dims...> ORDER BY hilbertEncode(<dims>) FORMAT Parquet` → staging Parquet (pre-sorted). Works identically for (lon,lat) and (x,y).
-   - **Reduce (QuadtreeLod)**: `DuckDB.NET` runs **adaptive split-on-overflow** partitioning (subdivide only when a node exceeds budget; empty regions get no tiles), writing each leaf as an Arrow tile plus **random-prefix subsets** for ancestor levels.
-   - **Manifest**: write `<version>/manifest.json` (version, view descriptor, regime, bbox, minZoom, maxZoom, per-tile counts), then **atomically flip `latest.json`** (temp + rename).
+Ordered roughly by leverage; each is an addition at an existing seam, not a rewrite.
 
-5. **`Colossus.Server`** (dev) — ASP.NET Core static host for `/tiles/**` with `Cache-Control: immutable`, `latest.json`/`manifest.json` at `max-age=60`, CORS for Vite. Prod swaps to nginx, identical headers.
+1. **Interactive filtering.** `filters[]` (select / multiSelect / dateRange / range) over carried
+   channels, live with no re-bake — the client query path (GPU `DataFilterExtension` and/or an
+   off-hot-path in-browser query). Declared in config today, not yet honored.
+2. **Queryable store + true full-fidelity at any scale.** The Parquet sidecar (Hilbert sort, row-group
+   zone maps, dictionary/bloom) + a viewport query so the default path renders *every* mark
+   intersecting the viewport, with a labeled, resolvable **preview** only at extreme zoom-out (RULES
+   R2/R4). This is the `storage` config and the biggest remaining piece.
+3. **More marks & encodings.** `line` / `arc` / `rect` / `heat` / `text`, `size` encoding, and the
+   `signalM4` 1-D downsampling primitive (line/area/candlestick, pixel-lossless).
+4. **More geometry & sources.** `wkt` / `geohash` / `h3` geometry; Postgres / MySQL / file adapters
+   behind the same query-plus-role contract.
+5. **Non-geo views in practice** — orthographic scatter/bubble configs exercising the same tiling code.
+6. **Live streaming & prod hardening** (later) — broker → WebSocket fan-out → ring-buffer hot layer;
+   nginx swap, auth, incremental per-tile bakes, OPFS client cache.
 
-6. **`web/`** — Vite React-TS, **View-descriptor-driven**:
-   - Read `latest.json`→`manifest.json`+descriptor. Choose viewport: `MapLibre + deck.gl` for geo, `OrthographicView` for non-geo — **same tile loader either way**.
-   - On viewport change compute intersecting tiles at needed depth; `fetch` `.arrow`; parse with `apache-arrow` into typed arrays; render `ScatterplotLayer` via **binary attributes**; color/size ramp from `value`. LRU-evict off-screen tiles.
+## Verification
 
-7. **Wire end-to-end**; confirm the **geo dataset renders on the map** and the **non-geo dataset renders as an orthographic scatter** through the same engine, both panning/zooming with bounded memory.
-
-## Roadmap (later milestones — not in M1)
-
-- **M2** — Remaining reduction primitives (`SignalM4` 1-D downsampling; `Aggregate`/binning via DuckDB/ClickHouse) + more marks (line, bar, arc, polygon, heat) + GPU `DataFilterExtension` crossfilter. This is where "all chart types" fills in.
-- **M3** — Variable-length regimes (ship-whole / huge-LOD) + planner auto-select + DuckDB-WASM chart-aggregate sidecar.
-- **M4** — Live streaming: broker (Redpanda/NATS) → ASP.NET Core WebSocket fan-out (200ms micro-batched Arrow frames) → ring-buffer hot layer; ClickHouse sink; reconnect backfill.
-- **M5** — Multi-source adapters behind the "snapshot + change-stream" contract (Postgres WAL, MySQL binlog, files); DuckDB as reference reader.
-- **M6** — Prod hardening: nginx swap, auth (signed cookies/SSO) if private, incremental per-tile bakes, OPFS client cache.
-
-## Verification (end-to-end for M1)
-
-1. `docker compose up` ClickHouse; run `Colossus.Seed` (both datasets); confirm row counts.
-2. Run `Colossus.Bake` for each View descriptor; confirm `tiles/<version>/manifest.json` + `z/x/y.arrow`; spot-check tile sizes (few-hundred-KB band) and per-tile counts respect budget.
-3. **Fidelity smoke test** (automated): bake a ~100k dataset and assert **every input row appears in exactly one leaf tile** (Σ leaf counts == input count; no drops, no dupes) — guards the no-simplification invariant. Same test runs for both geo and non-geo, proving the primitive is dimension-agnostic.
-4. Run `Colossus.Server` + Vite; open both views: geo points on the map **and** non-geo scatter in the orthographic viewport render from the same tiles code; panning issues `.arrow` GETs; repeat load hits browser cache; tab memory stays bounded (~hundreds of MB).
+`dotnet test` covers the pure bake logic + the cross-language tiling conformance; `web/` runs `tsc`,
+`oxlint`, and Vitest (scale engine + tiling mirror). `dotnet run --project src/Colossus.Bake -- verify`
+asserts the fidelity invariant against baked tiles; the app renders through the preview harness.

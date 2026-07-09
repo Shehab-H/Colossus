@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text;
+using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Infrastructure.ClickHouse;
 
@@ -10,14 +11,11 @@ public sealed class ClickHouseClient : IDisposable
     private readonly HttpClient _http;
     private readonly string _baseUrl;
 
-    public ClickHouseClient(string? baseUrl = null, string? user = null, string? password = null)
+    public ClickHouseClient(ClickHouseOptions options)
     {
-        _baseUrl = (baseUrl ?? Environment.GetEnvironmentVariable("COLOSSUS_CH_URL") ?? "http://localhost:8123").TrimEnd('/');
-        user ??= Environment.GetEnvironmentVariable("COLOSSUS_CH_USER") ?? "colossus";
-        password ??= Environment.GetEnvironmentVariable("COLOSSUS_CH_PASSWORD") ?? "colossus";
-
+        _baseUrl = options.BaseUrl.TrimEnd('/');
         _http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-        var token = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{password}"));
+        var token = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.User}:{options.Password}"));
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
     }
 

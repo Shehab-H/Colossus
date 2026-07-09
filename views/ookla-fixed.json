@@ -12,5 +12,7 @@
       { "name": "upload_mbps", "column": "upload_mbps", "role": "measure", "type": "f32" },
       { "name": "latency_ms", "column": "latency_ms", "role": "measure", "type": "f32" }
     ]
-  }
+  },
+  "encoding": { "color": { "channel": "download_mbps", "scheme": "viridis" } },
+  "inspect": { "title": "download_mbps", "channels": ["download_mbps", "upload_mbps", "latency_ms"] }
 }

@@ -3,13 +3,17 @@ bin/
 obj/
 *.user
 
+# Visual Studio local state (churns per session; not shared)
+.vs/
+
 # Node
 node_modules/
 web/dist/
 
-# Bake output (derived data — rebakeable from source)
-tiles/
-staging/
+# Bake output (derived data — rebakeable from source).
+# Anchored to repo root so it never matches source dirs like src/.../Tiles/.
+/tiles/
+/staging/
 
 # Env / local
 *.local

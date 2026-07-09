@@ -41,10 +41,18 @@ Surviving 100M+ rows is a **hybrid** of two mechanisms, and the honesty rule (R1
 
 ## R3 — The tile format is canonical and source-independent.
 
-Tiles and staging are both **Parquet**, one canonical schema that does not vary by source type. The source may be points (x/y), geo points (lon/lat), quadkeys, WKT/WKB
+Tiles are **Arrow IPC** (staging is Parquet), one canonical schema that does not vary by source type.
+The source may be points (x/y), geo points (lon/lat), quadkeys, WKT/WKB
 geometry, geohash, H3, or a database's native geometry — the **adapter normalizes all of them into
 the canonical schema during bake**. Source shape must not leak past the extract stage. Serve, the
 client, and the GPU never see a source-specific layout.
+
+> **Why Arrow IPC, not Parquet, for tiles.** A tile is read once and handed straight to the GPU:
+> `tableFromIPC` is essentially a memcpy, and the column buffers *are* the typed arrays deck.gl wants,
+> so a tile flows disk → GPU with zero per-cell decode. Parquet remains the target for the *queryable*
+> store (R4, S4) — the DuckDB-WASM predicate-pushdown path — but the render tiles are IPC. (The managed
+> `Apache.Arrow` writer is also the only stable option: the DuckDB nanoarrow extension segfaults on
+> DuckDB.NET 1.5.3.)
 
 Canonical tile schema (target):
 
@@ -70,7 +78,8 @@ polygons, and lines identically.
   **Hilbert-sorted by `(x, y)`** for spatial locality, **row-group zone maps** (min/max stats) for
   predicate pushdown / region pruning, **dictionary encoding** for low-cardinality channels,
   columnar throughout. Optimizing the tile layout for DuckDB predicate pushdown is a first-class
-  concern, not an afterthought.
+  concern, not an afterthought. This is the **S4 queryable-store path** (a Parquet sidecar); today's
+  render tiles are Arrow IPC (R3) and the client filter path is not built yet.
 
 ## R5 — The source is the result of a query, behind a pluggable DB adapter.
 
@@ -106,10 +115,13 @@ Honest status so this file stays truthful as the slices land:
   - R5: a source is a query behind `ISourceAdapter`; the ClickHouse adapter normalizes geometry +
     channels. R6: views are JSON config, reduction dispatched via a catalog (nothing hardcoded).
 - **Partial:**
-  - R2: the baked store is complete (quadtree leaves hold every row) and ancestor tiles are fair
-    samples — but this is the *only* path today. The full-fidelity client-DuckDB viewport query and
-    the labeled/progressive preview UX are not built (S4).
-  - R3: tiles are **Parquet** carrying `x, y` + every declared channel; `geometry` / `part_offsets`
-    for non-point marks still pending (S3).
-  - R4: tiles are Parquet and Hilbert-sorted, but the DuckDB-WASM client and deliberate
-    zone-map / dictionary / bloom tuning are pending (S4).
+  - R2: the baked store is complete (quadtree leaves hold every row; the aggregate pyramid keeps
+    every real cell and merges only sub-pixel ones) and coarse tiles are labeled in the client — but
+    the baked pyramid is the *only* path today. The full-fidelity client-DuckDB viewport query and
+    the progressive/streaming preview UX are not built (S4).
+  - R3: tiles are **Arrow IPC** carrying `x, y` + every declared channel, and for area marks also
+    `geometry` / `part_offsets` + a bake-time `triangles` column. Quadkey geometry ships (S3);
+    WKT/geohash/H3 are still adapter TODOs.
+  - R4: tiles are Hilbert-sorted, but the Parquet queryable-store sidecar, the DuckDB-WASM client, and
+    deliberate zone-map / dictionary / bloom tuning are all pending (S4). Interactive `filters` are
+    declared in config but not yet honored by the bake or client.

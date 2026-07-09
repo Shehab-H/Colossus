@@ -7,16 +7,22 @@ namespace Colossus.Infrastructure.Serialization;
 /// the web client and the authored config files.</summary>
 public static class ColossusJson
 {
-    public static readonly JsonSerializerOptions Options = new()
+    public static readonly JsonSerializerOptions Options = Apply(new JsonSerializerOptions());
+
+    /// <summary>Applies the canonical Colossus JSON conventions to an options instance. Used both for
+    /// <see cref="Options"/> and to configure the server's MVC pipeline, so file I/O and API responses
+    /// serialize identically.</summary>
+    public static JsonSerializerOptions Apply(JsonSerializerOptions options)
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = true,
-        AllowTrailingCommas = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
-    };
+        options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+        options.PropertyNameCaseInsensitive = true;
+        options.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+        options.WriteIndented = true;
+        options.AllowTrailingCommas = true;
+        options.ReadCommentHandling = JsonCommentHandling.Skip;
+        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        return options;
+    }
 
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Options);
 

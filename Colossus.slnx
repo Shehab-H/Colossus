@@ -6,4 +6,7 @@
     <Project Path="src/Colossus.Bake/Colossus.Bake.csproj" />
     <Project Path="src/Colossus.Server/Colossus.Server.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Colossus.Tests/Colossus.Tests.csproj" />
+  </Folder>
 </Solution>

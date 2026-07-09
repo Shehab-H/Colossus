@@ -1,7 +1,7 @@
 using Colossus.Domain.Model;
 using Colossus.Domain.Reduction;
+using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiles;
-using DuckDB.NET.Data;
 
 namespace Colossus.Infrastructure.Reduction;
 
@@ -13,16 +13,12 @@ public sealed class RawPassthroughReducer : IReductionStrategy
 
     public ReductionResult Reduce(ReductionContext ctx)
     {
-        string parquet = Path.GetFullPath(ctx.StagingParquetPath).Replace('\\', '/');
         string path = Path.Combine(ctx.OutputDirectory, new TileId(0, 0, 0).RelativePath);
 
-        using (var conn = new DuckDBConnection("Data Source=:memory:"))
-        {
-            conn.Open();
-            ArrowTiles.Write(conn, $"SELECT * FROM read_parquet('{parquet}')", path);
-        }
+        using (var db = DuckDbSession.InMemory())
+            ArrowTileWriter.Write(db.Connection, $"SELECT * FROM read_parquet('{Sql.Path(ctx.StagingParquetPath)}')", path);
 
-        long count = ArrowTiles.RowCount(path);
+        long count = ArrowTileWriter.RowCount(path);
         return new ReductionResult(new List<TileMeta> { new(0, 0, 0, count, IsLeaf: true) }, count);
     }
 }

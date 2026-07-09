@@ -3,18 +3,21 @@
 Render very large datasets (10M–100M+ rows) with **no aggregation or simplification** of raw marks — on a map or in any chart — over a single engine:
 
 ```
-source query (ClickHouse) → bake → Parquet LOD tiles → static immutable serve → DuckDB-WASM + deck.gl → GPU
+source query (ClickHouse) → bake → Arrow IPC LOD tiles → static immutable serve → deck.gl binary attributes → GPU
 ```
 
-A chart type is not a pipeline; it's `(mark + channel mapping) × reduction primitive`. See [docs/PLAN.md](docs/PLAN.md) for the full design and milestone plan.
+A chart type is not a pipeline; it's `(mark + channel mapping) × reduction primitive`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code is organized, [docs/PLAN.md](docs/PLAN.md) for the full design, [docs/RULES.md](docs/RULES.md) for the hard invariants, and [docs/VIEW_CONFIG.md](docs/VIEW_CONFIG.md) for the config schema.
 
 ## Layout
 
 | Path | What |
 |------|------|
-| `src/Colossus.Core` | Domain models + ports: view config, reduction strategies, tile math, manifest |
-| `src/Colossus.Bake` | Planner + extract + reduction → tiles + manifest |
+| `src/Colossus.Domain` | Models + ports: view config, manifest, tile math, reduction/source/bake interfaces |
+| `src/Colossus.Application` | Use cases: bake planner + orchestration, fidelity verification |
+| `src/Colossus.Infrastructure` | Adapters: ClickHouse source, DuckDB reducers, Arrow tile writer, file store, view registry |
+| `src/Colossus.Bake` | Console entrypoint: bake registered views / `verify` |
 | `src/Colossus.Server` | Dev host: static tiles + view registry API |
+| `tests/Colossus.Tests` | Unit tests for the pure bake logic |
 | `web/` | Vite + React + deck.gl + MapLibre; config-driven renderer |
 | `views/` | View config files (the registry) |
 | `docker/` | Local ClickHouse (dev) |
@@ -37,6 +40,11 @@ dotnet run --project src/Colossus.Server
 cd web && npm run dev
 ```
 
+Run the tests with `dotnet test`; verify a bake's fidelity invariant with
+`dotnet run --project src/Colossus.Bake -- verify`.
+
 ## Status
 
-Milestone 1 (batch walking skeleton) in progress — see the roadmap in `docs/PLAN.md`.
+Batch engine works end-to-end: planner-chosen reduction, Arrow IPC LOD tiles, a config-driven renderer
+with a full color-scale system (+ legend) and click-to-inspect. Interactive filtering and the queryable
+store are next — see the roadmap in [docs/PLAN.md](docs/PLAN.md).

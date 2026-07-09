@@ -8,6 +8,4 @@ export default defineConfig({
     host: true,
     port: Number(process.env.PORT) || 5173,
   },
-  // duckdb-wasm ships prebuilt esm; don't let Vite try to pre-bundle its worker entry points.
-  optimizeDeps: { exclude: ['@duckdb/duckdb-wasm'] },
 })

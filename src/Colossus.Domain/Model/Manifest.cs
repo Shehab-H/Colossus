@@ -1,7 +1,10 @@
+using System.Text.Json.Serialization;
+
 namespace Colossus.Domain.Model;
 
 public readonly record struct TileMeta(int Z, int X, int Y, long Count, bool IsLeaf)
 {
+    [JsonIgnore] // derived — serializing it doubled every tile entry in manifest.json
     public TileId Id => new(Z, X, Y);
 }
 

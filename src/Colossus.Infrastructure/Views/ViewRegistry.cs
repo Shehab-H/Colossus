@@ -21,11 +21,16 @@ public sealed class ViewRegistry(string? directory = null) : IViewCatalog
 
     public ViewConfig Get(string id)
     {
-        string direct = Path.Combine(_dir, id + ".json");
-        if (File.Exists(direct)) return Load(direct);
+        // Only probe the filesystem with ids that can't traverse out of the registry directory.
+        if (ViewConfig.IsValidId(id))
+        {
+            string direct = Path.Combine(_dir, id + ".json");
+            if (File.Exists(direct)) return Load(direct);
+        }
 
-        return All().FirstOrDefault(v => v.Id == id) ?? throw new ArgumentException(
-            $"Unknown view id '{id}'. Known: {string.Join(", ", All().Select(v => v.Id))}");
+        var all = All();
+        return all.FirstOrDefault(v => v.Id == id) ?? throw new ArgumentException(
+            $"Unknown view id '{id}'. Known: {string.Join(", ", all.Select(v => v.Id))}");
     }
 
     public string Save(ViewConfig view)
