@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Manifest } from '../lib/manifest';
 import { TileCache } from '../lib/tileCache';
-import { loadTile, type TileData } from '../lib/tileData';
+import type { TileData } from '../lib/tileData';
+import { tileLoader } from '../lib/tileLoader';
 import { coverTiles, selectTiles, tileKey } from '../lib/tiling';
 import { boundsFromViewport, viewportFor, type CameraState } from '../lib/viewport';
 
@@ -45,7 +46,7 @@ export function useTiles(
       return new Set([...keys, ...cover].map(ck));
     };
     for (const key of keys) {
-      cache.ensure(ck(key), () => loadTile(manifest.view, manifest.version, key, filterSql), keepActive);
+      cache.ensure(ck(key), () => tileLoader.load(manifest.view, manifest.version, key, filterSql), keepActive);
     }
     // `snapshot` is a dep so a resolved/failed load re-runs selection (and any retry) against fresh data.
   }, [manifest, camera, size, filterSql, snapshot, cache]);
