@@ -5,6 +5,7 @@ interface LoadResponse {
   id: number;
   tile?: TileData;
   error?: string;
+  aborted?: boolean;
 }
 
 interface Pending {
@@ -12,7 +13,14 @@ interface Pending {
   reject: (err: Error) => void;
 }
 
-/** A small pool of decode workers (see tileWorker). Tile fetch + Arrow parse + array building runs off
+/** A load in flight. `cancel` aborts the network fetch (see tileWorker); the promise then rejects with
+ *  an AbortError-named error, which the cache treats as "not wanted" rather than "failed". */
+export interface TileLoad {
+  promise: Promise<TileData>;
+  cancel: () => void;
+}
+
+/** A small pool of decode workers (see tileWorker). Tile fetch + Arrow parse + column building runs off
  *  the main thread, so a zoom-swap — a whole new tile set arriving at once — never freezes interaction;
  *  results transfer back zero-copy. Degrades to synchronous main-thread decode if workers are
  *  unavailable or a worker fails, so behavior is preserved everywhere. */
@@ -42,8 +50,11 @@ class TileLoader {
     const p = this.pending.get(res.id);
     if (!p) return;
     this.pending.delete(res.id);
-    if (res.error) p.reject(new Error(res.error));
-    else p.resolve(res.tile as TileData);
+    if (res.error) {
+      const e = new Error(res.error);
+      if (res.aborted) e.name = 'AbortError';
+      p.reject(e);
+    } else p.resolve(res.tile as TileData);
   }
 
   // A worker died (e.g. module load failed): tear the pool down and reject in-flight loads. The cache's
@@ -57,15 +68,20 @@ class TileLoader {
     for (const p of inflight) p.reject(new Error('tile worker failed'));
   }
 
-  load(view: ViewConfig, version: string, key: string, filterSql: string): Promise<TileData> {
+  load(view: ViewConfig, version: string, key: string, filterSql: string): TileLoad {
     this.ensure();
-    if (!this.workers.length) return loadTile(view, version, key, filterSql);
+    if (!this.workers.length) {
+      const ac = new AbortController();
+      return { promise: loadTile(view, version, key, filterSql, ac.signal), cancel: () => ac.abort() };
+    }
     const id = this.nextId++;
     const worker = this.workers[this.rr++ % this.workers.length];
-    return new Promise<TileData>((resolve, reject) => {
+    const promise = new Promise<TileData>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       worker.postMessage({ id, view, version, key, filterSql });
     });
+    // postMessage on a terminated worker is a silent no-op, so a late cancel is always safe.
+    return { promise, cancel: () => worker.postMessage({ cancel: id }) };
   }
 }
 

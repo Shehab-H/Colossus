@@ -24,6 +24,23 @@ public sealed record Manifest
     public required int TilePointBudget { get; init; }
     public required long TotalPoints { get; init; }
     public required IReadOnlyList<TileMeta> Tiles { get; init; }
+    /// <summary>Per-channel data domains scanned from the full staged extract at bake time, keyed by
+    /// channel name. Spares the client a root-tile scan at load and — unlike that tile, which is a
+    /// sample — sees every row, so no category can be missing. Null on manifests from older bakes;
+    /// the client falls back to its tile scan.</summary>
+    public IReadOnlyDictionary<string, ChannelDomain>? ChannelDomains { get; init; }
+}
+
+/// <summary>One channel's observed domain. Numeric channels carry min/max plus a quantile grid (the
+/// client derives quantile-scale breaks from it); non-numeric channels carry their distinct values,
+/// capped — a capped list sets <see cref="ValuesTruncated"/> and the client treats it as absent.</summary>
+public sealed record ChannelDomain
+{
+    public IReadOnlyList<string>? Values { get; init; }
+    public bool? ValuesTruncated { get; init; }
+    public double? Min { get; init; }
+    public double? Max { get; init; }
+    public IReadOnlyList<double>? Quantiles { get; init; }
 }
 
 /// <summary>The single mutable pointer, flipped atomically once a bake commits.</summary>

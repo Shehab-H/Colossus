@@ -30,6 +30,15 @@ public sealed record ViewConfig
     public static bool IsValidId(string? id) =>
         !string.IsNullOrEmpty(id) && id.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c == '-');
 
+    /// <summary>Channels whose tile columns are written Arrow-dictionary-encoded. Purely schema-driven:
+    /// a declared <see cref="ChannelType.Dict"/> is categorical by contract, EXCEPT identity channels,
+    /// which are per-row-unique by role (names, ids) — a dictionary would inflate those, so they stay
+    /// plain UTF-8 and the client decodes rows lazily.</summary>
+    public IReadOnlySet<string> DictionaryEncodedChannels() => Source.Channels
+        .Where(c => c.Type == ChannelType.Dict && c.Role != ChannelRole.Identity)
+        .Select(c => c.Name)
+        .ToHashSet(StringComparer.Ordinal);
+
     public void Validate()
     {
         if (!IsValidId(Id))

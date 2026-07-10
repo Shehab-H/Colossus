@@ -86,6 +86,65 @@ public class ArrowTileWriterTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Write_DictionaryColumn_RoundTripsCodesAndValues()
+    {
+        string path = TilePath("dict.arrow");
+        using (var db = DuckDbSession.InMemory())
+        {
+            ArrowTileWriter.Write(db.Connection, """
+                SELECT x::FLOAT AS x, x::FLOAT AS y,
+                       CASE WHEN x % 3 = 0 THEN 'alpha' WHEN x % 3 = 1 THEN 'beta' ELSE NULL END AS cat
+                FROM range(9) r(x)
+                """, path, dictionaryColumns: new HashSet<string> { "cat" });
+        }
+
+        var batch = ReadSingleBatch(path);
+        var col = Assert.IsType<DictionaryArray>(batch.Column("cat"));
+        Assert.IsType<Int8Array>(col.Indices); // 2 categories → narrowest index width
+        var dict = Assert.IsType<StringArray>(col.Dictionary);
+        Assert.Equal(["alpha", "beta"], Enumerable.Range(0, dict.Length).Select(i => dict.GetString(i)));
+
+        var indices = (Int8Array)col.Indices;
+        for (int i = 0; i < 9; i++)
+        {
+            if (i % 3 == 2) Assert.True(indices.IsNull(i));
+            else Assert.Equal(i % 3, indices.GetValue(i)!.Value);
+        }
+    }
+
+    [Fact]
+    public void Write_DictionaryColumn_OverCardinalityCap_FallsBackToPlainStrings()
+    {
+        string path = TilePath("dict-cap.arrow");
+        using (var db = DuckDbSession.InMemory())
+        {
+            // 70_000 distinct values — past the 65_536 cap the exact rows must come back as plain utf8.
+            ArrowTileWriter.Write(db.Connection,
+                "SELECT x::FLOAT AS x, x::FLOAT AS y, 'v' || x AS wide FROM range(70000) r(x)",
+                path, dictionaryColumns: new HashSet<string> { "wide" });
+        }
+
+        var batch = ReadSingleBatch(path);
+        var col = Assert.IsType<StringArray>(batch.Column("wide"));
+        Assert.Equal("v0", col.GetString(0));
+        Assert.Equal("v69999", col.GetString(69999));
+    }
+
+    [Fact]
+    public void Write_ColumnsOutsideTheDictionarySet_StayPlain()
+    {
+        string path = TilePath("plain.arrow");
+        using (var db = DuckDbSession.InMemory())
+        {
+            ArrowTileWriter.Write(db.Connection,
+                "SELECT x::FLOAT AS x, 'name-' || x AS label FROM range(3) r(x)",
+                path, dictionaryColumns: new HashSet<string> { "something-else" });
+        }
+
+        Assert.IsType<StringArray>(ReadSingleBatch(path).Column("label"));
+    }
+
     private static RecordBatch ReadSingleBatch(string path)
     {
         using var stream = File.OpenRead(path);

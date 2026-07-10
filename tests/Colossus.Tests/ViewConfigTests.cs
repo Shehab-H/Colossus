@@ -115,4 +115,23 @@ public class ViewConfigTests
         var view = Valid() with { Inspect = new InspectSpec { Channels = Array.Empty<string>() } };
         Assert.Throws<ArgumentException>(view.Validate);
     }
+
+    [Fact]
+    public void DictionaryEncodedChannels_IsDictTypeMinusIdentityRole()
+    {
+        var view = Valid() with
+        {
+            Source = Valid().Source with
+            {
+                Channels = new[]
+                {
+                    new ChannelSpec { Name = "m", Column = "m", Role = ChannelRole.Measure, Type = ChannelType.F32 },
+                    new ChannelSpec { Name = "cat", Column = "cat", Role = ChannelRole.Dimension, Type = ChannelType.Dict },
+                    new ChannelSpec { Name = "day", Column = "day", Role = ChannelRole.Temporal, Type = ChannelType.Date },
+                    new ChannelSpec { Name = "name", Column = "name", Role = ChannelRole.Identity, Type = ChannelType.Dict },
+                },
+            },
+        };
+        Assert.Equal(new HashSet<string> { "cat" }, view.DictionaryEncodedChannels());
+    }
 }

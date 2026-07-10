@@ -32,6 +32,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITileReader, ArrowTileReader>();
         services.AddSingleton<IBakeStore>(_ => new FileBakeStore());
         services.AddSingleton<IViewCatalog>(_ => new ViewRegistry());
+        services.AddSingleton<IChannelDomainScanner, DuckDbChannelDomainScanner>();
 
         // Use cases.
         services.AddSingleton<BakePlanner>();

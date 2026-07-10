@@ -84,7 +84,8 @@ public sealed class AggregateReducer : IReductionStrategy
             var internals = db.LongPairs("SELECT tx, ty FROM internals");
 
             var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, measures),
-                (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath));
+                (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath),
+                ctx.View.DictionaryEncodedChannels());
 
             foreach (var (wtx, wty, rows) in written)
             {

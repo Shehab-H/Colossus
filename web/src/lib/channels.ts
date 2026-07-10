@@ -1,4 +1,4 @@
-import type { ChannelSpec, ViewConfig } from './manifest';
+import type { ChannelSpec, Manifest, ViewConfig } from './manifest';
 import { tileUrl } from './manifest';
 import { fetchArrowTable } from './arrow';
 import type { ColorDomain } from './colorScale';
@@ -50,13 +50,23 @@ export function buildWhere(view: ViewConfig, filters: Record<string, string>): s
     .join(' AND ');
 }
 
-/** Describe a color channel's domain from the root tile (no full-store scan): a numeric [min,max] plus a
- *  value sample (for quantile breaks), or the sorted distinct categories. Drives which scale can apply
- *  and how it's placed. Per-channel so switching what you color by rescales correctly. */
-export async function describeColorDomain(view: ViewConfig, version: string, channel: string): Promise<ColorDomain> {
+/** Describe a color channel's domain. Preferred source: the manifest's baked `channelDomains` — scanned
+ *  from the FULL extract, so no category can be missing and no tile fetch happens at view load. Older
+ *  manifests (or capped/truncated domains) fall back to scanning the root tile, exactly as before. */
+export async function describeColorDomain(manifest: Manifest, channel: string): Promise<ColorDomain> {
+  const view = manifest.view;
   const spec = view.source.channels.find((c) => c.name === channel);
   const numeric = isNumericChannel(spec);
-  const t = await fetchArrowTable(tileUrl(view.id, version, 0, 0, 0));
+
+  const baked = manifest.channelDomains?.[channel];
+  if (baked) {
+    if (numeric && baked.min !== undefined && baked.max !== undefined)
+      return { kind: 'numeric', min: baked.min, max: baked.max, sample: baked.quantiles };
+    if (!numeric && baked.values && !baked.valuesTruncated)
+      return { kind: 'categorical', categories: baked.values };
+  }
+
+  const t = await fetchArrowTable(tileUrl(view.id, manifest.version, 0, 0, 0));
   const col = t.getChild(channel);
   if (!col) return numeric ? { kind: 'numeric', min: 0, max: 1 } : { kind: 'categorical', categories: [] };
 
@@ -80,14 +90,24 @@ export async function describeColorDomain(view: ViewConfig, version: string, cha
   return { kind: 'categorical', categories: [...set].sort() };
 }
 
-/** Distinct values of each filterable (dimension/temporal) channel, for the filter controls. Read from
- *  the root tile's Arrow buffer. */
-export async function discoverOptions(view: ViewConfig, version: string): Promise<Record<string, string[]>> {
-  const channels = filterableChannels(view);
+/** Distinct values of each filterable (dimension/temporal) channel, for the filter controls. Baked
+ *  manifest domains answer without any fetch; only channels the manifest can't answer (older bake, or
+ *  truncated) scan the root tile — fetched once, lazily. */
+export async function discoverOptions(manifest: Manifest): Promise<Record<string, string[]>> {
+  const channels = filterableChannels(manifest.view);
   if (channels.length === 0) return {};
-  const t = await fetchArrowTable(tileUrl(view.id, version, 0, 0, 0));
+
   const options: Record<string, string[]> = {};
+  const missing: ChannelSpec[] = [];
   for (const ch of channels) {
+    const baked = manifest.channelDomains?.[ch.name];
+    if (baked?.values && !baked.valuesTruncated) options[ch.name] = baked.values;
+    else missing.push(ch);
+  }
+  if (missing.length === 0) return options;
+
+  const t = await fetchArrowTable(tileUrl(manifest.view.id, manifest.version, 0, 0, 0));
+  for (const ch of missing) {
     const col = t.getChild(ch.name);
     const set = new Set<string>();
     if (col) for (let i = 0; i < t.numRows; i++) set.add(String(col.get(i)));

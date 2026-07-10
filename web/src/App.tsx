@@ -17,7 +17,7 @@ import { useTheme } from './lib/theme';
 import { buildEmbedUrl, embedSnippet, readEmbedParams } from './lib/embed';
 import { tileDeckData } from './lib/deckData';
 import type { Manifest } from './lib/manifest';
-import type { TileData } from './lib/tileData';
+import { columnValue, type TileData } from './lib/tileData';
 import { colorableChannels, filterableChannels } from './lib/channels';
 import { initialViewState, type CameraState } from './lib/viewport';
 import { listViews, setUrlViewId, urlViewId, type ViewSummary } from './lib/views';
@@ -107,8 +107,8 @@ export default function App() {
         return;
       }
       setSelection({
-        title: inspect.title ? inspectValue(tile.values[inspect.title]?.[i]) : undefined,
-        rows: inspect.channels.map((name) => ({ name, value: inspectValue(tile.values[name]?.[i]) })),
+        title: inspect.title ? inspectValue(columnValue(tile.values[inspect.title], i)) : undefined,
+        rows: inspect.channels.map((name) => ({ name, value: inspectValue(columnValue(tile.values[name], i)) })),
       });
     },
     [inspect, dataByLayerId],

@@ -19,7 +19,8 @@ public sealed record BakeOutcome(
 /// manifest and publish the version. Reaches the outside world only through domain ports; the bake
 /// plan (reduction, depth, budget, root) comes from <see cref="BakePlanner"/>.</summary>
 public sealed class BakeViewUseCase(
-    ISourceAdapterCatalog sources, IReductionCatalog reductions, IBakeStore store, BakePlanner planner)
+    ISourceAdapterCatalog sources, IReductionCatalog reductions, IBakeStore store, BakePlanner planner,
+    IChannelDomainScanner domains)
 {
     public async Task<BakeOutcome> BakeAsync(ViewConfig view, CancellationToken ct = default)
     {
@@ -58,6 +59,9 @@ public sealed class BakeViewUseCase(
             TilePointBudget = plan.TilePointBudget,
             TotalPoints = result.LeafPointCount,
             Tiles = result.Tiles,
+            // Full-extract domains (staging sees every row, unlike the sampled root tile the client
+            // would otherwise scan). Baked into the manifest so view load costs zero tile fetches.
+            ChannelDomains = domains.Scan(staging, view),
         }, ct);
         store.PublishLatest(view.Id, version);
 

@@ -1,7 +1,8 @@
 // Off-main-thread tile decode. The zoom-swap freeze was fetch + Arrow parse + column materialization
-// (position/color arrays and up to ~1M string values per tile) running synchronously on the main thread
-// as a whole new tile set arrives. Here that runs in a worker; the decoded typed-array buffers transfer
-// back zero-copy, so panning/zooming never blocks on a tile. String columns are structured-cloned.
+// running synchronously on the main thread as a whole new tile set arrives. Here that runs in a worker,
+// and every column is (or rides in) a typed array, so results transfer back zero-copy — the main thread
+// never deserializes row-wise strings. A cancel message aborts the fetch; a tile already past fetch is
+// decoded and kept (the bytes are paid for, and it may be wanted again on zoom-back).
 import { loadTile, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 
@@ -13,32 +14,56 @@ interface LoadRequest {
   filterSql: string;
 }
 
+interface CancelRequest {
+  cancel: number;
+}
+
 // Typed as a minimal dedicated-worker surface so the app tsconfig needn't pull in the webworker lib.
 const ctx = self as unknown as {
-  onmessage: ((e: MessageEvent<LoadRequest>) => void) | null;
+  onmessage: ((e: MessageEvent<LoadRequest | CancelRequest>) => void) | null;
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
 };
 
-// Every geometry/measure buffer can move (not copy) across the boundary; only string columns are cloned.
+// Every geometry/measure/code buffer moves (not copies) across the boundary; only a dict column's small
+// dictionary and the rare string[] fallback are cloned.
 function transferable(tile: TileData): Transferable[] {
   const buffers = new Set<ArrayBuffer>();
-  const add = (v: ArrayLike<number | string> | undefined) => {
-    if (v && ArrayBuffer.isView(v)) buffers.add((v as ArrayBufferView).buffer as ArrayBuffer);
+  const add = (v: ArrayBufferView | undefined) => {
+    if (v) buffers.add(v.buffer as ArrayBuffer);
   };
   add(tile.positions);
   add(tile.polyPositions);
   add(tile.polyStartIndices);
   add(tile.polyTriangles);
-  for (const col of Object.values(tile.values)) add(col);
+  for (const col of Object.values(tile.values)) {
+    if (col instanceof Float32Array) add(col);
+    else if (Array.isArray(col)) continue;
+    else if (col.kind === 'dict') add(col.codes);
+    else {
+      add(col.bytes);
+      add(col.offsets);
+    }
+  }
   return [...buffers];
 }
 
+const inflight = new Map<number, AbortController>();
+
 ctx.onmessage = async (e) => {
+  if ('cancel' in e.data) {
+    inflight.get(e.data.cancel)?.abort();
+    return;
+  }
   const { id, view, version, key, filterSql } = e.data;
+  const ac = new AbortController();
+  inflight.set(id, ac);
   try {
-    const tile = await loadTile(view, version, key, filterSql);
+    const tile = await loadTile(view, version, key, filterSql, ac.signal);
     ctx.postMessage({ id, tile }, transferable(tile));
   } catch (err) {
-    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+    const aborted = ac.signal.aborted;
+    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err), aborted });
+  } finally {
+    inflight.delete(id);
   }
 };

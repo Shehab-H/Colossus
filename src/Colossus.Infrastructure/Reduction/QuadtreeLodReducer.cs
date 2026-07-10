@@ -36,7 +36,8 @@ public sealed class QuadtreeLodReducer : IReductionStrategy
             ? $"SELECT * FROM t WHERE {rect}"
             : $"SELECT * FROM (SELECT * FROM t WHERE {rect}) USING SAMPLE {ctx.TilePointBudget} ROWS (reservoir)";
 
-        ArrowTileWriter.Write(db.Connection, subset, Path.Combine(ctx.OutputDirectory, tile.RelativePath));
+        ArrowTileWriter.Write(db.Connection, subset, Path.Combine(ctx.OutputDirectory, tile.RelativePath),
+            ctx.View.DictionaryEncodedChannels());
 
         long written = isLeaf ? count : Math.Min(count, ctx.TilePointBudget);
         tiles.Add(new TileMeta(tile.Z, tile.X, tile.Y, written, isLeaf));

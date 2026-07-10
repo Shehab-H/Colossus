@@ -15,12 +15,12 @@ namespace Colossus.Infrastructure.Tiles;
 /// and never tessellates on the main thread.</summary>
 public static class ArrowTileWriter
 {
-    public static void Write(DuckDBConnection conn, string selectSql, string path)
+    public static void Write(DuckDBConnection conn, string selectSql, string path, IReadOnlySet<string>? dictionaryColumns = null)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = selectSql;
         using var reader = cmd.ExecuteReader();
-        var buffer = new TileBuffer(reader, skip: 0);
+        var buffer = new TileBuffer(reader, skip: 0, dictionaryColumns);
         while (reader.Read()) buffer.AppendRow(reader);
         buffer.Flush(path);
     }
@@ -28,7 +28,7 @@ public static class ArrowTileWriter
     /// <summary>Streams a query ordered by its first two columns (tile x, tile y) and writes one file
     /// per tile; those two columns are not written. Returns (tx, ty, rows) per tile.</summary>
     public static List<(long Tx, long Ty, long Rows)> WritePartitioned(
-        DuckDBConnection conn, string selectSql, Func<long, long, string> pathFor)
+        DuckDBConnection conn, string selectSql, Func<long, long, string> pathFor, IReadOnlySet<string>? dictionaryColumns = null)
     {
         var written = new List<(long, long, long)>();
         using var cmd = conn.CreateCommand();
@@ -47,7 +47,7 @@ public static class ArrowTileWriter
                     buffer.Flush(pathFor(tx, ty));
                     written.Add((tx, ty, rows));
                 }
-                buffer = new TileBuffer(reader, skip: 2);
+                buffer = new TileBuffer(reader, skip: 2, dictionaryColumns);
                 (tx, ty, rows) = (rtx, rty, 0);
             }
             buffer.AppendRow(reader);
@@ -85,16 +85,18 @@ public static class ArrowTileWriter
         private readonly int _geometryIdx = -1;
         private readonly int _partOffsetsIdx = -1;
 
-        public TileBuffer(DbDataReader reader, int skip)
+        public TileBuffer(DbDataReader reader, int skip, IReadOnlySet<string>? dictionaryColumns)
         {
             _skip = skip;
             _fieldCount = reader.FieldCount;
             _cols = new ArrowColumnBuilder[_fieldCount - skip];
             for (int i = skip; i < _fieldCount; i++)
             {
-                _cols[i - skip] = ArrowColumnBuilder.For(reader.GetName(i), reader.GetFieldType(i), reader.GetDataTypeName(i));
-                if (reader.GetName(i) == TileSchema.Geometry) _geometryIdx = i;
-                else if (reader.GetName(i) == TileSchema.PartOffsets) _partOffsetsIdx = i;
+                string name = reader.GetName(i);
+                _cols[i - skip] = ArrowColumnBuilder.For(name, reader.GetFieldType(i), reader.GetDataTypeName(i),
+                    dictionaryEncode: dictionaryColumns?.Contains(name) == true);
+                if (name == TileSchema.Geometry) _geometryIdx = i;
+                else if (name == TileSchema.PartOffsets) _partOffsetsIdx = i;
             }
             _triangles = _geometryIdx >= 0 ? new ListArray.Builder(Int32Type.Default) : null;
         }
@@ -116,7 +118,7 @@ public static class ArrowTileWriter
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var arrays = _cols.Select(c => c.Build()).ToList();
-            var fields = _cols.Select(c => c.Field).ToList();
+            var fields = _cols.Select(c => c.BuildField()).ToList();
             if (_triangles is not null)
             {
                 arrays.Add(_triangles.Build(default));

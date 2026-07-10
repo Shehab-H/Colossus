@@ -45,6 +45,9 @@ export function useTiles(
       const cover = coverTiles(keys, (k) => cache.has(ck(k)));
       return new Set([...keys, ...cover].map(ck));
     };
+    // Loads only ever exist for selected keys, so anything in flight outside the current selection is a
+    // leftover from a zoom/pan the camera already left — cancel it before requesting the new set.
+    cache.abortStale(new Set(keys.map(ck)));
     for (const key of keys) {
       cache.ensure(ck(key), () => tileLoader.load(manifest.view, manifest.version, key, filterSql), keepActive);
     }

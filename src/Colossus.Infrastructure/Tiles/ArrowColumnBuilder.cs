@@ -8,16 +8,18 @@ namespace Colossus.Infrastructure.Tiles;
 /// <summary>One tile column's Arrow builder plus a boxed-value appender, chosen from the DuckDB column
 /// type. Scalars and (float/int) lists are supported; the geometry/part_offsets/triangles lists flow
 /// through the list path. Kept boxed on purpose — it is the managed-Arrow write path (the nanoarrow
-/// native extension segfaults on DuckDB.NET 1.5.3); batching is a later optimization.</summary>
+/// native extension segfaults on DuckDB.NET 1.5.3); batching is a later optimization.
+/// The field is built after the rows (<see cref="BuildField"/>): a dictionary column's index width
+/// depends on the cardinality it saw.</summary>
 internal sealed class ArrowColumnBuilder
 {
-    public required Field Field { get; init; }
+    public required Func<Field> BuildField { get; init; }
     public required Action<object?> Append { get; init; }
     public required Func<IArrowArray> Build { get; init; }
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
-    public static ArrowColumnBuilder For(string name, Type clrType, string dataTypeName)
+    public static ArrowColumnBuilder For(string name, Type clrType, string dataTypeName, bool dictionaryEncode = false)
     {
         bool isList = dataTypeName.EndsWith("[]", StringComparison.Ordinal)
             || (clrType.IsGenericType && clrType.GetGenericTypeDefinition() == typeof(List<>))
@@ -30,7 +32,84 @@ internal sealed class ArrowColumnBuilder
                 : ElementClrType(dataTypeName);
             return List(name, elem, dataTypeName);
         }
+        if (dictionaryEncode && clrType == typeof(string)) return DictionaryScalar(name);
         return Scalar(name, clrType, dataTypeName);
+    }
+
+    // Past this many distinct values the column isn't categorical in any useful sense; the tile falls
+    // back to a plain string column (mirrors the client's cap, which scans instead of exploding).
+    private const int DictionaryCardinalityCap = 65536;
+
+    /// <summary>String column as Arrow dictionary: integer codes per row + one small value dictionary,
+    /// so repeated categories cost bytes once per tile instead of once per row — and the client reads
+    /// the codes as a zero-copy typed array. Index width (8/16/32-bit) is chosen from the final
+    /// cardinality; over the cap the exact same rows are rebuilt as a plain string column.</summary>
+    private static ArrowColumnBuilder DictionaryScalar(string name)
+    {
+        var codeOf = new Dictionary<string, int>();
+        var dict = new List<string>();
+        var codes = new List<int>(); // -1 = null row
+        bool overCap() => dict.Count > DictionaryCardinalityCap;
+
+        IArrowType indexType() =>
+            dict.Count <= sbyte.MaxValue ? Int8Type.Default : dict.Count <= short.MaxValue ? Int16Type.Default : Int32Type.Default;
+
+        IArrowArray BuildIndices()
+        {
+            switch (indexType())
+            {
+                case Int8Type:
+                {
+                    var b = new Int8Array.Builder();
+                    foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append((sbyte)c); }
+                    return b.Build(default);
+                }
+                case Int16Type:
+                {
+                    var b = new Int16Array.Builder();
+                    foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append((short)c); }
+                    return b.Build(default);
+                }
+                default:
+                {
+                    var b = new Int32Array.Builder();
+                    foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append(c); }
+                    return b.Build(default);
+                }
+            }
+        }
+
+        StringArray BuildPlain()
+        {
+            var b = new StringArray.Builder();
+            foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append(dict[c]); }
+            return b.Build(default);
+        }
+
+        return new ArrowColumnBuilder
+        {
+            BuildField = () => new Field(name,
+                overCap() ? StringType.Default : new DictionaryType(indexType(), StringType.Default, ordered: false),
+                nullable: true),
+            Append = v =>
+            {
+                if (v is null) { codes.Add(-1); return; }
+                string s = v.ToString()!;
+                if (!codeOf.TryGetValue(s, out int c))
+                {
+                    c = dict.Count;
+                    codeOf.Add(s, c);
+                    dict.Add(s);
+                }
+                codes.Add(c);
+            },
+            Build = () =>
+            {
+                if (overCap()) return BuildPlain();
+                var values = new StringArray.Builder().AppendRange(dict).Build(default);
+                return new DictionaryArray(new DictionaryType(indexType(), StringType.Default, ordered: false), BuildIndices(), values);
+            },
+        };
     }
 
     private static ArrowColumnBuilder Scalar(string name, Type t, string dataTypeName)
@@ -56,7 +135,7 @@ internal sealed class ArrowColumnBuilder
     private static ArrowColumnBuilder Col(string name, IArrowType type, Action<object> appendValue, Func<IArrowArrayBuilder> appendNull, Func<IArrowArray> build)
         => new()
         {
-            Field = new Field(name, type, nullable: true),
+            BuildField = () => new Field(name, type, nullable: true),
             Append = v => { if (v is null) appendNull(); else appendValue(v); },
             Build = build,
         };
@@ -68,7 +147,7 @@ internal sealed class ArrowColumnBuilder
         Action<object> appendElem = AppendElem(lb.ValueBuilder, valueType, name);
         return new ArrowColumnBuilder
         {
-            Field = new Field(name, new ListType(new Field("item", valueType, true)), nullable: true),
+            BuildField = () => new Field(name, new ListType(new Field("item", valueType, true)), nullable: true),
             Append = v =>
             {
                 if (v is null) { lb.AppendNull(); return; }

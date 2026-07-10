@@ -1,9 +1,18 @@
-import type { Table } from 'apache-arrow';
+import { Type, type Table, type Vector } from 'apache-arrow';
 import type { ViewConfig } from './manifest';
 import { tileUrl } from './manifest';
 import { fetchArrowTable } from './arrow';
 import { measureChannels, NUMERIC_TYPES } from './channels';
 import { TileColumns } from './schema';
+
+/** A per-mark channel column in transfer-friendly form. Row-wise JS strings never cross the worker
+ *  boundary (cloning ~1M of them per tile was the zoom stutter): categorical columns become integer
+ *  codes + a small dictionary, high-cardinality identity columns stay raw UTF-8 decoded per row on
+ *  demand (a click), numeric columns stay typed arrays. The string[] form is a last-resort fallback
+ *  (multi-chunk or null-bearing high-cardinality columns) that still structured-clones. */
+export type DictColumn = { kind: 'dict'; codes: Uint8Array | Uint16Array | Uint32Array; dict: string[] };
+export type Utf8Column = { kind: 'utf8'; bytes: Uint8Array; offsets: Int32Array };
+export type TileColumn = Float32Array | DictColumn | Utf8Column | string[];
 
 /** A loaded tile, read straight from its Arrow buffers. Geometry is built once (stable across camera
  *  moves and measure switches); the per-mark channel values ride along so recoloring — and answering a
@@ -17,15 +26,52 @@ export interface TileData {
   polyTriangles?: Uint32Array; // bake-time triangle indices (tile-global) — deck skips earcut entirely
   // Point marks:
   positions?: Float32Array; // interleaved [x0,y0,…]
-  // One value per mark for every measure (numeric — the recoloring source) plus any channel named by
-  // `inspect` (may be strings). Keyed by channel name.
-  values: Record<string, ArrayLike<number | string>>;
+  // One column per measure plus any channel named by `inspect`, keyed by channel name.
+  values: Record<string, TileColumn>;
 }
 
-export async function loadTile(view: ViewConfig, version: string, key: string, filterSql: string): Promise<TileData> {
+const utf8Decoder = new TextDecoder();
+
+/** Read one mark's value out of any column form (the only row-wise string decode left, on click). */
+export function columnValue(col: TileColumn | undefined, i: number): number | string | undefined {
+  if (!col) return undefined;
+  if (col instanceof Float32Array) return col[i];
+  if (Array.isArray(col)) return col[i];
+  if (col.kind === 'dict') return col.dict[col.codes[i]];
+  return utf8Decoder.decode(col.bytes.subarray(col.offsets[i], col.offsets[i + 1]));
+}
+
+/** Approximate resident bytes of a tile — what the cache budgets against (see TileCache). */
+export function tileBytes(d: TileData): number {
+  let b =
+    (d.positions?.byteLength ?? 0) +
+    (d.polyPositions?.byteLength ?? 0) +
+    (d.polyStartIndices?.byteLength ?? 0) +
+    (d.polyTriangles?.byteLength ?? 0);
+  for (const col of Object.values(d.values)) {
+    if (col instanceof Float32Array) b += col.byteLength;
+    else if (Array.isArray(col)) b += col.length * 24; // rough JS string+slot overhead
+    else if (col.kind === 'dict') b += col.codes.byteLength + col.dict.length * 16;
+    else b += col.bytes.byteLength + col.offsets.byteLength;
+  }
+  return b;
+}
+
+export async function loadTile(
+  view: ViewConfig,
+  version: string,
+  key: string,
+  filterSql: string,
+  signal?: AbortSignal,
+): Promise<TileData> {
   if (filterSql) throw new Error('filtered arrow tiles not implemented — no dimensioned view is in scope');
   const [z, x, y] = key.split('/').map(Number);
-  const table = await fetchArrowTable(tileUrl(view.id, version, z, x, y));
+  const table = await fetchArrowTable(tileUrl(view.id, version, z, x, y), signal);
+  return decodeTile(view, table);
+}
+
+/** Arrow table → TileData. Pure (no fetch) so the decode is unit-testable. */
+export function decodeTile(view: ViewConfig, table: Table): TileData {
   const values = readFields(view, table);
 
   if (view.mark === 'polygon') return { ...readPolygons(table), values };
@@ -41,11 +87,11 @@ export async function loadTile(view: ViewConfig, version: string, key: string, f
   return { count: n, positions, values };
 }
 
-/** Pull the columns we actually use out of the tile into standalone arrays: every measure (kept numeric
- *  for the color ramp) plus any channel named by `inspect` (materialized as strings if non-numeric). We
- *  COPY rather than hold Arrow's view — a view keeps the whole tile message alive (all columns + Arrow
- *  overhead), so copying only what we need and letting the Table be GC'd is what keeps the heap bounded. */
-function readFields(view: ViewConfig, table: Table): Record<string, ArrayLike<number | string>> {
+/** Pull the columns we actually use out of the tile into standalone columns: every measure (kept numeric
+ *  for the color ramp) plus any channel named by `inspect`. We COPY rather than hold Arrow's view — a
+ *  view keeps the whole tile message alive (all columns + Arrow overhead), so copying only what we need
+ *  and letting the Table be GC'd is what keeps the heap bounded. */
+function readFields(view: ViewConfig, table: Table): Record<string, TileColumn> {
   const specByName = new Map(view.source.channels.map((c) => [c.name, c] as const));
   const names = new Set<string>();
   for (const ch of measureChannels(view)) names.add(ch.name);
@@ -53,27 +99,106 @@ function readFields(view: ViewConfig, table: Table): Record<string, ArrayLike<nu
   for (const name of view.inspect?.channels ?? []) names.add(name);
   if (view.inspect?.title) names.add(view.inspect.title);
 
-  const values: Record<string, ArrayLike<number | string>> = {};
+  const values: Record<string, TileColumn> = {};
   for (const name of names) {
     const col = table.getChild(name);
     if (!col) continue;
-    if (NUMERIC_TYPES.has(specByName.get(name)?.type ?? '')) {
-      // Numeric column — keep it a typed array (measures need this for the ramp).
-      const a = col.toArray() as ArrayLike<number>;
-      values[name] = a instanceof Float32Array ? a.slice() : Float32Array.from(a);
-    } else {
-      // Non-numeric (dict/date) — materialize display strings, one per mark.
-      const n = table.numRows;
-      const s = new Array<string>(n);
-      for (let i = 0; i < n; i++) s[i] = String(col.get(i));
-      values[name] = s;
-    }
+    const spec = specByName.get(name);
+    const temporal = spec?.role === 'temporal' || spec?.type === 'date';
+    values[name] = NUMERIC_TYPES.has(spec?.type ?? '')
+      ? numericColumn(col)
+      : stringColumn(col, spec?.role === 'identity', table.numRows, temporal ? isoDate : plainString);
   }
   return values;
 }
 
+const plainString = (v: unknown): string => String(v);
+
+/** Temporal values normalize to YYYY-MM-DD no matter how the tile stored them (real dates, day-counts,
+ *  or epoch-millis) — the one canonical form that filter SQL, baked manifest domains, and inspect share. */
+const isoDate = (v: unknown): string => {
+  if (v === null || v === undefined) return 'null';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  const ms = Math.abs(n) < 1e7 ? n * 86400000 : n; // day-count vs epoch-millis storage
+  return new Date(ms).toISOString().slice(0, 10);
+};
+
+function numericColumn(col: Vector): Float32Array {
+  const a = col.toArray() as ArrayLike<number>;
+  return a instanceof Float32Array ? a.slice() : Float32Array.from(a);
+}
+
+// Past this many distinct values a column isn't categorical in any useful sense — stop scanning.
+const DICT_CAP = 65536;
+
+/** Non-numeric column → the cheapest faithful form. Identity channels (per-row unique by design, e.g. a
+ *  place name) skip straight to raw UTF-8; everything else dict-codes, bailing to raw UTF-8 if the
+ *  cardinality cap is hit. All row-wise string work happens here, in the worker, where strings die young. */
+function stringColumn(col: Vector, identity: boolean, n: number, norm: (v: unknown) => string): TileColumn {
+  if (identity) {
+    const u = utf8Column(col, n);
+    if (u) return u;
+  }
+  const direct = dictFromArrow(col, n, norm);
+  if (direct) return direct;
+
+  const codeOf = new Map<string, number>();
+  const dict: string[] = [];
+  const codes = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = norm(col.get(i));
+    let c = codeOf.get(s);
+    if (c === undefined) {
+      if (dict.length >= DICT_CAP) return utf8Column(col, n) ?? materializeStrings(col, n, norm);
+      c = dict.length;
+      codeOf.set(s, c);
+      dict.push(s);
+    }
+    codes[i] = c;
+  }
+  return { kind: 'dict', codes: packCodes(codes, dict.length), dict };
+}
+
+const packCodes = (codes: Uint32Array, cardinality: number): DictColumn['codes'] =>
+  cardinality <= 256 ? Uint8Array.from(codes) : cardinality <= 65536 ? Uint16Array.from(codes) : codes;
+
+/** Arrow dictionary-encoded column: the indices ARE the codes — no per-row scan at all; only the small
+ *  dictionary itself goes through the normalizer. */
+function dictFromArrow(col: Vector, n: number, norm: (v: unknown) => string): DictColumn | null {
+  if (col.type.typeId !== Type.Dictionary || col.data.length !== 1 || col.nullCount > 0) return null;
+  const d = col.data[0] as unknown as { values: ArrayLike<number>; dictionary?: Vector };
+  const dv = d.dictionary;
+  if (!dv) return null;
+  const dict = new Array<string>(dv.length);
+  for (let i = 0; i < dv.length; i++) dict[i] = norm(dv.get(i));
+  const codes = new Uint32Array(n);
+  for (let i = 0; i < n; i++) codes[i] = d.values[i];
+  return { kind: 'dict', codes: packCodes(codes, dict.length), dict };
+}
+
+/** Compact copy of a single-chunk UTF-8 column's raw buffers (offsets rebased to 0). Declined for
+ *  null-bearing columns — the dict/string paths preserve today's String(null) → "null" rendering. */
+function utf8Column(col: Vector, n: number): Utf8Column | null {
+  if (col.type.typeId !== Type.Utf8 || col.data.length !== 1 || col.nullCount > 0) return null;
+  const d = col.data[0] as unknown as { valueOffsets: Int32Array; values: Uint8Array };
+  const off = d.valueOffsets;
+  const base = off[0];
+  const bytes = d.values.slice(base, off[n]);
+  const offsets = new Int32Array(n + 1);
+  for (let i = 0; i <= n; i++) offsets[i] = off[i] - base;
+  return { kind: 'utf8', bytes, offsets };
+}
+
+function materializeStrings(col: Vector, n: number, norm: (v: unknown) => string): string[] {
+  const s = new Array<string>(n);
+  for (let i = 0; i < n; i++) s[i] = norm(col.get(i));
+  return s;
+}
+
 /** Extract deck's binary polygon layout from Arrow's `geometry` list column: one contiguous coordinate
- *  buffer + per-polygon vertex offsets. The coordinates are copied out (see readMeasures) so the Arrow
+ *  buffer + per-polygon vertex offsets. The coordinates are copied out (see readFields) so the Arrow
  *  message — including the `x`/`y`/`part_offsets` columns a polygon mark never uses — can be released. */
 function readPolygons(table: Table): Pick<TileData, 'polyPositions' | 'polyStartIndices' | 'vertexCount' | 'count' | 'polyTriangles'> {
   const gv = table.getChild(TileColumns.geometry);

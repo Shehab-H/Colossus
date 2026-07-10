@@ -38,7 +38,7 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
         const seed = initialRef.current;
         setManifest(m);
         setColorChannel(seed?.color || colorChannelName(m.view));
-        const o = await discoverOptions(m.view, m.version);
+        const o = await discoverOptions(m);
         if (!alive) return;
         setOptions(o);
         const defaults: Record<string, string> = {};
@@ -62,7 +62,7 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
   useEffect(() => {
     if (!manifest || !colorChannel) return;
     let alive = true;
-    describeColorDomain(manifest.view, manifest.version, colorChannel).then((d) => alive && setDomain(d));
+    describeColorDomain(manifest, colorChannel).then((d) => alive && setDomain(d));
     return () => {
       alive = false;
     };

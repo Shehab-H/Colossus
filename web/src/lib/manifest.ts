@@ -93,6 +93,17 @@ export interface TileMeta {
   isLeaf: boolean;
 }
 
+/** One channel's data domain, scanned from the FULL extract at bake time (unlike the root tile, which
+ *  is a sample). Numeric channels carry min/max + a quantile grid; others their distinct values —
+ *  `valuesTruncated` marks a capped list, which the client treats as absent. */
+export interface ChannelDomain {
+  values?: string[];
+  valuesTruncated?: boolean;
+  min?: number;
+  max?: number;
+  quantiles?: number[];
+}
+
 export interface Manifest {
   version: string;
   view: ViewConfig;
@@ -105,6 +116,8 @@ export interface Manifest {
   tilePointBudget: number;
   totalPoints: number;
   tiles: TileMeta[];
+  /** Absent on manifests from older bakes — consumers fall back to scanning the root tile. */
+  channelDomains?: Record<string, ChannelDomain>;
 }
 
 const TILES_BASE = import.meta.env.VITE_TILES_BASE ?? 'http://localhost:5174/tiles';
