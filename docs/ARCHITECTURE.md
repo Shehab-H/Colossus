@@ -1,8 +1,9 @@
 # Colossus — Architecture
 
 How the code is organized and *why*, so a change lands in the right place. The invariants it must uphold
-are in [RULES.md](RULES.md); the pipeline is in [PLAN.md](PLAN.md); the view schema is in
-[VIEW_CONFIG.md](VIEW_CONFIG.md). This file is about structure.
+are in [RULES.md](RULES.md); the canonical config DSL (including the group/measure model, the active
+direction) is [VIEW_CONFIG.md](VIEW_CONFIG.md); client perf architecture is in
+[gpu-residency/](gpu-residency/README.md). This file is about structure.
 
 ## Layers (backend, .NET)
 

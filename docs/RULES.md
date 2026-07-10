@@ -1,7 +1,7 @@
 # Colossus — Hard Rules (Invariants)
 
 These are non-negotiable. If a change violates one of these, the change is wrong — stop and
-reconsider, don't work around it. Everything in [PLAN.md](PLAN.md) is subordinate to this file.
+reconsider, don't work around it. Every other document in docs/ is subordinate to this file.
 
 ---
 

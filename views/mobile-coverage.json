@@ -1,0 +1,25 @@
+{
+  "id": "mobile-coverage",
+  "title": "Mobile coverage — operator share over time (Ookla-derived)",
+  "viewport": "geo",
+  "mark": "polygon",
+  "source": {
+    "adapter": "clickhouse",
+    "query": "SELECT quadkey, quarter, operator, toFloat32(tests) AS tests, sample_share, download_mbps, upload_mbps, latency_ms FROM colossus.mobile_coverage",
+    "geometry": { "kind": "quadkey", "column": "quadkey" },
+    "channels": [
+      { "name": "operator", "column": "operator", "role": "dimension", "type": "dict" },
+      { "name": "quarter", "column": "quarter", "role": "temporal", "type": "date" },
+      { "name": "tests", "column": "tests", "role": "measure", "type": "f32" },
+      { "name": "sample_share", "column": "sample_share", "role": "measure", "type": "f32" },
+      { "name": "download_mbps", "column": "download_mbps", "role": "measure", "type": "f32" },
+      { "name": "upload_mbps", "column": "upload_mbps", "role": "measure", "type": "f32" },
+      { "name": "latency_ms", "column": "latency_ms", "role": "measure", "type": "f32" }
+    ]
+  },
+  "encoding": { "color": { "channel": "download_mbps", "scheme": "viridis" } },
+  "inspect": {
+    "title": "operator",
+    "channels": ["operator", "tests", "sample_share", "download_mbps", "upload_mbps", "latency_ms"]
+  }
+}

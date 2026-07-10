@@ -1,6 +1,12 @@
 # GPU Residency Initiative — Charter & Index
 
-**Status: PLANNED, not started. Do not begin until productization is done and the owner says go.**
+**Status: PLANNED, not started — and no longer the lead initiative.** The active direction is the
+**group/measure model** (dynamic, filter-dependent aggregation over non-unique geometry), specified
+canonically in [VIEW_CONFIG.md](../VIEW_CONFIG.md) §1/§4. These phases remain load-bearing for it —
+Phase 1 executes perMark predicate filters, Phase 2's value-attribute+LUT seam is where computed
+measures land, and Phase 5.3 (markId + data textures) is the designed GPU fold substrate — but the
+execution order now serves that model rather than standing alone. Do not start from this file;
+start from the group/measure model and pull these phases in as their dependencies come due.
 
 This folder is a complete, self-contained implementation plan. It is written for an implementing
 agent that has NOT seen the design discussion that produced it — everything needed is in these files
@@ -133,7 +139,8 @@ Bake (all under `src/`):
 
 Docs to keep in sync when phases land:
 
-- [PLAN.md](../PLAN.md) roadmap item 1 ("Interactive filtering") — Phase 1 implements its GPU half.
+- [VIEW_CONFIG.md](../VIEW_CONFIG.md) support markers — Phase 1 turns auto-derived filters fully
+  live GPU-side; the group/measure phases flip §4's status when they land.
 - [RULES.md](../RULES.md) "Current conformance" R4 note ("Interactive `filters` … not yet honored") —
   update when Phase 1 lands.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) frontend file list — new modules from Phases 1–2.
