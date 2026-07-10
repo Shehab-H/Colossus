@@ -125,6 +125,14 @@ Only meaningful in the group regime (and what activates it). Each measure become
 channel: colorable, inspectable, legend-able — indistinguishable downstream from a carried channel
 except that its value is a function of the active filters.
 
+**The `GROUP BY` is implicit and fixed: every measure is grouped by the mark (the geometry).**
+There is exactly one grouping in the whole model, ever — `sum(tests)` always means "sum of tests
+*per geometry*, over its facts that survive the active filters." You never author a group key;
+declaring a different one is not possible. (`argmax(operator, sum(tests))` has an inner
+sub-grouping by `operator`, but only *within* each mark — the output is still one value per mark.)
+If you want a different grain than the geometry, that's a different view with a different
+`source.query`.
+
 | Field  | Req | Notes |
 |--------|-----|-------|
 | `name` | ✅ | Virtual channel name. Must not collide with a `source.channels` name. |

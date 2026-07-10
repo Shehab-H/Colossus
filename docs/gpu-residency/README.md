@@ -1,12 +1,26 @@
-# GPU Residency Initiative — Charter & Index
+# GPU Residency + Group/Measure Model — Charter & Index
 
-**Status: PLANNED, not started — and no longer the lead initiative.** The active direction is the
-**group/measure model** (dynamic, filter-dependent aggregation over non-unique geometry), specified
-canonically in [VIEW_CONFIG.md](../VIEW_CONFIG.md) §1/§4. These phases remain load-bearing for it —
-Phase 1 executes perMark predicate filters, Phase 2's value-attribute+LUT seam is where computed
-measures land, and Phase 5.3 (markId + data textures) is the designed GPU fold substrate — but the
-execution order now serves that model rather than standing alone. Do not start from this file;
-start from the group/measure model and pull these phases in as their dependencies come due.
+**Status: ONE-PASS BUILD, IN PROGRESS.** This folder is now a single combined workload executed in
+one pass, in this order:
+
+1. **[PHASE-1-gpu-filtering.md](PHASE-1-gpu-filtering.md)** — filters become GPU uniforms; cache
+   key loses the filter; decode-time filtering deleted.
+2. **[PHASE-2-gpu-color.md](PHASE-2-gpu-color.md)** — color becomes LUT texture + value attribute;
+   CPU recolor deleted. (This seam is where group/measure folded values land later.)
+3. **[PHASE-3-zero-copy-tiles.md](PHASE-3-zero-copy-tiles.md)** — tile format v2 + view-based
+   zero-copy decode.
+4. **[GROUP-MEASURES.md](GROUP-MEASURES.md)** — the group/measure model end to end (marks bake,
+   fact companions, client fold, computed color), whose semantics are normative in
+   [VIEW_CONFIG.md](../VIEW_CONFIG.md) §1/§4. Its predicate filters ARE Phase 1; its recolor path
+   IS Phase 2's seam.
+
+[PHASE-4-fetch-locality.md](PHASE-4-fetch-locality.md) stays optional (production data gate) and
+[PHASE-5-deferred-frontier.md](PHASE-5-deferred-frontier.md) stays deferred (the GPU fold executor
+in 5.3/5.4 replaces the CPU fold behind the same interface when scale demands it).
+
+Each step lands as its own commit series, tests green, before the next begins. The implementer
+maintains **BUILD-REPORT.md** in this folder — per-phase status, evidence, and deviations — as the
+single source of build truth.
 
 This folder is a complete, self-contained implementation plan. It is written for an implementing
 agent that has NOT seen the design discussion that produced it — everything needed is in these files
