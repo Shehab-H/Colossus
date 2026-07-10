@@ -31,7 +31,7 @@ export function inferType(spec: ColorSpec, domain: ColorDomain): ScaleType {
 // The scale resolved to concrete structure — the single source both the color function and the legend
 // derive from, so a swatch can never disagree with a rendered mark.
 type Resolved =
-  | { kind: 'continuous'; type: ScaleType; diverging: boolean; stops: RGB[]; min: number; max: number; midpoint: number; unknown: RGB }
+  | { kind: 'continuous'; type: ScaleType; diverging: boolean; stops: RGB[]; min: number; max: number; midpoint: number; minClamped: boolean; maxClamped: boolean; unknown: RGB }
   | { kind: 'binned'; type: ScaleType; colors: RGB[]; breaks: number[]; unknown: RGB }
   | { kind: 'categorical'; type: ScaleType; map: Map<string, RGB>; order: string[]; unknown: RGB; closed: boolean };
 
@@ -60,6 +60,30 @@ function divergingT(n: number, min: number, max: number, mid: number): number {
   return n <= mid
     ? (mid === min ? 0 : 0.5 * ((n - min) / (mid - min)))
     : (max === mid ? 1 : 0.5 + 0.5 * ((n - mid) / (max - mid)));
+}
+
+/** Robust default bounds for a continuous ramp: raw min/max lets a single outlier compress nearly every
+ *  mark into one end of the ramp, so without an authored domain the ramp spans p02..p98 of the sample
+ *  and out-of-range values clamp to the ends (interpolate clamps t). */
+function robustBounds(sample: number[], min: number, max: number): [number, number] {
+  let s = sample.filter(Number.isFinite);
+  if (s.length < 8) return [min, max];
+  if (s.length > 10_000) {
+    const stride = Math.ceil(s.length / 10_000);
+    const sub: number[] = [];
+    for (let i = 0; i < s.length; i += stride) sub.push(s[i]);
+    s = sub;
+  }
+  s.sort((a, b) => a - b);
+  const at = (q: number) => {
+    const p = q * (s.length - 1);
+    const lo = Math.floor(p);
+    const hi = Math.ceil(p);
+    return s[lo] + (s[hi] - s[lo]) * (p - lo);
+  };
+  const lo = at(0.02);
+  const hi = at(0.98);
+  return lo < hi ? [lo, hi] : [min, max];
 }
 
 function quantileBreaks(sample: number[], bins: number): number[] {
@@ -108,11 +132,12 @@ function resolveScale(spec: ColorSpec, domain: ColorDomain): Resolved {
     return { kind: 'categorical', type, map, order, unknown, closed: !!spec.palette };
   }
 
-  // Continuous input → numeric domain (honor an authored [min,max] override).
+  // Continuous input → numeric domain (honor an authored [min,max] override, else robust bounds).
   const dmin = domain.kind === 'numeric' ? domain.min : 0;
   const dmax = domain.kind === 'numeric' ? domain.max : 1;
-  const min = typeof spec.domain?.[0] === 'number' ? (spec.domain[0] as number) : dmin;
-  const max = typeof spec.domain?.[1] === 'number' ? (spec.domain[1] as number) : dmax;
+  const robust = domain.kind === 'numeric' && domain.sample?.length ? robustBounds(domain.sample, dmin, dmax) : ([dmin, dmax] as [number, number]);
+  const min = typeof spec.domain?.[0] === 'number' ? (spec.domain[0] as number) : robust[0];
+  const max = typeof spec.domain?.[1] === 'number' ? (spec.domain[1] as number) : robust[1];
 
   const base = explicitRange ?? (type === 'diverging' ? divergingStops(spec.scheme) : sequentialStops(spec.scheme));
   const stops = spec.reverse ? [...base].reverse() : base;
@@ -133,7 +158,12 @@ function resolveScale(spec: ColorSpec, domain: ColorDomain): Resolved {
   }
 
   const diverging = type === 'diverging';
-  return { kind: 'continuous', type, diverging, stops, min, max, midpoint: spec.midpoint ?? (min + max) / 2, unknown };
+  return {
+    kind: 'continuous', type, diverging, stops, min, max,
+    midpoint: spec.midpoint ?? (min + max) / 2,
+    minClamped: min > dmin, maxClamped: max < dmax,
+    unknown,
+  };
 }
 
 /** Build a color function from an encoding spec + the observed domain. Covers every scale type:
@@ -178,6 +208,9 @@ export interface Legend {
   min?: number;
   max?: number;
   midpoint?: number;
+  /** Values exist beyond this end of the ramp and clamp to its color (robust/authored domain). */
+  minClamped?: boolean;
+  maxClamped?: boolean;
   /** binned / categorical: labelled swatches. */
   items?: LegendItem[];
   /** categorical: how many categories are hidden past the display cap. */
@@ -221,7 +254,11 @@ export function describeLegend(spec: ColorSpec, domain: ColorDomain, channel: st
   const note = NOTE[r.type];
 
   if (r.kind === 'continuous') {
-    return { channel, note, kind: 'continuous', gradient: r.stops, min: r.min, max: r.max, midpoint: r.diverging ? r.midpoint : undefined };
+    return {
+      channel, note, kind: 'continuous', gradient: r.stops, min: r.min, max: r.max,
+      midpoint: r.diverging ? r.midpoint : undefined,
+      minClamped: r.minClamped || undefined, maxClamped: r.maxClamped || undefined,
+    };
   }
   if (r.kind === 'binned') {
     return { channel, note, kind: 'binned', items: r.colors.map((color, i) => ({ color, label: bucketLabel(i, r.breaks) })) };

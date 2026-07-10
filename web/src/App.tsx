@@ -68,7 +68,7 @@ export default function App() {
   };
 
   const initial = useMemo(() => ({ color: embed.color, colorSpec: embed.colorSpec, filters: embed.filters }), [embed]);
-  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorOf, scaleKey, legend, filterSql } =
+  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorOf, scaleKey, legend, activeFilters } =
     useViewData(viewId, initial);
   const [selection, setSelection] = useState<Selection | null>(null);
 
@@ -83,7 +83,7 @@ export default function App() {
     setSelection(null);
   }
 
-  const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, filterSql);
+  const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, activeFilters);
 
   const isGeo = manifest?.view.viewport === 'geo';
   const isPolygon = manifest?.view.mark === 'polygon';

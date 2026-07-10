@@ -25,6 +25,10 @@ public static class TileSchema
     /// <summary>Optional source identity for tooltips / client-side joins.</summary>
     public const string Id = "id";
 
+    /// <summary>How many source rows a merged LOD mark stands for (quadtree internal tiles only;
+    /// absent on leaf tiles, where every mark is one row).</summary>
+    public const string MergedCount = "merged_count";
+
     /// <summary>Grid cells per tile axis. The bake merges sub-pixel marks onto this grid and the client
     /// selects tiles at ≤ this many screen pixels, so one grid cell ≈ one screen pixel. The bake and the
     /// client must use the same value; it lives here so they share one definition.</summary>

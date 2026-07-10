@@ -11,7 +11,7 @@ interface LoadRequest {
   view: ViewConfig;
   version: string;
   key: string;
-  filterSql: string;
+  filters: Record<string, string>;
 }
 
 interface CancelRequest {
@@ -54,11 +54,11 @@ ctx.onmessage = async (e) => {
     inflight.get(e.data.cancel)?.abort();
     return;
   }
-  const { id, view, version, key, filterSql } = e.data;
+  const { id, view, version, key, filters } = e.data;
   const ac = new AbortController();
   inflight.set(id, ac);
   try {
-    const tile = await loadTile(view, version, key, filterSql, ac.signal);
+    const tile = await loadTile(view, version, key, filters, ac.signal);
     ctx.postMessage({ id, tile }, transferable(tile));
   } catch (err) {
     const aborted = ac.signal.aborted;

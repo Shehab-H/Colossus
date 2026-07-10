@@ -68,4 +68,88 @@ public class TilingConformanceTests
         Assert.True(reader.Read());
         return (reader.GetInt64(0), reader.GetInt64(1));
     }
+
+    // The fixture cases all sit inside tiles. A seam is where TileSql and TileMath can disagree by a cell,
+    // since each rounds the boundary on its own; GeoNames' root is the bbox that exposed it.
+    private const double GeoMin = -180.17999999999998, GeoMax = 180.17999999999998;
+    private static readonly Bbox GeoRoot = new(GeoMin, GeoMin, GeoMax, GeoMax);
+
+    [Fact]
+    public void TileSql_TileIndex_MatchesTileMath_OnTileSeams()
+    {
+        var probes = SeamProbes();
+        using var db = DuckDbSession.InMemory();
+        CreateProbeTable(db, probes);
+
+        for (int z = 0; z <= 6; z++)
+        {
+            string sql = $"SELECT i, {TileSql.TileIndex(GeoRoot, z, Axis.X)}, " +
+                         $"{TileSql.TileIndex(GeoRoot, z, Axis.Y)} FROM probes ORDER BY i";
+            foreach (var (i, tx, ty) in ReadTriples(db, sql))
+            {
+                long expected = TileMath.CellIndex(GeoMin, GeoMax, 1L << z, probes[(int)i]);
+                Assert.True(tx == expected && ty == expected,
+                    $"z={z} p={probes[(int)i]:R}: TileSql → ({tx},{ty}), TileMath → {expected}");
+            }
+        }
+    }
+
+    [Fact]
+    public void TileSql_TileRectPredicate_MatchesTileMath_Contains()
+    {
+        var probes = SeamProbes();
+        using var db = DuckDbSession.InMemory();
+        CreateProbeTable(db, probes);
+
+        for (int z = 0; z <= 3; z++)
+            for (int x = 0; x < 1 << z; x++)
+                for (int y = 0; y < 1 << z; y++)
+                {
+                    var tile = new TileId(z, x, y);
+                    string sql = $"SELECT i FROM probes WHERE {TileSql.TileRectPredicate(GeoRoot, tile)} ORDER BY i";
+                    var sqlHits = ReadLongs(db, sql).ToHashSet();
+                    var mathHits = Enumerable.Range(0, probes.Count)
+                        .Where(i => TileMath.Contains(GeoRoot, tile, probes[i], probes[i]))
+                        .Select(i => (long)i).ToHashSet();
+                    Assert.True(sqlHits.SetEquals(mathHits),
+                        $"tile {tile.RelativePath}: SQL matched {sqlHits.Count} probes, TileMath {mathHits.Count}");
+                }
+    }
+
+    /// <summary>Every tile boundary of the root down to z=6, plus the doubles either side of each.</summary>
+    private static IReadOnlyList<double> SeamProbes()
+    {
+        var probes = new SortedSet<double>();
+        for (int z = 1; z <= 6; z++)
+            for (long i = 0; i <= 1L << z; i++)
+            {
+                double edge = TileMath.Edge(GeoMin, GeoMax, 1L << z, i);
+                foreach (double p in new[] { Math.BitDecrement(edge), edge, Math.BitIncrement(edge) })
+                    if (p >= GeoMin && p <= GeoMax) probes.Add(p);
+            }
+        return probes.ToList();
+    }
+
+    private static void CreateProbeTable(DuckDbSession db, IReadOnlyList<double> probes)
+    {
+        db.Exec($"CREATE TABLE probes (i BIGINT, {TileSchema.X} DOUBLE, {TileSchema.Y} DOUBLE)");
+        string values = string.Join(", ", probes.Select((p, i) => $"({i}, {Sql.Lit(p)}, {Sql.Lit(p)})"));
+        db.Exec($"INSERT INTO probes VALUES {values}");
+    }
+
+    private static IEnumerable<(long, long, long)> ReadTriples(DuckDbSession db, string sql)
+    {
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) yield return (reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
+    }
+
+    private static IEnumerable<long> ReadLongs(DuckDbSession db, string sql)
+    {
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) yield return reader.GetInt64(0);
+    }
 }

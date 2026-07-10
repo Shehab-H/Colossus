@@ -6,6 +6,37 @@ import type { ColorDomain } from './colorScale';
 /** Sentinel filter value meaning "no predicate on this channel". */
 export const ALL = '(all)';
 
+/** Temporal channels filter as a range: the selection string is `from..to`, either side optionally
+ *  empty for an open bound. A bare date (no separator) is read as that single day, so legacy single-date
+ *  selections and embed URLs keep working. */
+export const RANGE_SEP = '..';
+
+export interface DateRange {
+  from: string;
+  to: string;
+}
+
+/** Parse a temporal filter value into its (inclusive, possibly open) bounds, or null for "no predicate". */
+export function parseDateRange(value: string | undefined): DateRange | null {
+  if (!value || value === ALL) return null;
+  const i = value.indexOf(RANGE_SEP);
+  if (i < 0) return { from: value, to: value }; // legacy single-day selection
+  const from = value.slice(0, i);
+  const to = value.slice(i + RANGE_SEP.length);
+  return from || to ? { from, to } : null;
+}
+
+/** Encode a from/to pair to a filter value; empty on both sides collapses to ALL (no predicate). */
+export function makeDateRange(from: string, to: string): string {
+  return from || to ? `${from}${RANGE_SEP}${to}` : ALL;
+}
+
+/** Whether a normalized YYYY-MM-DD value falls within a range. Lexicographic comparison of that fixed
+ *  form equals chronological order, so no date parsing is needed on the per-row hot path. */
+export function inDateRange(s: string, r: DateRange): boolean {
+  return (!r.from || s >= r.from) && (!r.to || s <= r.to);
+}
+
 /** Channel types that carry a real number line (so continuous/binned color scales apply). Everything
  *  else (dict, date) is treated as discrete categories for coloring. */
 export const NUMERIC_TYPES = new Set(['f32', 'f64', 'u8', 'u16', 'i32', 'i64']);
@@ -30,24 +61,19 @@ export const colorChannelName = (view: ViewConfig): string => {
   return measureChannels(view)[0]?.name ?? view.source.channels[0]?.name ?? 'value';
 };
 
-// A channel as a comparable/displayable string. Temporal values are normalized to YYYY-MM-DD whether
-// the tile stored a real DATE or day-integers, so labels, filters, and <input type=date> all agree.
-export const channelSqlExpr = (ch: ChannelSpec): string =>
-  ch.role === 'temporal'
-    ? `strftime(DATE '1970-01-01' + CAST("${ch.name}" AS INTEGER), '%Y-%m-%d')`
-    : `CAST("${ch.name}" AS VARCHAR)`;
+/** The active (non-ALL) filter selections, restricted to channels the view can filter — a stale
+ *  selection left over from a previous view can never leak into another view's predicate. */
+export function activeFilters(view: ViewConfig, filters: Record<string, string>): Record<string, string> {
+  const names = new Set(filterableChannels(view).map((c) => c.name));
+  const out: Record<string, string> = {};
+  for (const [name, v] of Object.entries(filters)) if (v && v !== ALL && names.has(name)) out[name] = v;
+  return out;
+}
 
-/** WHERE clause from the active filter selections, using each channel's normalized expression. */
-export function buildWhere(view: ViewConfig, filters: Record<string, string>): string {
-  const byName = new Map(view.source.channels.map((c) => [c.name, c] as const));
-  return Object.entries(filters)
-    .filter(([, v]) => v && v !== ALL)
-    .map(([name, v]) => {
-      const ch = byName.get(name);
-      const lhs = ch ? channelSqlExpr(ch) : `CAST("${name}" AS VARCHAR)`;
-      return `${lhs} = '${v.replace(/'/g, "''")}'`;
-    })
-    .join(' AND ');
+/** Canonical cache-key form of a filter selection: order-independent and collision-free. */
+export function filterKey(filters: Record<string, string>): string {
+  const entries = Object.entries(filters).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return entries.length ? JSON.stringify(entries) : '';
 }
 
 /** Describe a color channel's domain. Preferred source: the manifest's baked `channelDomains` — scanned

@@ -9,6 +9,7 @@ export const TileColumns = {
   partOffsets: 'part_offsets',
   triangles: 'triangles',
   id: 'id',
+  mergedCount: 'merged_count', // internal LOD tiles only: rows each merged mark stands for
 } as const;
 
 /** Grid cells per tile axis — the bake merges sub-pixel marks onto this grid; the client selects tiles

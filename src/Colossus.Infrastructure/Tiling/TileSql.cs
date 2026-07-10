@@ -24,35 +24,48 @@ public static class TileSql
     /// same <paramref name="z"/>/<paramref name="gridPerTile"/> resolution as <see cref="GridIndex"/>.</summary>
     public static string GridCellMin(Bbox root, int z, Axis axis, string cellExpr, int gridPerTile = TileSchema.GridPerTile)
     {
-        var (min, span) = AxisBounds(root, axis);
-        double cell = span / ((1L << z) * gridPerTile);
-        return $"({Sql.Lit(min)} + ({cellExpr}) * {Sql.Lit(cell)})";
+        var (min, max) = AxisBounds(root, axis);
+        return EdgeSql(min, CellSize(min, max, (1L << z) * gridPerTile), cellExpr);
     }
 
     public static double GridCellSize(Bbox root, int z, Axis axis, int gridPerTile = TileSchema.GridPerTile)
     {
-        var (_, span) = AxisBounds(root, axis);
-        return span / ((1L << z) * gridPerTile);
+        var (min, max) = AxisBounds(root, axis);
+        return CellSize(min, max, (1L << z) * gridPerTile);
     }
 
-    /// <summary>The quadtree rectangle predicate for a tile, built from <see cref="TileMath.TileRect"/>
-    /// (half-open on the max edges, matching the C# authority).</summary>
+    /// <summary>The quadtree rectangle predicate for a tile — the SQL mirror of
+    /// <see cref="TileMath.Contains"/>: half-open on interior seams, closed on the root's own max edges.</summary>
     public static string TileRectPredicate(Bbox root, TileId tile)
     {
+        long n = 1L << tile.Z;
         var (xMin, yMin, xMax, yMax) = TileMath.TileRect(root, tile);
-        return $"{TileSchema.X} >= {Sql.Lit(xMin)} AND {TileSchema.X} < {Sql.Lit(xMax)} AND " +
-               $"{TileSchema.Y} >= {Sql.Lit(yMin)} AND {TileSchema.Y} < {Sql.Lit(yMax)}";
+        string xHi = tile.X == n - 1 ? "<=" : "<";
+        string yHi = tile.Y == n - 1 ? "<=" : "<";
+        return $"{TileSchema.X} >= {Sql.Dbl(xMin)} AND {TileSchema.X} {xHi} {Sql.Dbl(xMax)} AND " +
+               $"{TileSchema.Y} >= {Sql.Dbl(yMin)} AND {TileSchema.Y} {yHi} {Sql.Dbl(yMax)}";
     }
 
+    /// <summary>Mirror of <see cref="TileMath.CellIndex"/>: the same float estimate in the same operand
+    /// order, then the same one-cell correction against <see cref="TileMath.Edge"/>. Without the correction
+    /// a point on a seam indexes into one cell but falls inside the neighbour's rect.</summary>
     private static string CellIndex(Bbox root, Axis axis, long n)
     {
-        var (min, span) = AxisBounds(root, axis);
+        var (min, max) = AxisBounds(root, axis);
         string col = axis == Axis.X ? TileSchema.X : TileSchema.Y;
-        // floor then clamp to [0, n-1] — exactly TileMath.PointToTile, in the same operand order so the
-        // float result is bit-identical.
-        return $"CAST(greatest(0, least(floor(({col} - {Sql.Lit(min)}) / {Sql.Lit(span)} * {n}), {n - 1})) AS BIGINT)";
+        double cell = CellSize(min, max, n);
+
+        string raw = $"CAST(greatest(0, least(floor(({col} - {Sql.Dbl(min)}) / {Sql.Dbl(max - min)} * {n}), {n - 1})) AS BIGINT)";
+        return $"CASE WHEN {raw} > 0 AND {col} < {EdgeSql(min, cell, raw)} THEN {raw} - 1 " +
+               $"WHEN {raw} < {n - 1} AND {col} >= {EdgeSql(min, cell, $"{raw} + 1")} THEN {raw} + 1 " +
+               $"ELSE {raw} END";
     }
 
-    private static (double Min, double Span) AxisBounds(Bbox root, Axis axis) =>
-        axis == Axis.X ? (root.MinX, root.SpanX) : (root.MinY, root.SpanY);
+    private static string EdgeSql(double min, double cell, string indexExpr) =>
+        $"({Sql.Dbl(min)} + ({indexExpr}) * {Sql.Dbl(cell)})";
+
+    private static double CellSize(double min, double max, long n) => (max - min) / n;
+
+    private static (double Min, double Max) AxisBounds(Bbox root, Axis axis) =>
+        axis == Axis.X ? (root.MinX, root.MaxX) : (root.MinY, root.MaxY);
 }

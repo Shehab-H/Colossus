@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ChannelSpec, Manifest } from '../lib/manifest';
-import { ALL } from '../lib/channels';
+import { ALL, makeDateRange, parseDateRange } from '../lib/channels';
 import type { ViewSummary } from '../lib/views';
 
 export interface HudProps {
@@ -59,13 +59,12 @@ export default function Hud(p: HudProps) {
           <div key={ch.name} style={{ marginBottom: 6 }}>
             <label style={{ opacity: 0.7, display: 'block', fontSize: 11 }}>{ch.name}</label>
             {ch.role === 'temporal' ? (
-              <input
-                type="date"
-                value={p.filters[ch.name] && p.filters[ch.name] !== ALL ? p.filters[ch.name] : ''}
+              <DateRange
+                name={ch.name}
+                value={p.filters[ch.name]}
                 min={opts[0]}
                 max={opts[opts.length - 1]}
-                onChange={(e) => p.onFilterChange(ch.name, e.target.value || ALL)}
-                style={select}
+                onChange={p.onFilterChange}
               />
             ) : (
               <select
@@ -138,8 +137,46 @@ export default function Hud(p: HudProps) {
   );
 }
 
+/** A from/to date range for a temporal channel. The selection is stored as one `from..to` string (see
+ *  makeDateRange), so the rest of the filter plumbing treats it like any other channel value. Each picker
+ *  clamps to the data extent and to the other bound, so from can't exceed to. */
+function DateRange(p: {
+  name: string;
+  value: string | undefined;
+  min?: string;
+  max?: string;
+  onChange: (name: string, value: string) => void;
+}) {
+  const { from, to } = parseDateRange(p.value) ?? { from: '', to: '' };
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 6px', alignItems: 'center' }}>
+      <span style={sub}>from</span>
+      <input
+        type="date"
+        aria-label={`${p.name} from`}
+        value={from}
+        min={p.min}
+        max={to || p.max}
+        onChange={(e) => p.onChange(p.name, makeDateRange(e.target.value, to))}
+        style={select}
+      />
+      <span style={sub}>to</span>
+      <input
+        type="date"
+        aria-label={`${p.name} to`}
+        value={to}
+        min={from || p.min}
+        max={p.max}
+        onChange={(e) => p.onChange(p.name, makeDateRange(from, e.target.value))}
+        style={select}
+      />
+    </div>
+  );
+}
+
 const hud: React.CSSProperties = {
   position: 'absolute',
+  zIndex: 2, // above the deck canvas — MapboxOverlay mounts inside a MapLibre ctrl corner at z-index 2
   top: 12,
   left: 12,
   padding: '10px 12px',
@@ -169,6 +206,7 @@ const select: React.CSSProperties = {
   border: '1px solid var(--input-border)',
   borderRadius: 4,
 };
+const sub: React.CSSProperties = { opacity: 0.6, fontSize: 11 };
 const code: React.CSSProperties = {
   width: '100%',
   height: 64,

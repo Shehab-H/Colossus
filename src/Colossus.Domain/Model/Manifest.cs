@@ -23,6 +23,10 @@ public sealed record Manifest
     public required int MaxZoom { get; init; }
     public required int TilePointBudget { get; init; }
     public required long TotalPoints { get; init; }
+    /// <summary>Rows the source reported at bake time. <see cref="TotalPoints"/> is *defined* as the leaf
+    /// sum, so only this — a number the reducer never produced — can witness that the tiling partitioned
+    /// the source rather than duplicating or dropping rows. Null on manifests from older bakes.</summary>
+    public long? SourceRows { get; init; }
     public required IReadOnlyList<TileMeta> Tiles { get; init; }
     /// <summary>Per-channel data domains scanned from the full staged extract at bake time, keyed by
     /// channel name. Spares the client a root-tile scan at load and — unlike that tile, which is a

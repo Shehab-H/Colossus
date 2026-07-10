@@ -1,19 +1,26 @@
 using Colossus.Domain.Baking;
 using Colossus.Domain.Model;
+using Colossus.Domain.Tiling;
 
 namespace Colossus.Application;
 
 public sealed record FidelityReport(
-    string ViewId, bool Passed, long LeafRows, long TotalPoints,
+    string ViewId, bool Passed, long LeafRows, long TotalPoints, long? SourceRows,
     int Leaves, int Internal, int OverBudget, string? Message)
 {
-    public static FidelityReport Mismatch(string viewId, TileId tile, long rows, long expected) =>
-        new(viewId, false, 0, 0, 0, 0, 0, $"tile {tile.RelativePath} has {rows} rows, manifest says {expected}");
+    public static FidelityReport Failed(string viewId, string message) =>
+        new(viewId, false, 0, 0, null, 0, 0, 0, message);
 }
 
 /// <summary>Re-reads the baked tiles and asserts the no-simplification invariant: leaf rows sum to the
-/// source total (nothing dropped or duplicated) and every internal sample stays within budget.</summary>
-public sealed class VerifyFidelityUseCase(IViewCatalog views, IBakeStore store, ITileReader tiles)
+/// source total (nothing dropped or duplicated) and every internal sample stays within budget.
+///
+/// <para>The source total has to come from outside the bake. <c>manifest.TotalPoints</c> is *defined* as
+/// the leaf sum, so checking one against the other is a tautology — it passed for months while the tiling
+/// double-counted rows on tile seams. The real witnesses are the staged extract the reducer read and the
+/// row count the source reported into <c>manifest.SourceRows</c>.</para></summary>
+public sealed class VerifyFidelityUseCase(
+    IViewCatalog views, IBakeStore store, ITileReader tiles, IStagingReader staging)
 {
     public async Task<IReadOnlyList<FidelityReport>> VerifyAllAsync(CancellationToken ct = default)
     {
@@ -33,17 +40,48 @@ public sealed class VerifyFidelityUseCase(IViewCatalog views, IBakeStore store, 
 
         long leafRows = 0;
         int overBudget = 0;
+        // Internal tiles merged on the ~1px grid are bounded by its capacity, which may exceed the leaf budget.
+        long internalCap = Math.Max(manifest.TilePointBudget, (long)TileSchema.GridPerTile * TileSchema.GridPerTile);
         foreach (var tile in manifest.Tiles)
         {
             long rows = tiles.RowCount(store.TilePath(viewId, version, tile.Id));
             if (rows != tile.Count)
-                return FidelityReport.Mismatch(viewId, tile.Id, rows, tile.Count);
+                return FidelityReport.Failed(viewId, $"tile {tile.Id.RelativePath} has {rows} rows, manifest says {tile.Count}");
             if (tile.IsLeaf) leafRows += rows;
-            else if (rows > manifest.TilePointBudget) overBudget++;
+            else if (rows > internalCap) overBudget++;
         }
 
-        bool passed = leafRows == manifest.TotalPoints && overBudget == 0;
-        return new FidelityReport(viewId, passed, leafRows, manifest.TotalPoints,
-            manifest.Tiles.Count(t => t.IsLeaf), manifest.Tiles.Count(t => !t.IsLeaf), overBudget, null);
+        int leaves = manifest.Tiles.Count(t => t.IsLeaf);
+        var report = new FidelityReport(viewId, true, leafRows, manifest.TotalPoints, manifest.SourceRows,
+            leaves, manifest.Tiles.Count - leaves, overBudget, null);
+
+        if (Diagnose(viewId, manifest, leafRows, overBudget) is { } failure)
+            return report with { Passed = false, Message = failure };
+        return report;
+    }
+
+    private string? Diagnose(string viewId, Manifest manifest, long leafRows, int overBudget)
+    {
+        if (leafRows != manifest.TotalPoints)
+            return $"leaf rows {leafRows:N0} != manifest totalPoints {manifest.TotalPoints:N0}";
+
+        string stagingPath = store.StagingPath(viewId);
+        long? stagedRows = staging.Exists(stagingPath) ? staging.RowCount(stagingPath) : null;
+
+        if (stagedRows is { } staged && manifest.SourceRows is { } source && staged != source)
+            return $"staged extract has {staged:N0} rows, source reported {source:N0} — the extract lost rows";
+
+        long? expected = stagedRows ?? manifest.SourceRows;
+        if (expected is null)
+            return "no staged extract and no sourceRows in the manifest — the leaf sum has no independent witness";
+
+        if (leafRows != expected)
+        {
+            long delta = leafRows - expected.Value;
+            string cause = delta > 0 ? "rows counted in more than one leaf" : "rows in no leaf at all";
+            return $"leaf rows {leafRows:N0} != source {expected:N0} ({delta:+#;-#;0} — {cause})";
+        }
+
+        return overBudget > 0 ? $"{overBudget} internal tile(s) over the merge-grid cap" : null;
     }
 }

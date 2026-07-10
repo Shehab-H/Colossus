@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadManifest, type ColorSpec, type Manifest } from '../lib/manifest';
-import { ALL, buildWhere, colorChannelName, describeColorDomain, discoverOptions, filterableChannels } from '../lib/channels';
+import { ALL, activeFilters as pickActive, colorChannelName, describeColorDomain, discoverOptions, filterableChannels } from '../lib/channels';
 import { buildColorScale, describeLegend, type ColorDomain } from '../lib/colorScale';
 
 const EMPTY_DOMAIN: ColorDomain = { kind: 'numeric', min: 0, max: 1 };
@@ -86,7 +86,7 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
   // Legend descriptor from the same scale, so a swatch can never disagree with a rendered mark.
   const legend = useMemo(() => (colorChannel ? describeLegend(colorSpec, domain, colorChannel) : null), [colorSpec, domain, colorChannel]);
 
-  const filterSql = useMemo(() => (manifest ? buildWhere(manifest.view, filters) : ''), [filters, manifest]);
+  const activeFilters = useMemo(() => (manifest ? pickActive(manifest.view, filters) : {}), [filters, manifest]);
 
-  return { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorSpec, colorOf, scaleKey, legend, filterSql };
+  return { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorSpec, colorOf, scaleKey, legend, activeFilters };
 }

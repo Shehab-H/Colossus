@@ -16,9 +16,9 @@ export default function LegendBox({ legend }: { legend: Legend }) {
         <>
           <div style={{ ...bar, background: `linear-gradient(to right, ${legend.gradient.map(rgb).join(',')})` }} />
           <div style={axis}>
-            <span>{formatValue(legend.min ?? 0)}</span>
+            <span>{legend.minClamped ? '≤ ' : ''}{formatValue(legend.min ?? 0)}</span>
             {legend.midpoint !== undefined && <span>{formatValue(legend.midpoint)}</span>}
-            <span>{formatValue(legend.max ?? 1)}</span>
+            <span>{formatValue(legend.max ?? 1)}{legend.maxClamped ? '+' : ''}</span>
           </div>
         </>
       )}
@@ -40,6 +40,7 @@ export default function LegendBox({ legend }: { legend: Legend }) {
 
 const box: React.CSSProperties = {
   position: 'absolute',
+  zIndex: 2, // above the deck canvas (see Hud)
   bottom: 12,
   left: 12,
   padding: '8px 10px',

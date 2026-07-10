@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { filterKey } from '../lib/channels';
 import type { Manifest } from '../lib/manifest';
 import { TileCache } from '../lib/tileCache';
 import type { TileData } from '../lib/tileData';
@@ -14,7 +15,7 @@ export interface RenderedTile {
 // Composite key: version + filter + tile. A manifest or filter switch changes every key, so stale rows
 // are never drawn (old entries fall out via pruning). Measure/range are NOT in the key — a tile carries
 // every measure, so switching measure recolors from cache with no re-fetch.
-const compositeKey = (version: string, filterSql: string, key: string) => `${version}|${filterSql}|${key}`;
+const compositeKey = (version: string, fkey: string, key: string) => `${version}|${fkey}|${key}`;
 
 /** Streams the viewport's tile set through a {@link TileCache}: selects visible tiles, fetches misses,
  *  and answers with the drawable cover (loaded stand-ins hold the screen until a quad's tiles all
@@ -24,11 +25,12 @@ export function useTiles(
   manifest: Manifest | null,
   camera: CameraState | null,
   size: { width: number; height: number },
-  filterSql: string,
+  filters: Record<string, string>,
 ) {
   const cache = useRef(new TileCache()).current;
   const snapshot = useSyncExternalStore(cache.subscribe, cache.getSnapshot);
   const [selKeys, setSelKeys] = useState<string[]>([]);
+  const fkey = useMemo(() => filterKey(filters), [filters]);
 
   useEffect(() => {
     if (!manifest || !camera) return;
@@ -40,7 +42,7 @@ export function useTiles(
     // entirely during a pan/zoom within the same tile set instead of rebuilding every camera frame.
     setSelKeys((prev) => (prev.length === keys.length && prev.every((v, i) => v === keys[i]) ? prev : keys));
 
-    const ck = (k: string) => compositeKey(manifest.version, filterSql, k);
+    const ck = (k: string) => compositeKey(manifest.version, fkey, k);
     const keepActive = () => {
       const cover = coverTiles(keys, (k) => cache.has(ck(k)));
       return new Set([...keys, ...cover].map(ck));
@@ -49,19 +51,19 @@ export function useTiles(
     // leftover from a zoom/pan the camera already left — cancel it before requesting the new set.
     cache.abortStale(new Set(keys.map(ck)));
     for (const key of keys) {
-      cache.ensure(ck(key), () => tileLoader.load(manifest.view, manifest.version, key, filterSql), keepActive);
+      cache.ensure(ck(key), () => tileLoader.load(manifest.view, manifest.version, key, filters), keepActive);
     }
     // `snapshot` is a dep so a resolved/failed load re-runs selection (and any retry) against fresh data.
-  }, [manifest, camera, size, filterSql, snapshot, cache]);
+  }, [manifest, camera, size, filters, fkey, snapshot, cache]);
 
   // Draw the cover, not the raw selection, with each tile's loaded data attached.
   const rendered = useMemo<RenderedTile[]>(() => {
     if (!manifest) return [];
-    const dataFor = (k: string) => snapshot.tiles.get(compositeKey(manifest.version, filterSql, k));
+    const dataFor = (k: string) => snapshot.tiles.get(compositeKey(manifest.version, fkey, k));
     return coverTiles(selKeys, (k) => !!dataFor(k))
       .map((key) => ({ key, data: dataFor(key) }))
       .filter((t): t is RenderedTile => !!t.data);
-  }, [manifest, selKeys, filterSql, snapshot]);
+  }, [manifest, selKeys, fkey, snapshot]);
 
   const marksLoaded = rendered.reduce((s, t) => s + t.data.count, 0);
 
@@ -74,7 +76,7 @@ export function useTiles(
   const atFullFidelity =
     !!manifest &&
     rendered.length > 0 &&
-    selKeys.every((k) => tileIndex.get(k)?.isLeaf && snapshot.tiles.has(compositeKey(manifest.version, filterSql, k)));
+    selKeys.every((k) => tileIndex.get(k)?.isLeaf && snapshot.tiles.has(compositeKey(manifest.version, fkey, k)));
 
   return { selKeys, rendered, marksLoaded, atFullFidelity, loadError: snapshot.error };
 }

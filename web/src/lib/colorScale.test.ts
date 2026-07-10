@@ -54,6 +54,26 @@ describe('continuous scales', () => {
     // At value 10, log is far brighter than linear (which is still near-black).
     expect(log(10)[0]).toBeGreaterThan(lin(10)[0]);
   });
+
+  it('defaults to robust p02..p98 bounds when the domain has a sample, clamping outliers', () => {
+    const sample = Array.from({ length: 101 }, (_, i) => i); // 0..100; the 10000 max is an outlier
+    const f = buildColorScale({ channel: 'v', range: ['#000000', '#ffffff'] }, numeric(0, 10000, sample));
+    expect(f(50)).toEqual([128, 128, 128]); // mid-sample sits mid-ramp, not crushed near black
+    expect(f(98)).toEqual([255, 255, 255]);
+    expect(f(10000)).toEqual([255, 255, 255]); // outlier clamps to the top color
+  });
+
+  it('an authored domain overrides the robust default', () => {
+    const sample = Array.from({ length: 101 }, (_, i) => i);
+    const f = buildColorScale({ channel: 'v', domain: [0, 10000], range: ['#000000', '#ffffff'] }, numeric(0, 10000, sample));
+    expect(f(50)[0]).toBeLessThan(5); // full-range linear: 50/10000 is near-black again
+  });
+
+  it('without a sample, raw min/max still apply', () => {
+    const f = buildColorScale({ channel: 'v', range: ['#000000', '#ffffff'] }, numeric(0, 100));
+    expect(f(100)).toEqual([255, 255, 255]);
+    expect(f(50)).toEqual([128, 128, 128]);
+  });
 });
 
 describe('binned scales', () => {
@@ -121,6 +141,19 @@ describe('legend descriptor', () => {
     expect(l.min).toBe(0);
     expect(l.max).toBe(100);
     expect(l.midpoint).toBeUndefined();
+  });
+
+  it('flags clamped ends when robust bounds cut off outliers', () => {
+    const sample = Array.from({ length: 101 }, (_, i) => i);
+    const l = describeLegend({ channel: 'v' }, numeric(-500, 10000, sample), 'v')!;
+    expect(l.min).toBeCloseTo(2);
+    expect(l.max).toBeCloseTo(98);
+    expect(l.minClamped).toBe(true);
+    expect(l.maxClamped).toBe(true);
+    // No sample → no clamping flags.
+    const raw = describeLegend({ channel: 'v' }, numeric(0, 100), 'v')!;
+    expect(raw.minClamped).toBeUndefined();
+    expect(raw.maxClamped).toBeUndefined();
   });
 
   it('marks the midpoint for a diverging scale', () => {

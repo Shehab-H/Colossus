@@ -42,14 +42,14 @@ public class TileMathTests
     [InlineData(0, 0)]
     [InlineData(3.7, -8.2)]
     [InlineData(9.999, 9.999)]
+    [InlineData(10, 10)]
     public void PointToTile_ReturnsTileWhoseRectContainsThePoint(double px, double py)
     {
         for (int z = 0; z <= 8; z++)
         {
             var (x, y) = TileMath.PointToTile(Root, z, px, py);
-            var (xMin, yMin, xMax, yMax) = TileMath.TileRect(Root, new TileId(z, x, y));
-            Assert.True(px >= xMin && px <= xMax, $"z={z}: x {px} outside [{xMin}, {xMax}]");
-            Assert.True(py >= yMin && py <= yMax, $"z={z}: y {py} outside [{yMin}, {yMax}]");
+            Assert.True(TileMath.Contains(Root, new TileId(z, x, y), px, py),
+                $"z={z}: ({px}, {py}) outside the rect of tile ({x}, {y})");
         }
     }
 

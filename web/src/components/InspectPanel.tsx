@@ -35,6 +35,7 @@ export default function InspectPanel({ selection, onClose }: { selection: Select
 
 const panel: React.CSSProperties = {
   position: 'absolute',
+  zIndex: 2, // above the deck canvas (see Hud)
   top: 56, // clears the theme toggle pinned at the top-right corner
   right: 12,
   padding: '10px 12px',

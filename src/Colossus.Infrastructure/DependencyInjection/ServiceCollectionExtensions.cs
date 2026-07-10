@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISourceAdapterCatalog, SourceAdapterCatalog>();
         services.AddSingleton<IReductionCatalog, ReductionCatalog>();
         services.AddSingleton<ITileReader, ArrowTileReader>();
+        services.AddSingleton<IStagingReader, DuckDbStagingReader>();
         services.AddSingleton<IBakeStore>(_ => new FileBakeStore());
         services.AddSingleton<IViewCatalog>(_ => new ViewRegistry());
         services.AddSingleton<IChannelDomainScanner, DuckDbChannelDomainScanner>();

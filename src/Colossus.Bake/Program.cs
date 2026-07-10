@@ -26,7 +26,8 @@ if (args is ["verify", ..])
     foreach (var r in reports)
     {
         Console.WriteLine(
-            $"  [{(r.Passed ? "PASS" : "FAIL")}] {r.ViewId}: leafRows={r.LeafRows:N0} total={r.TotalPoints:N0} " +
+            $"  [{(r.Passed ? "PASS" : "FAIL")}] {r.ViewId}: leafRows={r.LeafRows:N0} " +
+            $"source={(r.SourceRows is { } s ? s.ToString("N0") : "?")} total={r.TotalPoints:N0} " +
             $"leaves={r.Leaves} internal={r.Internal} overBudget={r.OverBudget}" +
             (r.Message is null ? "" : $" — {r.Message}"));
         ok &= r.Passed;

@@ -58,6 +58,7 @@ public sealed class BakeViewUseCase(
             MaxZoom = bakedMaxZoom,
             TilePointBudget = plan.TilePointBudget,
             TotalPoints = result.LeafPointCount,
+            SourceRows = probe.Count,
             Tiles = result.Tiles,
             // Full-extract domains (staging sees every row, unlike the sampled root tile the client
             // would otherwise scan). Baked into the manifest so view load costs zero tile fetches.
