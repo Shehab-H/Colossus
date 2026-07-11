@@ -62,7 +62,7 @@ function markColors(d: TileData, channel: string, colorOf: ColorFn): Uint8Array 
   return out;
 }
 
-export function tileDeckData(d: TileData, channel: string, colorOf: ColorFn, scaleKey: string): object {
+export function tileDeckData(d: TileData, channel: string, colorOf: ColorFn, scaleKey: string, filterSize?: number): object {
   let byKey = cache.get(d);
   if (!byKey) {
     byKey = new Map();
@@ -72,6 +72,9 @@ export function tileDeckData(d: TileData, channel: string, colorOf: ColorFn, sca
   let data = byKey.get(cacheKey);
   if (!data) {
     const mc = markColors(d, channel, colorOf);
+    // GPU filter slots: the DataFilterExtension reads this per-vertex/per-mark against uniforms. Stable
+    // across recolor, and never in the cache key — a filter change is a uniform update, not a rebuild.
+    const filter = filterSize && d.filterValues ? { getFilterValue: { value: d.filterValues, size: filterSize } } : null;
 
     if (d.polyPositions) {
       // Per-vertex color: each cell's scale color repeated across its ring's vertices.
@@ -90,6 +93,7 @@ export function tileDeckData(d: TileData, channel: string, colorOf: ColorFn, sca
       const attributes: Record<string, object> = {
         getPolygon: { value: d.polyPositions, size: 2 },
         getFillColor: { value: colors, size: 3, normalized: true },
+        ...filter,
       };
       // Bake-time tessellation: with an external indices buffer deck skips its per-polygon earcut —
       // the synchronous main-thread block that made stutter scale with cell count.
@@ -101,6 +105,7 @@ export function tileDeckData(d: TileData, channel: string, colorOf: ColorFn, sca
         attributes: {
           getPosition: { value: d.positions!, size: 2 },
           getFillColor: { value: mc, size: 3, normalized: true },
+          ...filter,
         },
       };
     }

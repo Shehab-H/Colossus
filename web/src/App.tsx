@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import DeckGL from '@deck.gl/react';
 import { COORDINATE_SYSTEM, OrthographicView, type PickingInfo } from '@deck.gl/core';
 import { ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers';
+import { DataFilterExtension } from '@deck.gl/extensions';
 import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox';
 // Aliased: a bare `Map` import would shadow the built-in Map constructor.
 import { Map as BaseMap, useControl } from 'react-map-gl/maplibre';
@@ -19,8 +20,21 @@ import { tileDeckData } from './lib/deckData';
 import type { Manifest } from './lib/manifest';
 import { columnValue, type TileData } from './lib/tileData';
 import { colorableChannels, filterableChannels } from './lib/channels';
+import { filterSlots, filterRanges, anyActive } from './lib/gpuFilter';
 import { initialViewState, type CameraState } from './lib/viewport';
 import { listViews, setUrlViewId, urlViewId, type ViewSummary } from './lib/views';
+
+// One DataFilterExtension per filterSize, shared across all layers. A fresh instance per render would
+// defeat deck's prop diffing (it compares extension identity), forcing a shader relink each frame.
+const filterExtensions = new Map<number, DataFilterExtension>();
+function dataFilterExtensionFor(size: number): DataFilterExtension {
+  let ext = filterExtensions.get(size);
+  if (!ext) {
+    ext = new DataFilterExtension({ filterSize: size as 1 | 2 | 3 | 4 });
+    filterExtensions.set(size, ext);
+  }
+  return ext;
+}
 
 // deck.gl layers as a MapLibre control, overlaid on the base map. Geo views mount MapLibre as the
 // root so the map owns camera + canvas sizing; the marks ride on top through this overlay.
@@ -83,7 +97,25 @@ export default function App() {
     setSelection(null);
   }
 
-  const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, activeFilters);
+  // GPU filter slots (one per filterable channel) — the tile identity that rides into the worker so each
+  // tile bakes its filter attribute once; not part of the cache key. Recomputed only when the manifest
+  // or its options change, so it stays a stable object across filter changes.
+  const slots = useMemo(() => (manifest ? filterSlots(manifest, options) : null), [manifest, options]);
+
+  const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, slots);
+
+  // Filter → GPU uniforms: filterRange/filterEnabled ride on the layers (not tile identity), so a filter
+  // change makes new layer instances with the SAME id and SAME data object — deck diffs props and
+  // updates uniforms, re-uploading nothing. filterSize 1 uses a flat [min,max]; >1 uses per-slot pairs.
+  const filterProps = useMemo(() => {
+    if (!slots) return null;
+    const ranges = filterRanges(slots, activeFilters);
+    return {
+      extensions: [dataFilterExtensionFor(slots.size)],
+      filterRange: (slots.size === 1 ? ranges[0] : ranges) as number[] | number[][],
+      filterEnabled: anyActive(ranges),
+    };
+  }, [slots, activeFilters]);
 
   const isGeo = manifest?.view.viewport === 'geo';
   const isPolygon = manifest?.view.mark === 'polygon';
@@ -145,12 +177,14 @@ export default function App() {
           id,
           // Binary layout: flat vertices + per-polygon start offsets + per-vertex colors. No object
           // accessors, so nothing runs per-cell on the main thread — it uploads straight to the GPU.
-          data: tileDeckData(data, colorChannel, colorOf, scaleKey) as never,
+          // The GPU filter attribute (getFilterValue) rides in data.attributes (per-vertex).
+          data: tileDeckData(data, colorChannel, colorOf, scaleKey, slots?.size) as never,
           _normalize: false, // rings are already simple + consistent from the bake
           positionFormat: 'XY',
           coordinateSystem,
           opacity: 0.85,
           pickable,
+          ...filterProps,
           // autoHighlight is intentionally OFF: it forces a full picking pass + synchronous
           // gl.readPixels on every pointermove (re-rasterizing every on-screen mark), which is the
           // dominant pan/hover stall. Click still picks on demand via onClick — inspection is intact.
@@ -159,7 +193,7 @@ export default function App() {
       }
       return new ScatterplotLayer({
         id,
-        data: tileDeckData(data, colorChannel, colorOf, scaleKey) as never,
+        data: tileDeckData(data, colorChannel, colorOf, scaleKey, slots?.size) as never,
         coordinateSystem,
         radiusUnits: 'pixels',
         getRadius: 1.6,
@@ -168,10 +202,11 @@ export default function App() {
         stroked: false,
         opacity: 0.85,
         pickable,
+        ...filterProps,
         autoHighlight: false, // see the polygon layer above — per-pointermove picking is the pan stall
       });
     });
-  }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorOf, scaleKey, inspect]);
+  }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorOf, scaleKey, inspect, slots, filterProps]);
 
   return (
     <div style={{ position: 'absolute', inset: 0, background: 'var(--app-bg)' }}>

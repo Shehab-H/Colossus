@@ -71,11 +71,12 @@ Config-driven: the client reads the manifest descriptor and one code path render
 - `lib/manifest.ts`, `lib/views.ts` — load the manifest + view registry API.
 - `lib/schema.ts` — the canonical-schema mirror (above).
 - `lib/tiling.ts` — pyramid math: `selectTiles`, `coverTiles`, `pointToTile`, `tileRect` (contract mirror).
-- `lib/tileData.ts` — Arrow → typed arrays (points, polygons, bake-time triangles). Zero per-mark objects.
-- `lib/channels.ts` — channel helpers: the color channel, its observed domain (numeric range / categories), filter option discovery.
+- `lib/tileData.ts` — Arrow → typed arrays (points, polygons, bake-time triangles). Zero per-mark objects. Also bakes the per-mark GPU filter attribute (`filterValues`) once per tile from the view's filter slots.
+- `lib/channels.ts` — channel helpers: the color channel, its observed domain (numeric range / categories), filter option discovery, and the canonical category order (`canonicalCategories`).
+- `lib/gpuFilter.ts` — the GPU-filter mapping: filter slots per view, filter values per mark, and filter selections → `DataFilterExtension` `filterRange`/`filterEnabled` uniforms. A filter change touches no tile bytes.
 - `lib/colors.ts` / `lib/schemes.ts` — color primitives (hex + interpolation) and the named scheme registry (sequential / diverging / categorical families).
 - `lib/colorScale.ts` — the scale engine: `encoding.color` + observed domain → a `value → RGB` function, across all scale types and datatypes.
-- `lib/deckData.ts` — memoized deck binary attributes (geometry built once; recolor is a client scan through the scale).
+- `lib/deckData.ts` — memoized deck binary attributes (geometry built once; recolor is a client scan through the scale; the GPU filter attribute rides in `data.attributes`).
 - `components/InspectPanel.tsx` — the pinned click-to-inspect readout, driven by the view's `inspect` config.
 - `lib/tileCache.ts` — a framework-free `TileCache` publishing an immutable `TileSnapshot`; the
   `useTiles` hook consumes it via `useSyncExternalStore`, so React state stays derived, not juggled.

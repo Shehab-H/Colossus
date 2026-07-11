@@ -1,5 +1,6 @@
 import { loadTile, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
+import type { FilterSlots } from './gpuFilter';
 
 interface LoadResponse {
   id: number;
@@ -68,17 +69,17 @@ class TileLoader {
     for (const p of inflight) p.reject(new Error('tile worker failed'));
   }
 
-  load(view: ViewConfig, version: string, key: string, filters: Record<string, string>): TileLoad {
+  load(view: ViewConfig, version: string, key: string, slots: FilterSlots | null): TileLoad {
     this.ensure();
     if (!this.workers.length) {
       const ac = new AbortController();
-      return { promise: loadTile(view, version, key, filters, ac.signal), cancel: () => ac.abort() };
+      return { promise: loadTile(view, version, key, slots, ac.signal), cancel: () => ac.abort() };
     }
     const id = this.nextId++;
     const worker = this.workers[this.rr++ % this.workers.length];
     const promise = new Promise<TileData>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, view, version, key, filters });
+      worker.postMessage({ id, view, version, key, slots });
     });
     // postMessage on a terminated worker is a silent no-op, so a late cancel is always safe.
     return { promise, cancel: () => worker.postMessage({ cancel: id }) };

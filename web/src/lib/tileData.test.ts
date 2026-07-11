@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Field, Float32, Int32, List, Table, Utf8, makeBuilder, makeVector, tableFromIPC, tableToIPC, vectorFromArray } from 'apache-arrow';
 import type { ViewConfig } from './manifest';
 import { columnValue, decodeTile, tileBytes, type DictColumn, type Utf8Column } from './tileData';
+import { MISSING_CODE, NULL_DAY, type FilterSlots } from './gpuFilter';
 
 const utf8Vec = (vals: (string | null)[]) => {
   const b = makeBuilder({ type: new Utf8(), nullValues: [null] });
@@ -107,89 +108,83 @@ describe('decodeTile', () => {
   });
 });
 
-describe('decodeTile with filters', () => {
+describe('decodeTile filterValues (GPU filter slots)', () => {
   const xs = makeVector(new Float32Array([0, 1, 2]));
   const ys = makeVector(new Float32Array([10, 11, 12]));
 
-  const dimView = pointView([
-    { name: 'feature', column: 'feature', role: 'dimension', type: 'dict' },
-    { name: 'population', column: 'population', role: 'measure', type: 'f32' },
-  ]);
-  const dimTable = () =>
-    roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'b', 'a']), population: makeVector(new Float32Array([5, 6, 7])) });
-
-  it('keeps only matching rows: geometry and every value column gather together', () => {
-    const d = decodeTile(dimView, dimTable(), { feature: 'a' });
-    expect(d.count).toBe(2);
-    expect([...d.positions!]).toEqual([0, 10, 2, 12]);
-    expect([0, 1].map((i) => columnValue(d.values.feature, i))).toEqual(['a', 'a']);
-    expect([...(d.values.population as Float32Array)]).toEqual([5, 7]);
+  const dimSlots = (categories: string[]): FilterSlots => ({
+    specs: [{ name: 'feature', kind: 'dimension', categories }],
+    size: 1,
   });
 
-  it('filters arrow dictionary-encoded columns on codes', () => {
-    const t = roundTrip({ x: xs, y: ys, feature: vectorFromArray(['p', 'q', 'p']) });
+  it('builds per-mark canonical codes for a dimension slot', () => {
+    const t = roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'b', 'a']) });
     const view = pointView([{ name: 'feature', column: 'feature', role: 'dimension', type: 'dict' }]);
-    const d = decodeTile(view, t, { feature: 'q' });
-    expect(d.count).toBe(1);
-    expect([...d.positions!]).toEqual([1, 11]);
-    expect(columnValue(d.values.feature, 0)).toBe('q');
+    const d = decodeTile(view, t, dimSlots(['a', 'b']));
+    expect(d.count).toBe(3);
+    expect([...d.filterValues!]).toEqual([0, 1, 0]);
   });
 
-  it('matches temporal filters in ISO form against day-count storage', () => {
-    const t = roundTrip({ x: xs, y: ys, day: makeVector(new Int32Array([19723, 0, 19723])) });
+  it('remaps arrow-dictionary codes to the canonical order (not the tile-local order)', () => {
+    // canonical order [b, a]: 'a'→1, 'b'→0, regardless of the tile's own dictionary order.
+    const t = roundTrip({ x: xs, y: ys, feature: vectorFromArray(['a', 'b', 'a']) });
+    const view = pointView([{ name: 'feature', column: 'feature', role: 'dimension', type: 'dict' }]);
+    const d = decodeTile(view, t, dimSlots(['b', 'a']));
+    expect([...d.filterValues!]).toEqual([1, 0, 1]);
+  });
+
+  it('maps a value absent from the canonical list to the missing sentinel', () => {
+    const t = roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'c', 'a']) });
+    const view = pointView([{ name: 'feature', column: 'feature', role: 'dimension', type: 'dict' }]);
+    const d = decodeTile(view, t, dimSlots(['a', 'b']));
+    // f32-rounded compare: the sentinel through a Float32Array is fround(MISSING_CODE), not the exact constant.
+    expect(d.filterValues).toEqual(Float32Array.from([0, MISSING_CODE, 0]));
+  });
+
+  it('builds day numbers for a temporal slot and NULL_DAY for null', () => {
+    // 19723 days after 1970-01-01 = 2024-01-01
+    const t = roundTrip({ x: xs, y: ys, day: makeVector(new Int32Array([19723, 0, 0])) });
     const view = pointView([{ name: 'day', column: 'day', role: 'temporal', type: 'date' }]);
-    const d = decodeTile(view, t, { day: '2024-01-01' });
-    expect(d.count).toBe(2);
-    expect([...d.positions!]).toEqual([0, 10, 2, 12]);
+    const slots: FilterSlots = { specs: [{ name: 'day', kind: 'temporal' }], size: 1 };
+    const d = decodeTile(view, t, slots);
+    expect([...d.filterValues!].slice(0, 2)).toEqual([19723, 0]);
+
+    const tn = roundTrip({ x: xs.slice(0, 1), y: ys.slice(0, 1), day: utf8Vec([null]) });
+    const dn = decodeTile(view, tn, slots);
+    expect(dn.filterValues![0]).toBe(Math.fround(NULL_DAY));
   });
 
-  // day-counts since 1970-01-01: 1970-01-01, 2024-01-01, 2024-03-01, 2024-06-01
-  const dayView = pointView([{ name: 'day', column: 'day', role: 'temporal', type: 'date' }]);
-  const dayTable = () =>
-    roundTrip({
-      x: makeVector(new Float32Array([0, 1, 2, 3])),
-      y: makeVector(new Float32Array([10, 11, 12, 13])),
-      day: makeVector(new Int32Array([0, 19723, 19783, 19875])),
-    });
-
-  it('a temporal range keeps rows within [from, to] inclusive', () => {
-    const d = decodeTile(dayView, dayTable(), { day: '2024-01-01..2024-03-01' });
-    expect(d.count).toBe(2);
-    expect([...d.positions!]).toEqual([1, 11, 2, 12]);
+  it('interleaves multiple slots per mark in slot order', () => {
+    const t = roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'b', 'a']), day: makeVector(new Int32Array([0, 19723, 0])) });
+    const view = pointView([
+      { name: 'feature', column: 'feature', role: 'dimension', type: 'dict' },
+      { name: 'day', column: 'day', role: 'temporal', type: 'date' },
+    ]);
+    const slots: FilterSlots = {
+      specs: [{ name: 'feature', kind: 'dimension', categories: ['a', 'b'] }, { name: 'day', kind: 'temporal' }],
+      size: 2,
+    };
+    const d = decodeTile(view, t, slots);
+    // [code0, day0, code1, day1, code2, day2]
+    expect([...d.filterValues!]).toEqual([0, 0, 1, 19723, 0, 0]);
   });
 
-  it('an open-ended "from" keeps everything on or after it', () => {
-    const d = decodeTile(dayView, dayTable(), { day: '2024-03-01..' });
-    expect(d.count).toBe(2);
-    expect([...d.positions!]).toEqual([2, 12, 3, 13]);
-  });
-
-  it('an open-ended "to" keeps everything on or before it', () => {
-    const d = decodeTile(dayView, dayTable(), { day: '..2024-01-01' });
-    expect(d.count).toBe(2);
-    expect([...d.positions!]).toEqual([0, 10, 1, 11]);
-  });
-
-  it('a value matching nothing yields an empty tile', () => {
-    const d = decodeTile(dimView, dimTable(), { feature: 'zzz' });
-    expect(d.count).toBe(0);
-    expect(d.positions!.length).toBe(0);
-  });
-
-  it('a filter on a column the tile lacks matches nothing rather than passing everything', () => {
-    const d = decodeTile(dimView, dimTable(), { missing: 'x' });
-    expect(d.count).toBe(0);
-  });
-
-  it('a filter every row matches decodes identically to no filter', () => {
-    const t = roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'a', 'a']) });
+  it('fills the missing sentinel for a slot channel the tile lacks', () => {
+    const t = roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'b', 'a']) });
     const view = pointView([{ name: 'feature', column: 'feature', role: 'dimension', type: 'dict' }]);
-    const all = decodeTile(view, t, { feature: 'a' });
-    expect(all.count).toBe(3);
-    expect([...all.positions!]).toEqual([0, 10, 1, 11, 2, 12]);
+    const slots: FilterSlots = { specs: [{ name: 'absent', kind: 'dimension', categories: ['a'] }], size: 1 };
+    const d = decodeTile(view, t, slots);
+    expect(d.filterValues).toEqual(Float32Array.from([MISSING_CODE, MISSING_CODE, MISSING_CODE]));
   });
 
-  it('filters polygon tiles: rings, start indices, and triangles re-base to kept rows', () => {
+  it('no slots → no filterValues attribute', () => {
+    const t = roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'b', 'a']) });
+    const view = pointView([{ name: 'feature', column: 'feature', role: 'dimension', type: 'dict' }]);
+    expect(decodeTile(view, t, null).filterValues).toBeUndefined();
+    expect(decodeTile(view, t).filterValues).toBeUndefined();
+  });
+
+  it('decodes polygon geometry, tile-global triangles, and per-vertex filter expansion', () => {
     const listVec = <T>(rows: number[][], child: T) => {
       const b = makeBuilder({ type: new List(new Field('item', child as never, false)) });
       for (const r of rows) b.append(r as never);
@@ -228,12 +223,10 @@ describe('decodeTile with filters', () => {
     expect([...full.polyStartIndices!]).toEqual([0, 4, 7]);
     expect([...full.polyTriangles!]).toEqual([0, 1, 2, 0, 2, 3, 4, 5, 6]);
 
-    const d = decodeTile(view, t, { region: 'b' });
-    expect(d.count).toBe(1);
-    expect([...d.polyPositions!]).toEqual([5, 5, 6, 5, 5, 6]);
-    expect([...d.polyStartIndices!]).toEqual([0, 3]);
-    expect(d.vertexCount).toBe(3);
-    expect([...d.polyTriangles!]).toEqual([0, 1, 2]);
-    expect([...(d.values.val as Float32Array)]).toEqual([2]);
+    const slots: FilterSlots = { specs: [{ name: 'region', kind: 'dimension', categories: ['a', 'b'] }], size: 1 };
+    const d = decodeTile(view, t, slots);
+    // per-vertex: mark 0 ('a'→0) over its 4 verts, mark 1 ('b'→1) over its 3 verts
+    expect([...d.filterValues!]).toEqual([0, 0, 0, 0, 1, 1, 1]);
+    expect(d.filterValues!.length).toBe(d.vertexCount! * 1);
   });
 });

@@ -70,10 +70,13 @@ export function activeFilters(view: ViewConfig, filters: Record<string, string>)
   return out;
 }
 
-/** Canonical cache-key form of a filter selection: order-independent and collision-free. */
-export function filterKey(filters: Record<string, string>): string {
-  const entries = Object.entries(filters).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return entries.length ? JSON.stringify(entries) : '';
+/** The one canonical category order for a channel: the baked full-extract domain when trustworthy (no
+ *  category can be missing), else null so the caller falls back to the same sorted option list the UI
+ *  shows (`discoverOptions`). Codes everywhere — GPU filter slots and the Phase-2 color LUT — index THIS
+ *  array, so color categories and filter codes can never disagree. */
+export function canonicalCategories(manifest: Manifest, channel: string): string[] | null {
+  const baked = manifest.channelDomains?.[channel];
+  return baked?.values && !baked.valuesTruncated ? baked.values : null;
 }
 
 /** Describe a color channel's domain. Preferred source: the manifest's baked `channelDomains` — scanned
@@ -85,11 +88,11 @@ export async function describeColorDomain(manifest: Manifest, channel: string): 
   const numeric = isNumericChannel(spec);
 
   const baked = manifest.channelDomains?.[channel];
-  if (baked) {
-    if (numeric && baked.min !== undefined && baked.max !== undefined)
-      return { kind: 'numeric', min: baked.min, max: baked.max, sample: baked.quantiles };
-    if (!numeric && baked.values && !baked.valuesTruncated)
-      return { kind: 'categorical', categories: baked.values };
+  if (numeric && baked?.min !== undefined && baked.max !== undefined)
+    return { kind: 'numeric', min: baked.min, max: baked.max, sample: baked.quantiles };
+  if (!numeric) {
+    const canon = canonicalCategories(manifest, channel);
+    if (canon) return { kind: 'categorical', categories: canon };
   }
 
   const t = await fetchArrowTable(tileUrl(view.id, manifest.version, 0, 0, 0));
