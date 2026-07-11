@@ -30,7 +30,7 @@ Green before any code change:
 | 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
-| 4 — Group/measure | in progress | — | §1 config model + parser + validation done (below); §2–8 pending |
+| 4 — Group/measure | in progress | — | §1 config+parser+validation, §2 fact grouper done (below); §3–8 pending |
 | 4-fetch — Fetch locality | not started | — | 4.1 SW cache + 4.2 prefetch in scope; 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
@@ -209,3 +209,25 @@ as before (all row-regime checks unchanged; the new path is skipped when `HasMea
 | `dotnet build` (Domain) | succeeded, 0 warnings |
 | `dotnet test` (full suite) | 106 passed (was 93) — +2 parser fixture, +11 validation |
 | Row-regime unchanged | `Valid().HasMeasures == false`; no measure code runs; existing 93 still green |
+
+### §2 — Fact grouper + perMark/perFact classification
+
+**What landed.** A group-regime view's facts are grouped to a marks table (one row per geometry) with
+the measures materialized at the default context, plus the derived channel classification. Pure bake
+plumbing, DuckDB-only, no ClickHouse; nothing wired into the bake orchestration yet (§3).
+
+- **New `IFactGrouper`** (Domain.Baking) + `FactGrouping(PerMarkChannels, PerFactChannels)`.
+- **`DuckDbFactGrouper`** (Infrastructure): groups by the representative `(x, y)` — the engine's
+  distinct-geometry key regardless of source, so **no adapter change and the raw quadkey need not be
+  carried**. Emits `id` (mark key), `first(geometry/part_offsets)`, `first()` of each perMark channel,
+  and each measure from its AST: flat aggregates (`sum/count/avg/wavg/min/max/share`, `where`→`FILTER`,
+  share numerator `COALESCE(...,0)`/whole `nullif(...,0)`) in the main GROUP BY; `argmax/argmin` via a
+  per-dimension sub-grouping (`arg_max(dim, inner)`) joined back on `(x, y)`.
+- **Classification:** one pass — a channel is perFact iff `count(DISTINCT (x, y, ch)) > count(DISTINCT (x, y))`.
+- **New `MarkKey`** (Infrastructure.Tiling): the shared `id`/`mk` derivation (real mark `p:x:y`,
+  merged cell `g:gx:gy`) so the marks tile and the fact companion (§4) key marks identically.
+
+**Acceptance evidence.** `dotnet test` 107 passed (+1). `FactGrouperTests` round-trips a synthetic
+facts parquet → marks: 2 marks for 4 facts; `total_tests`/`wavg`/`share`/`argmax` values exact;
+`region` classified perMark (carried via `first`), `operator`/`quarter`/`tests`/`download_mbps`
+perFact (dropped from marks); geometry ring carried; ids distinct.
