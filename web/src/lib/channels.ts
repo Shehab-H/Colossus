@@ -95,7 +95,7 @@ export async function describeColorDomain(manifest: Manifest, channel: string): 
     if (canon) return { kind: 'categorical', categories: canon };
   }
 
-  const t = await fetchArrowTable(tileUrl(view.id, manifest.version, 0, 0, 0));
+  const { table: t } = await fetchArrowTable(tileUrl(view.id, manifest.version, 0, 0, 0));
   const col = t.getChild(channel);
   if (!col) return numeric ? { kind: 'numeric', min: 0, max: 1 } : { kind: 'categorical', categories: [] };
 
@@ -135,7 +135,7 @@ export async function discoverOptions(manifest: Manifest): Promise<Record<string
   }
   if (missing.length === 0) return options;
 
-  const t = await fetchArrowTable(tileUrl(manifest.view.id, manifest.version, 0, 0, 0));
+  const { table: t } = await fetchArrowTable(tileUrl(manifest.view.id, manifest.version, 0, 0, 0));
   for (const ch of missing) {
     const col = t.getChild(ch.name);
     const set = new Set<string>();

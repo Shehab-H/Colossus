@@ -41,20 +41,25 @@ public sealed class QuadtreeLodReducer : IReductionStrategy
         long cells = small ? count : db.Scalar($"SELECT count(*) FROM (SELECT DISTINCT {gx}, {gy} FROM t WHERE {rect})");
         bool isLeaf = small || cells == count;
 
+        // Measures become f32 with nulls folded to NaN so the tile buffer IS the render buffer — the
+        // client views the column with no cast and no null bitmap (format 2). `REPLACE` rewrites them
+        // in place inside the `SELECT *` that otherwise passes every staging column through untouched.
+        string measReplace = MeasureReplace(ctx.View);
+
         // A merged node keeps the lowest-rowid row of each occupied grid cell: deterministic, and only
         // rows that would overlap inside one ~1px cell at this zoom are folded — never a visible mark.
         string subset = isLeaf
-            ? $"SELECT * FROM t WHERE {rect}"
+            ? $"SELECT *{measReplace} FROM t WHERE {rect}"
             : $"""
                WITH g AS (SELECT t.*, {gx} AS __gx, {gy} AS __gy, rowid AS __rid FROM t WHERE {rect})
-               SELECT * EXCLUDE (__gx, __gy, __rid),
+               SELECT * EXCLUDE (__gx, __gy, __rid){measReplace},
                       (count(*) OVER (PARTITION BY __gx, __gy))::INTEGER AS {TileSchema.MergedCount}
                FROM g
                QUALIFY row_number() OVER (PARTITION BY __gx, __gy ORDER BY __rid) = 1
                """;
 
         ArrowTileWriter.Write(db.Connection, subset, Path.Combine(ctx.OutputDirectory, tile.RelativePath),
-            ctx.View.DictionaryEncodedChannels());
+            ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
 
         tiles.Add(new TileMeta(tile.Z, tile.X, tile.Y, isLeaf ? count : cells, isLeaf));
 
@@ -66,5 +71,14 @@ public sealed class QuadtreeLodReducer : IReductionStrategy
 
         for (int q = 0; q < 4; q++)
             Build(db, ctx, tile.Child(q), tiles, ref leafTotal);
+    }
+
+    // ` REPLACE (m::REAL AS m, …)` for every measure channel — empty when the view has none.
+    private static string MeasureReplace(ViewConfig view)
+    {
+        var measures = view.Source.Channels.Where(c => c.Role == ChannelRole.Measure).Select(c => c.Name).ToArray();
+        return measures.Length == 0
+            ? ""
+            : " REPLACE (" + string.Join(", ", measures.Select(m => $"COALESCE(\"{m}\"::REAL, 'nan'::REAL) AS \"{m}\"")) + ")";
     }
 }

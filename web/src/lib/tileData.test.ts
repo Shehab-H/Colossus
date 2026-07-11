@@ -13,6 +13,19 @@ const utf8Vec = (vals: (string | null)[]) => {
 // IPC round-trip so decode sees exactly what fetchArrowTable produces (single-chunk stream data).
 const roundTrip = (cols: Record<string, unknown>) => tableFromIPC(tableToIPC(new Table(cols as never)));
 
+// Format-2 round-trip: like fetchArrowTable, the table is parsed from a standalone ArrayBuffer, so its
+// column buffers are views into it and the same buffer is what decodeTile retains and views against.
+const roundTripV2 = (cols: Record<string, unknown>): { table: Table; buffer: ArrayBuffer } => {
+  const buffer = tableToIPC(new Table(cols as never)).slice().buffer;
+  return { table: tableFromIPC(new Uint8Array(buffer)), buffer };
+};
+
+const listVec = <T>(rows: number[][], child: T) => {
+  const b = makeBuilder({ type: new List(new Field('item', child as never, false)) });
+  for (const r of rows) b.append(r as never);
+  return b.finish().toVector();
+};
+
 const pointView = (channels: ViewConfig['source']['channels'], inspect?: ViewConfig['inspect']): ViewConfig => ({
   id: 't',
   viewport: 'geo',
@@ -185,11 +198,6 @@ describe('decodeTile filterValues (GPU filter slots)', () => {
   });
 
   it('decodes polygon geometry, tile-global triangles, and per-vertex filter expansion', () => {
-    const listVec = <T>(rows: number[][], child: T) => {
-      const b = makeBuilder({ type: new List(new Field('item', child as never, false)) });
-      for (const r of rows) b.append(r as never);
-      return b.finish().toVector();
-    };
     const t = roundTrip({
       geometry: listVec(
         [
@@ -228,5 +236,88 @@ describe('decodeTile filterValues (GPU filter slots)', () => {
     // per-vertex: mark 0 ('a'→0) over its 4 verts, mark 1 ('b'→1) over its 3 verts
     expect([...d.filterValues!]).toEqual([0, 0, 0, 0, 1, 1, 1]);
     expect(d.filterValues!.length).toBe(d.vertexCount! * 1);
+  });
+});
+
+describe('decodeTile format 2 (zero-copy views)', () => {
+  const polygonView = (channels: ViewConfig['source']['channels'], color: string): ViewConfig => ({
+    id: 't',
+    viewport: 'geo',
+    mark: 'polygon',
+    source: { adapter: 'test', query: '', geometry: { kind: 'quadkey' }, channels },
+    encoding: { color: { channel: color } },
+    inspect: { title: channels[0].name, channels: channels.map((c) => c.name) },
+  });
+
+  it('polygons: geometry, tile-global triangles, measures, and dict codes are views over the one buffer', () => {
+    const { table, buffer } = roundTripV2({
+      x: makeVector(new Float32Array([0.5, 5.5])),
+      y: makeVector(new Float32Array([0.5, 5.5])),
+      geometry: listVec([[0, 0, 1, 0, 1, 1, 0, 1], [5, 5, 6, 5, 5, 6]], new Float32()),
+      part_offsets: listVec([[0, 4], [0, 3]], new Int32()),
+      triangles: listVec([[0, 1, 2, 0, 2, 3], [4, 5, 6]], new Int32()), // already tile-global (row 1 rebased by 4)
+      region: vectorFromArray(['a', 'b']),
+      val: makeVector(new Float32Array([1, 2])),
+    });
+    const view = polygonView(
+      [
+        { name: 'region', column: 'region', role: 'dimension', type: 'dict' },
+        { name: 'val', column: 'val', role: 'measure', type: 'f32' },
+      ],
+      'val',
+    );
+
+    const d = decodeTile(view, table, null, 2, buffer);
+
+    // Every heavy column is a view into the retained buffer — the whole point of format 2.
+    expect(d.buffer).toBe(buffer);
+    expect(d.polyPositions!.buffer).toBe(buffer);
+    expect(d.polyTriangles!.buffer).toBe(buffer);
+    expect((d.values.val as Float32Array).buffer).toBe(buffer);
+    expect((d.values.region as DictColumn).codes.buffer).toBe(buffer);
+
+    // Triangles are viewed as-is (no per-row rebase); values decode identically to the copy path.
+    expect([...d.polyStartIndices!]).toEqual([0, 4, 7]);
+    expect([...d.polyTriangles!]).toEqual([0, 1, 2, 0, 2, 3, 4, 5, 6]);
+    expect([...d.polyPositions!]).toEqual([0, 0, 1, 0, 1, 1, 0, 1, 5, 5, 6, 5, 5, 6]);
+    expect([...(d.values.val as Float32Array)]).toEqual([1, 2]);
+    expect([0, 1].map((i) => columnValue(d.values.region, i))).toEqual(['a', 'b']);
+  });
+
+  it('points: measures view the buffer, identity utf8 bytes view the buffer, positions are built', () => {
+    const { table, buffer } = roundTripV2({
+      x: makeVector(new Float32Array([0, 1, 2])),
+      y: makeVector(new Float32Array([10, 11, 12])),
+      name: utf8Vec(['Zürich', '東京', 'X']),
+      population: makeVector(new Float32Array([5, 6, 7])),
+    });
+    const view = pointView(
+      [
+        { name: 'name', column: 'name', role: 'identity', type: 'dict' },
+        { name: 'population', column: 'population', role: 'measure', type: 'f32' },
+      ],
+      { title: 'name', channels: ['population'] },
+    );
+
+    const d = decodeTile(view, table, null, 2, buffer);
+    expect((d.values.population as Float32Array).buffer).toBe(buffer);
+    const name = d.values.name as Utf8Column;
+    expect(name.bytes.buffer).toBe(buffer);
+    expect([0, 1, 2].map((i) => columnValue(name, i))).toEqual(['Zürich', '東京', 'X']);
+    // positions are interleaved from separate x/y columns — a built array, not a view.
+    expect(d.positions!.buffer).not.toBe(buffer);
+    expect([...d.positions!]).toEqual([0, 10, 1, 11, 2, 12]);
+  });
+
+  it('tileBytes counts the retained buffer once, not each view into it', () => {
+    const { table, buffer } = roundTripV2({
+      x: makeVector(new Float32Array([0, 1, 2])),
+      y: makeVector(new Float32Array([10, 11, 12])),
+      population: makeVector(new Float32Array([5, 6, 7])),
+    });
+    const view = pointView([{ name: 'population', column: 'population', role: 'measure', type: 'f32' }]);
+    const d = decodeTile(view, table, null, 2, buffer);
+    // population is a view (already inside buffer.byteLength); only the built interleaved positions add.
+    expect(tileBytes(d)).toBe(buffer.byteLength + d.positions!.byteLength);
   });
 });

@@ -85,7 +85,7 @@ public sealed class AggregateReducer : IReductionStrategy
 
             var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, measures),
                 (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath),
-                ctx.View.DictionaryEncodedChannels());
+                ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
 
             foreach (var (wtx, wty, rows) in written)
             {
@@ -118,8 +118,10 @@ public sealed class AggregateReducer : IReductionStrategy
         double halfX = TileSql.GridCellSize(root, z, Axis.X) / 2, halfY = TileSql.GridCellSize(root, z, Axis.Y) / 2;
         string ring = $"[{x0}::FLOAT, {y0}::FLOAT, {x1}::FLOAT, {y0}::FLOAT, {x1}::FLOAT, {y1}::FLOAT, {x0}::FLOAT, {y1}::FLOAT, {x0}::FLOAT, {y0}::FLOAT]";
 
-        string measReal = string.Concat(measures.Select(m => $", \"{m}\"::FLOAT AS \"{m}\""));
-        string measAvg = string.Concat(measures.Select(m => $", avg(\"{m}\")::FLOAT AS \"{m}\""));
+        // f32 with null → NaN so the tile buffer is view-safe on the client (format 2): no null bitmap,
+        // no cast. avg() of an all-null group would otherwise be NULL.
+        string measReal = string.Concat(measures.Select(m => $", COALESCE(\"{m}\"::FLOAT, 'nan'::FLOAT) AS \"{m}\""));
+        string measAvg = string.Concat(measures.Select(m => $", COALESCE(avg(\"{m}\")::FLOAT, 'nan'::FLOAT) AS \"{m}\""));
 
         return $"""
             WITH v AS (

@@ -10,6 +10,12 @@ public sealed record ReductionContext
     public required int TilePointBudget { get; init; }
     public required int MaxZoom { get; init; }
     public required ViewConfig View { get; init; }
+
+    /// <summary>Canonical value order per dictionary-encoded channel (its full-extract domain, when not
+    /// truncated), so tiles write dictionaries in this order and tile-local codes equal the canonical
+    /// codes the client filters/colors by — no client remap. Null/absent channel → per-tile first-seen
+    /// order (truncated domain), and the client falls back to remapping that channel.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>>? CanonicalDictionaryOrders { get; init; }
 }
 
 public sealed record ReductionResult(IReadOnlyList<TileMeta> Tiles, long LeafPointCount);

@@ -34,6 +34,9 @@ export interface TileData {
   filterValues?: Float32Array;
   // One column per measure plus any channel named by `inspect`, keyed by channel name.
   values: Record<string, TileColumn>;
+  // Format 2 only: the single fetched ArrayBuffer every heavy column above is a view into. Held as the
+  // retention anchor (and transferred once) so the tile's bytes flow network → worker → GPU with no copy.
+  buffer?: ArrayBuffer;
 }
 
 const utf8Decoder = new TextDecoder();
@@ -47,19 +50,20 @@ export function columnValue(col: TileColumn | undefined, i: number): number | st
   return utf8Decoder.decode(col.bytes.subarray(col.offsets[i], col.offsets[i + 1]));
 }
 
-/** Approximate resident bytes of a tile — what the cache budgets against (see TileCache). */
+/** Approximate resident bytes of a tile — what the cache budgets against (see TileCache). For a
+ *  format-2 tile the retained `buffer` is counted once; columns that are views into it (their
+ *  `.buffer === d.buffer`) are already inside that total, so only separately-built arrays add to it. */
 export function tileBytes(d: TileData): number {
-  let b =
-    (d.positions?.byteLength ?? 0) +
-    (d.polyPositions?.byteLength ?? 0) +
-    (d.polyStartIndices?.byteLength ?? 0) +
-    (d.polyTriangles?.byteLength ?? 0) +
-    (d.filterValues?.byteLength ?? 0);
+  const anchor = d.buffer;
+  let b = anchor?.byteLength ?? 0;
+  // Count an array's bytes unless it's a view already inside the retained buffer (format 2).
+  const own = (v?: ArrayBufferView) => (!v || (anchor && v.buffer === anchor) ? 0 : v.byteLength);
+  b += own(d.positions) + own(d.polyPositions) + own(d.polyStartIndices) + own(d.polyTriangles) + own(d.filterValues);
   for (const col of Object.values(d.values)) {
-    if (col instanceof Float32Array) b += col.byteLength;
+    if (col instanceof Float32Array) b += own(col);
     else if (Array.isArray(col)) b += col.length * 24; // rough JS string+slot overhead
-    else if (col.kind === 'dict') b += col.codes.byteLength + col.dict.length * 16;
-    else b += col.bytes.byteLength + col.offsets.byteLength;
+    else if (col.kind === 'dict') b += own(col.codes) + col.dict.length * 16;
+    else b += own(col.bytes) + own(col.offsets);
   }
   return b;
 }
@@ -69,17 +73,27 @@ export async function loadTile(
   version: string,
   key: string,
   slots: FilterSlots | null,
+  tileFormat: number,
   signal?: AbortSignal,
 ): Promise<TileData> {
   const [z, x, y] = key.split('/').map(Number);
-  const table = await fetchArrowTable(tileUrl(view.id, version, z, x, y), signal);
-  return decodeTile(view, table, slots);
+  const { table, buffer } = await fetchArrowTable(tileUrl(view.id, version, z, x, y), signal);
+  return decodeTile(view, table, slots, tileFormat, buffer);
 }
 
 /** Arrow table → TileData. Pure (no fetch) so the decode is unit-testable. The whole tile is decoded
  *  unconditionally — filtering is a GPU uniform now, never a reason to drop rows here. Filter slot
- *  values are built once, per tile, alongside geometry. */
-export function decodeTile(view: ViewConfig, table: Table, slots?: FilterSlots | null): TileData {
+ *  values are built once, per tile, alongside geometry. Format 2 decodes as views over the retained
+ *  `buffer` (no column copies); format 1 (older bakes) keeps the copy path below. */
+export function decodeTile(
+  view: ViewConfig,
+  table: Table,
+  slots?: FilterSlots | null,
+  tileFormat?: number,
+  buffer?: ArrayBuffer,
+): TileData {
+  if ((tileFormat ?? 1) >= 2 && buffer) return decodeTileV2(view, table, slots, buffer);
+
   const values = readFields(view, table);
 
   if (view.mark === 'polygon') {
@@ -98,6 +112,31 @@ export function decodeTile(view: ViewConfig, table: Table, slots?: FilterSlots |
   }
   const filterValues = buildSlotValues(table, slots, n);
   return { count: n, positions, values, filterValues };
+}
+
+/** Format-2 zero-copy decode. The tile is one ArrayBuffer for its whole life; every heavy column is a
+ *  typed-array view into it — measures viewed as f32, dict codes reinterpreted in place, geometry and
+ *  the tile-global triangle indices viewed with no rebase. Only the small derived arrays are built:
+ *  point positions (interleaved x/y), polyStartIndices, per-utf8 offsets, and filterValues. */
+function decodeTileV2(view: ViewConfig, table: Table, slots: FilterSlots | null | undefined, buffer: ArrayBuffer): TileData {
+  const values = readFieldsView(view, table);
+
+  if (view.mark === 'polygon') {
+    const poly = readPolygonsView(table);
+    const filterValues = buildSlotValues(table, slots, poly.count, poly.polyStartIndices, poly.vertexCount);
+    return { ...poly, values, filterValues, buffer };
+  }
+
+  const xs = viewFloat32(table.getChild(TileColumns.x)!, TileColumns.x);
+  const ys = viewFloat32(table.getChild(TileColumns.y)!, TileColumns.y);
+  const n = table.numRows;
+  const positions = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    positions[i * 2] = xs[i];
+    positions[i * 2 + 1] = ys[i];
+  }
+  const filterValues = buildSlotValues(table, slots, n);
+  return { count: n, positions, values, filterValues, buffer };
 }
 
 /** Per-tile GPU filter attribute: one float slot per filterable channel per mark (points) or vertex
@@ -176,13 +215,7 @@ function slotCanonicalCodes(col: Vector, n: number, categories: string[] | undef
  *  view keeps the whole tile message alive (all columns + Arrow overhead), so copying only what we need
  *  and letting the Table be GC'd is what keeps the heap bounded. */
 function readFields(view: ViewConfig, table: Table): Record<string, TileColumn> {
-  const specByName = new Map(view.source.channels.map((c) => [c.name, c] as const));
-  const names = new Set<string>();
-  for (const ch of measureChannels(view)) names.add(ch.name);
-  if (view.encoding?.color?.channel) names.add(view.encoding.color.channel); // color may be a dimension
-  for (const name of view.inspect?.channels ?? []) names.add(name);
-  if (view.inspect?.title) names.add(view.inspect.title);
-
+  const { specByName, names } = fieldSelection(view);
   const values: Record<string, TileColumn> = {};
   for (const name of names) {
     const col = table.getChild(name);
@@ -194,6 +227,94 @@ function readFields(view: ViewConfig, table: Table): Record<string, TileColumn> 
       : stringColumn(col, spec?.role === 'identity', table.numRows, temporal ? isoDate : plainString);
   }
   return values;
+}
+
+/** Which columns land in `values` and their declared specs: every measure, the color channel (may be a
+ *  dimension), and any inspect channel/title. Shared by the copy (readFields) and view (readFieldsView)
+ *  paths so both select and type columns identically. */
+function fieldSelection(view: ViewConfig) {
+  const specByName = new Map(view.source.channels.map((c) => [c.name, c] as const));
+  const names = new Set<string>();
+  for (const ch of measureChannels(view)) names.add(ch.name);
+  if (view.encoding?.color?.channel) names.add(view.encoding.color.channel);
+  for (const name of view.inspect?.channels ?? []) names.add(name);
+  if (view.inspect?.title) names.add(view.inspect.title);
+  return { specByName, names };
+}
+
+/** Format-2 counterpart of readFields: each column is a view into the tile buffer — measures viewed as
+ *  f32, dict codes reinterpreted in place, identity UTF-8 viewed. No gather, no per-row string work. */
+function readFieldsView(view: ViewConfig, table: Table): Record<string, TileColumn> {
+  const { specByName, names } = fieldSelection(view);
+  const values: Record<string, TileColumn> = {};
+  for (const name of names) {
+    const col = table.getChild(name);
+    if (!col) continue;
+    const spec = specByName.get(name);
+    const temporal = spec?.role === 'temporal' || spec?.type === 'date';
+    values[name] = NUMERIC_TYPES.has(spec?.type ?? '')
+      ? viewFloat32(col, name)
+      : stringColumnView(col, spec?.role === 'identity', table.numRows, temporal ? isoDate : plainString);
+  }
+  return values;
+}
+
+/** A single-chunk f32 Arrow column as a view over the tile buffer, bounded to its logical rows (Arrow
+ *  pads buffers, so the raw `values` can be longer). Format 2 casts every measure to REAL at bake, so
+ *  this must succeed; a non-f32 or chunked/null column is a contract violation, thrown so a bad bake
+ *  fails visibly rather than silently degrading to a copy. */
+function viewFloat32(col: Vector, name: string): Float32Array {
+  const d = col.data.length === 1 && col.nullCount === 0 ? col.data[0] : undefined;
+  if (d && d.values instanceof Float32Array) return d.values.subarray(d.offset, d.offset + d.length);
+  throw new Error(`format 2: column '${name}' is not a single-chunk non-null Float32 (unviewable)`);
+}
+
+/** Format-2 non-numeric column as a view: identity → raw UTF-8 view; else the Arrow dictionary's codes
+ *  reinterpreted in place (its dictionary is already canonical, so no remap). Falls back to the copy
+ *  path only for shapes views can't express (multi-chunk, null-bearing, or non-dict primitives). */
+function stringColumnView(col: Vector, identity: boolean, n: number, norm: (v: unknown) => string): TileColumn {
+  if (identity) {
+    const u = utf8ColumnView(col, n);
+    if (u) return u;
+  }
+  const d = dictColumnView(col, n, norm);
+  if (d) return d;
+  return stringColumn(col, identity, n, norm);
+}
+
+/** Arrow dictionary column with its index buffer viewed in place (reinterpreted to the matching unsigned
+ *  width — codes are non-negative, so the bytes are identical). The small dictionary is decoded once. */
+function dictColumnView(col: Vector, n: number, norm: (v: unknown) => string): DictColumn | null {
+  if (col.type.typeId !== Type.Dictionary || col.data.length !== 1 || col.nullCount > 0) return null;
+  const d = col.data[0] as unknown as { values: ArrayBufferView; dictionary?: Vector; offset: number };
+  const dv = d.dictionary;
+  if (!dv) return null;
+  const dict = new Array<string>(dv.length);
+  for (let i = 0; i < dv.length; i++) dict[i] = norm(dv.get(i));
+  return { kind: 'dict', codes: reinterpretCodes(d.values, d.offset, n), dict };
+}
+
+/** Reinterpret Arrow's signed dictionary indices (Int8/16/32) as the matching unsigned typed array over
+ *  the same bytes — a view, not a copy — bounded to the logical `[offset, offset+n)` rows. Safe because
+ *  canonical codes are ≥ 0 (no sign bit set). */
+function reinterpretCodes(idx: ArrayBufferView, offset: number, n: number): DictColumn['codes'] {
+  const buf = idx.buffer as ArrayBuffer;
+  if (idx instanceof Int8Array || idx instanceof Uint8Array) return new Uint8Array(buf, idx.byteOffset + offset, n);
+  if (idx instanceof Int16Array || idx instanceof Uint16Array) return new Uint16Array(buf, idx.byteOffset + offset * 2, n);
+  return new Uint32Array(buf, idx.byteOffset + offset * 4, n);
+}
+
+/** Single-chunk UTF-8 column with its bytes viewed in place; only the tiny (n+1) offset array is rebuilt
+ *  (rebased to the view's start), so click-to-inspect (columnValue) reads unchanged. */
+function utf8ColumnView(col: Vector, n: number): Utf8Column | null {
+  if (col.type.typeId !== Type.Utf8 || col.data.length !== 1 || col.nullCount > 0) return null;
+  const d = col.data[0] as unknown as { valueOffsets: Int32Array; values: Uint8Array; offset: number };
+  const off = d.valueOffsets;
+  const base = off[d.offset];
+  const bytes = d.values.subarray(base, off[d.offset + n]);
+  const offsets = new Int32Array(n + 1);
+  for (let i = 0; i <= n; i++) offsets[i] = off[d.offset + i] - base;
+  return { kind: 'utf8', bytes, offsets };
 }
 
 const plainString = (v: unknown): string => String(v);
@@ -347,4 +468,35 @@ function readTriangles(table: Table, vertexStart: Uint32Array): Uint32Array | un
     for (let j = 0; j < flat.length; j++) acc.push(flat[j] + vs);
   }
   return Uint32Array.from(acc);
+}
+
+/** Format-2 polygon geometry as views over the tile buffer: the coordinate child buffer viewed whole,
+ *  the tile-global triangle indices reinterpreted in place (no per-row rebase — the bake already did it),
+ *  and only the small (n+1) polyStartIndices built. */
+function readPolygonsView(
+  table: Table,
+): Pick<TileData, 'polyPositions' | 'polyStartIndices' | 'vertexCount' | 'count' | 'polyTriangles'> {
+  const gv = table.getChild(TileColumns.geometry);
+  if (!gv) throw new Error('polygon tile has no geometry column');
+  const n = table.numRows;
+  const d = gv.data[0] as unknown as { valueOffsets: Int32Array; children: { values: Float32Array }[] };
+  const offsets = d.valueOffsets; // float units into the child buffer
+  if (offsets[0] !== 0) throw new Error('format 2: geometry child buffer is not zero-based');
+  const polyPositions = d.children[0].values.subarray(0, offsets[n]); // view over this tile's coords
+  const start = new Uint32Array(n + 1);
+  for (let i = 0; i <= n; i++) start[i] = offsets[i] >> 1; // floats → vertices
+  const polyTriangles = readTrianglesView(table);
+  return { polyPositions, polyStartIndices: start, vertexCount: polyPositions.length >> 1, count: n, polyTriangles };
+}
+
+/** Format-2 triangle indices: one Uint32 view reinterpreting the Int32 child buffer (indices < 2^31,
+ *  identical bytes). Already tile-global from the bake, so there is no rebase loop. */
+function readTrianglesView(table: Table): Uint32Array | undefined {
+  const tv = table.getChild(TileColumns.triangles);
+  if (!tv) return undefined;
+  const n = table.numRows;
+  const d = tv.data[0] as unknown as { valueOffsets: Int32Array; children: { values: Int32Array }[] };
+  const off = d.valueOffsets;
+  const flat = d.children[0].values;
+  return new Uint32Array(flat.buffer, flat.byteOffset + off[0] * 4, off[n] - off[0]);
 }

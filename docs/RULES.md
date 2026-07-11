@@ -54,6 +54,14 @@ client, and the GPU never see a source-specific layout.
 > `Apache.Arrow` writer is also the only stable option: the DuckDB nanoarrow extension segfaults on
 > DuckDB.NET 1.5.3.)
 
+**Tile format 2** (`manifest.tileFormat: 2`) hardens the same schema into a zero-copy *contract*, so the
+client decodes each tile as typed-array views over the one fetched buffer rather than copying columns: a
+single record batch, no nulls in any viewed column (strings coalesce to `'null'`, measures to `NaN`),
+tile-global triangle indices (rebased at bake, not on the client), dictionary columns written in their
+canonical domain order (tile codes are the client's canonical codes — no remap), and measures stored as
+Float32 (the stored buffer *is* the render buffer). The schema is unchanged; format 1 (older bakes) stays
+readable via the client's copy path until every view is re-baked.
+
 Canonical tile schema (target):
 
 | Column         | Type                 | When            | Purpose                                                        |

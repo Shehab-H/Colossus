@@ -71,7 +71,7 @@ Config-driven: the client reads the manifest descriptor and one code path render
 - `lib/manifest.ts`, `lib/views.ts` — load the manifest + view registry API.
 - `lib/schema.ts` — the canonical-schema mirror (above).
 - `lib/tiling.ts` — pyramid math: `selectTiles`, `coverTiles`, `pointToTile`, `tileRect` (contract mirror).
-- `lib/tileData.ts` — Arrow → typed arrays (points, polygons, bake-time triangles). Zero per-mark objects. Also bakes the per-mark GPU filter attribute (`filterValues`) once per tile from the view's filter slots.
+- `lib/tileData.ts` — Arrow → typed arrays (points, polygons, bake-time triangles). Zero per-mark objects. Also bakes the per-mark GPU filter attribute (`filterValues`) once per tile from the view's filter slots. Under tile format 2 it decodes as views over the one retained buffer (no column copies, no triangle rebase); format 1 keeps the copy path.
 - `lib/channels.ts` — channel helpers: the color channel, its observed domain (numeric range / categories), filter option discovery, and the canonical category order (`canonicalCategories`).
 - `lib/gpuFilter.ts` — the GPU-filter mapping: filter slots per view, filter values per mark, and filter selections → `DataFilterExtension` `filterRange`/`filterEnabled` uniforms. A filter change touches no tile bytes.
 - `lib/colors.ts` / `lib/schemes.ts` — color primitives (hex + interpolation) and the named scheme registry (sequential / diverging / categorical families).

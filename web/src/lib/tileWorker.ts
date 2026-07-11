@@ -13,6 +13,7 @@ interface LoadRequest {
   version: string;
   key: string;
   slots: FilterSlots | null;
+  tileFormat: number;
 }
 
 interface CancelRequest {
@@ -32,6 +33,8 @@ function transferable(tile: TileData): Transferable[] {
   const add = (v: ArrayBufferView | undefined) => {
     if (v) buffers.add(v.buffer as ArrayBuffer);
   };
+  // Format 2: the retained buffer; every view into it dedups against this entry in the Set.
+  if (tile.buffer) buffers.add(tile.buffer);
   add(tile.positions);
   add(tile.polyPositions);
   add(tile.polyStartIndices);
@@ -56,11 +59,11 @@ ctx.onmessage = async (e) => {
     inflight.get(e.data.cancel)?.abort();
     return;
   }
-  const { id, view, version, key, slots } = e.data;
+  const { id, view, version, key, slots, tileFormat } = e.data;
   const ac = new AbortController();
   inflight.set(id, ac);
   try {
-    const tile = await loadTile(view, version, key, slots, ac.signal);
+    const tile = await loadTile(view, version, key, slots, tileFormat, ac.signal);
     ctx.postMessage({ id, tile }, transferable(tile));
   } catch (err) {
     const aborted = ac.signal.aborted;

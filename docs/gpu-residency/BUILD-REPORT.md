@@ -28,8 +28,8 @@ Green before any code change:
 |---|---|---|---|
 | 0 — Baseline | done | `b29cc9c` | build/test green; browser baseline in `BASELINE.md`; geonames+ookla-fixed baked, `verify` PASS |
 | 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
-| 2 — GPU color | done | _(this commit)_ | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
-| 3 — Zero-copy tiles v2 | not started | — | |
+| 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
+| 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
 | 4 — Group/measure | not started | — | |
 
 ## Deviations from phase docs
@@ -128,3 +128,50 @@ codes for polygons) uploads once per (tile, channel) and is reused across every 
 `colorScale.ts` the CPU legend uses); on-canvas screenshot capture times out on this WebGL/MapLibre
 canvas (harness quirk, see `BASELINE.md`), so live parity was checked via clean render + zero-error
 recolor across categorical/numeric/negative-numeric channels rather than pixel diff.
+
+## Phase 3 — Zero-copy tiles (format v2)
+
+**What landed.** A tile is one contiguous ArrayBuffer for its whole client life; decode is header
+parsing + typed-array views into it — no column copies, no geometry slices, no triangle rebase. Gated
+on `manifest.tileFormat: 2`; the format-1 copy path stays for older bakes.
+
+- **Bake:** `Manifest.TileFormat` (=2, set in `BakeViewUseCase`); `ArrowTileWriter` rebases triangle
+  indices to tile-global (running vertex base) and marks the triangles field non-nullable, throwing on
+  a null polygon geometry; measures cast to `REAL` with null→`NaN` in both reducers (`QuadtreeLodReducer`
+  `REPLACE`, `AggregateReducer` `COALESCE`); dimension/identity strings coalesce to `'null'` in the
+  ClickHouse extract; `ArrowColumnBuilder.DictionaryScalar` pre-seeds the canonical domain order (domains
+  now scanned before reduction in `BakeViewUseCase` and threaded via `ReductionContext.CanonicalDictionaryOrders`),
+  so tile codes are the client's canonical codes.
+- **Client:** `fetchArrowTable` returns `{table, buffer}`; `tileData.decodeTile` gains a format-2 branch
+  (`decodeTileV2` + view helpers) — measures/dict-codes/utf8/geometry/triangles as views, only
+  `polyStartIndices`, point positions, utf8 offsets, and `filterValues` built; `TileData.buffer` retained;
+  `transferable`/`tileBytes` handle the shared buffer; `tileFormat` plumbed through worker/loader/`useTiles`.
+
+**Acceptance evidence (this session, real re-baked v2 tiles).**
+
+| Criterion | Result |
+|---|---|
+| `tsc -b` / `oxlint` / `vitest` / `dotnet test` | pass / clean / 110 passed / 94 passed |
+| Fresh bake (all 3 views) + `verify` (§1) | PASS — geonames/mobile-coverage/ookla-fixed re-baked to v2, leafRows=source, tile shapes identical to Phase 0 baseline |
+| Manifest served as format 2 | `manifest.tileFormat === 2` for all views |
+| View residency (§2), polygon (ookla-fixed) | `polyPositions`, `polyTriangles`, all 3 measures all satisfy `.buffer === tile.buffer`; triangles tile-global and in range (maxIdx 37108 < 37110 verts) |
+| View residency (§2), point (geonames) | `population` (f64→f32), `elevation` (i32→f32), `feature_class`/`feature_code`/`country_code` dict codes, `name` utf8 — all views into the one buffer; point positions correctly built (not a view) |
+| Value correctness through views | dict codes decode to real classes `["L","H","T"]`; utf8 names decode `["Curichi Dos",…]` — canonical dict order + utf8 offset rebase correct |
+| Render parity (§4) | point + polygon render, HUD counts identical to baseline (128,212 / 55,068), 0 console errors, WebGL context never lost |
+| GPU filter on v2 columns | `feature_class=P` applies GPU-side — residency unchanged (128,212), 0 `.arrow` fetches, 0 errors |
+| Mixed-format (§5) | format-1 copy path retained + unit-tested (`decodeTile` default branch); all local views now v2 so no live mix, fallback proven by tests |
+
+**Deviations from PHASE-3 doc.**
+
+- **Non-nullable fields (§2.2 / T6):** the no-null *contract* is enforced by normalization (strings→`'null'`,
+  measures→`NaN`) plus a loud throw on null polygon geometry and a non-nullable `triangles` field. Per-channel
+  `nullable:false` flags on data columns were **not** threaded through `ArrowColumnBuilder`: the writer has no
+  role information (it sees column names/types, not measure-vs-temporal), and the client's functional gate is a
+  per-column `nullCount` check (it never reads the field's nullable flag), so a normalized column with
+  `nullCount == 0` is viewed regardless. Temporal columns stay nullable (not viewed as zero-copy; `filterValues`
+  is rebuilt per filter). This enforces the substance (viewed columns are null-free) without risking a spurious
+  bake failure on a stray temporal null.
+- **No-null string test (§2.3):** the `COALESCE(…, 'null')` lives in ClickHouse SQL (no live-ClickHouse unit
+  test), so it is covered by the fresh re-bake + `verify` + the live render (names/classes decode correctly)
+  rather than a DuckDB round-trip. The canonical-dictionary-order and tile-global-triangle writer changes have
+  new `dotnet` round-trip tests.

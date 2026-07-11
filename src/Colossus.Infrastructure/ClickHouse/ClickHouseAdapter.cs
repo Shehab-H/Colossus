@@ -92,7 +92,11 @@ public sealed class ClickHouseAdapter(ClickHouseClient clickHouse) : ISourceAdap
         ChannelType.I32 => $"toInt32({c.Column})",
         ChannelType.I64 => $"toInt64({c.Column})",
         ChannelType.Date => $"toDate({c.Column})",
-        ChannelType.Dict => $"toString({c.Column})",
+        // Format-2 no-null contract: string/dimension/identity channels can't carry a real null, so a
+        // missing value becomes the literal 'null' — matching the client's String(null) rendering and
+        // the domain scanner's "null" bucket. Numeric/temporal nulls are handled downstream (measures
+        // fold to NaN in the reducers; temporal stays nullable and is rebuilt per filter).
+        ChannelType.Dict => $"COALESCE(toString({c.Column}), 'null')",
         _ => c.Column,
     };
 

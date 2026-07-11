@@ -51,8 +51,9 @@ export function useTiles(
     // Loads only ever exist for selected keys, so anything in flight outside the current selection is a
     // leftover from a zoom/pan the camera already left — cancel it before requesting the new set.
     cache.abortStale(new Set(keys.map(ck)));
+    const tileFormat = manifest.tileFormat ?? 1;
     for (const key of keys) {
-      cache.ensure(ck(key), () => tileLoader.load(manifest.view, manifest.version, key, slots), keepActive);
+      cache.ensure(ck(key), () => tileLoader.load(manifest.view, manifest.version, key, slots, tileFormat), keepActive);
     }
     // `snapshot` is a dep so a resolved/failed load re-runs selection (and any retry) against fresh data.
   }, [manifest, camera, size, slots, snapshot, cache]);

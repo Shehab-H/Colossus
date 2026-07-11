@@ -15,12 +15,14 @@ namespace Colossus.Infrastructure.Tiles;
 /// and never tessellates on the main thread.</summary>
 public static class ArrowTileWriter
 {
-    public static void Write(DuckDBConnection conn, string selectSql, string path, IReadOnlySet<string>? dictionaryColumns = null)
+    public static void Write(DuckDBConnection conn, string selectSql, string path,
+        IReadOnlySet<string>? dictionaryColumns = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = selectSql;
         using var reader = cmd.ExecuteReader();
-        var buffer = new TileBuffer(reader, skip: 0, dictionaryColumns);
+        var buffer = new TileBuffer(reader, skip: 0, dictionaryColumns, canonicalOrders);
         while (reader.Read()) buffer.AppendRow(reader);
         buffer.Flush(path);
     }
@@ -28,7 +30,9 @@ public static class ArrowTileWriter
     /// <summary>Streams a query ordered by its first two columns (tile x, tile y) and writes one file
     /// per tile; those two columns are not written. Returns (tx, ty, rows) per tile.</summary>
     public static List<(long Tx, long Ty, long Rows)> WritePartitioned(
-        DuckDBConnection conn, string selectSql, Func<long, long, string> pathFor, IReadOnlySet<string>? dictionaryColumns = null)
+        DuckDBConnection conn, string selectSql, Func<long, long, string> pathFor,
+        IReadOnlySet<string>? dictionaryColumns = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null)
     {
         var written = new List<(long, long, long)>();
         using var cmd = conn.CreateCommand();
@@ -47,7 +51,7 @@ public static class ArrowTileWriter
                     buffer.Flush(pathFor(tx, ty));
                     written.Add((tx, ty, rows));
                 }
-                buffer = new TileBuffer(reader, skip: 2, dictionaryColumns);
+                buffer = new TileBuffer(reader, skip: 2, dictionaryColumns, canonicalOrders);
                 (tx, ty, rows) = (rtx, rty, 0);
             }
             buffer.AppendRow(reader);
@@ -84,8 +88,12 @@ public static class ArrowTileWriter
         private readonly ListArray.Builder? _triangles;
         private readonly int _geometryIdx = -1;
         private readonly int _partOffsetsIdx = -1;
+        // Running tile-global vertex count: each row's triangle indices are rebased by this so the
+        // client takes one view over the whole child buffer instead of rebasing per row (format 2).
+        private int _vertexBase;
 
-        public TileBuffer(DbDataReader reader, int skip, IReadOnlySet<string>? dictionaryColumns)
+        public TileBuffer(DbDataReader reader, int skip, IReadOnlySet<string>? dictionaryColumns,
+            IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null)
         {
             _skip = skip;
             _fieldCount = reader.FieldCount;
@@ -93,8 +101,10 @@ public static class ArrowTileWriter
             for (int i = skip; i < _fieldCount; i++)
             {
                 string name = reader.GetName(i);
+                bool dict = dictionaryColumns?.Contains(name) == true;
                 _cols[i - skip] = ArrowColumnBuilder.For(name, reader.GetFieldType(i), reader.GetDataTypeName(i),
-                    dictionaryEncode: dictionaryColumns?.Contains(name) == true);
+                    dictionaryEncode: dict,
+                    canonicalOrder: dict ? canonicalOrders?.GetValueOrDefault(name) : null);
                 if (name == TileSchema.Geometry) _geometryIdx = i;
                 else if (name == TileSchema.PartOffsets) _partOffsetsIdx = i;
             }
@@ -111,7 +121,24 @@ public static class ArrowTileWriter
                 else if (i == _partOffsetsIdx) partOffsets = v;
                 _cols[i - _skip].Append(v);
             }
-            if (_triangles is not null) AppendTriangles(_triangles, geometry, partOffsets);
+            if (_triangles is not null) AppendTriangles(geometry, partOffsets);
+        }
+
+        // Tessellates one row's ring(s) and appends the indices rebased by the tile's running vertex
+        // base, then advances that base by this row's vertex count — keeping it in lockstep with the
+        // geometry column's per-row vertex offsets the client reads for polyStartIndices.
+        private void AppendTriangles(object? geometry, object? partOffsets)
+        {
+            // Format-2 no-null contract: a polygon tile row always has geometry (real or a synthetic
+            // grid-cell ring). A null here means the extract/reducer let one through — fail loudly.
+            if (geometry is null)
+                throw new InvalidOperationException($"format 2: polygon tile row has null '{TileSchema.Geometry}'");
+            _triangles!.Append();
+            float[] coords = ToFloatArray(geometry);
+            int[]? parts = partOffsets is null ? null : ToIntArray(partOffsets);
+            var vb = (Int32Array.Builder)_triangles.ValueBuilder;
+            foreach (int idx in PolygonTriangulator.Triangulate(coords, parts)) vb.Append(idx + _vertexBase);
+            _vertexBase += coords.Length / 2;
         }
 
         public void Flush(string path)
@@ -122,7 +149,7 @@ public static class ArrowTileWriter
             if (_triangles is not null)
             {
                 arrays.Add(_triangles.Build(default));
-                fields.Add(new Field(TileSchema.Triangles, new ListType(new Field("item", Int32Type.Default, true)), nullable: true));
+                fields.Add(new Field(TileSchema.Triangles, new ListType(new Field("item", Int32Type.Default, false)), nullable: false));
             }
             var schema = new Schema(fields, null);
             int rows = arrays.Count > 0 ? arrays[0].Length : 0;
@@ -132,16 +159,6 @@ public static class ArrowTileWriter
             writer.WriteRecordBatch(batch);
             writer.WriteEnd();
         }
-    }
-
-    private static void AppendTriangles(ListArray.Builder triangles, object? geometry, object? partOffsets)
-    {
-        triangles.Append();
-        if (geometry is null) return;
-        float[] coords = ToFloatArray(geometry);
-        int[]? parts = partOffsets is null ? null : ToIntArray(partOffsets);
-        var vb = (Int32Array.Builder)triangles.ValueBuilder;
-        foreach (int idx in PolygonTriangulator.Triangulate(coords, parts)) vb.Append(idx);
     }
 
     private static float[] ToFloatArray(object v)

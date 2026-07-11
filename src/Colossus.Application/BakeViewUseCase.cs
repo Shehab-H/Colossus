@@ -35,6 +35,10 @@ public sealed class BakeViewUseCase(
         string staging = store.StagingPath(view.Id);
         await source.ExtractAsync(view, probe.Bounds, staging, ct);
 
+        // Scanned before reduction so the tile writer can order each dictionary column by its canonical
+        // domain (tile codes == the client's canonical codes); the same scan feeds the manifest below.
+        var channelDomains = domains.Scan(staging, view);
+
         string version = NewVersion();
         var result = reductions.Resolve(plan.Reduction).Reduce(new ReductionContext
         {
@@ -44,12 +48,14 @@ public sealed class BakeViewUseCase(
             TilePointBudget = plan.TilePointBudget,
             MaxZoom = plan.MaxZoom,
             View = view,
+            CanonicalDictionaryOrders = CanonicalOrders(view, channelDomains),
         });
 
         int bakedMaxZoom = result.Tiles.Count > 0 ? result.Tiles.Max(t => t.Z) : 0;
         await store.WriteManifestAsync(new Manifest
         {
             Version = version,
+            TileFormat = 2,
             View = view,
             Reduction = plan.Reduction,
             Regime = "large",
@@ -62,12 +68,25 @@ public sealed class BakeViewUseCase(
             Tiles = result.Tiles,
             // Full-extract domains (staging sees every row, unlike the sampled root tile the client
             // would otherwise scan). Baked into the manifest so view load costs zero tile fetches.
-            ChannelDomains = domains.Scan(staging, view),
+            ChannelDomains = channelDomains,
         }, ct);
         store.PublishLatest(view.Id, version);
 
         return new BakeOutcome(view.Id, version, probe.Count, result.Tiles.Count,
             result.Tiles.Count(t => t.IsLeaf), result.LeafPointCount, probe.Bounds, plan.MaxZoom);
+    }
+
+    // Canonical dictionary order per dict-encoded channel: its scanned domain values, but only when the
+    // scan was complete (a truncated domain has no trustworthy order, so that channel is left to the
+    // client's remap). Identity channels aren't dictionary-encoded, so they never appear here.
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>>? CanonicalOrders(
+        ViewConfig view, IReadOnlyDictionary<string, ChannelDomain> domains)
+    {
+        var orders = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var name in view.DictionaryEncodedChannels())
+            if (domains.TryGetValue(name, out var d) && d.Values is { Count: > 0 } vals && d.ValuesTruncated != true)
+                orders[name] = vals;
+        return orders.Count > 0 ? orders : null;
     }
 
     private static string NewVersion() =>

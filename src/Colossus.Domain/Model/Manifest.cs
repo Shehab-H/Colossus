@@ -12,6 +12,11 @@ public readonly record struct TileMeta(int Z, int X, int Y, long Count, bool IsL
 public sealed record Manifest
 {
     public int SchemaVersion { get; init; } = 1;
+    /// <summary>Tile binary format. 2 = the zero-copy contract (single record batch, no nulls,
+    /// tile-global triangle indices, canonical dictionaries, f32 measures) the client decodes as
+    /// typed-array views over the one fetched buffer. Absent/0/1 on older manifests selects the
+    /// copy-based format-1 decode, which the client keeps until every view is re-baked.</summary>
+    public int TileFormat { get; init; }
     public required string Version { get; init; }
     public required ViewConfig View { get; init; }
     /// <summary>The reduction the planner chose for this bake (derived from data shape, not authored).

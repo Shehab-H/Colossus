@@ -106,6 +106,8 @@ export interface ChannelDomain {
 
 export interface Manifest {
   version: string;
+  /** Tile binary format. 2 = zero-copy (views over one buffer); absent/0/1 = the copy-based decode. */
+  tileFormat?: number;
   view: ViewConfig;
   /** The reduction the bake planner chose (e.g. 'aggregate', 'quadtreeLod'). Drives the fidelity label. */
   reduction: string;
