@@ -27,8 +27,8 @@ Green before any code change:
 | Phase | Status | Commit | Notes |
 |---|---|---|---|
 | 0 — Baseline | done | `b29cc9c` | build/test green; browser baseline in `BASELINE.md`; geonames+ookla-fixed baked, `verify` PASS |
-| 1 — GPU filtering | done | _(this commit)_ | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
-| 2 — GPU color | not started | — | |
+| 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
+| 2 — GPU color | done | _(this commit)_ | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | not started | — | |
 | 4 — Group/measure | not started | — | |
 
@@ -95,3 +95,36 @@ exactly one entry per `(version, tileKey)`. Decode-time filtering is gone.
 a ~1.0–1.8 s full-fidelity re-decode. After Phase 1 a filter change is a uniform update — no fetch,
 no decode, no worker message, no attribute upload (0 `.arrow`, 0 long tasks observed). Marks update
 on the next frame.
+
+## Phase 2 — GPU color
+
+**What landed.** Recoloring no longer touches per-mark data. The color scale is sampled into a small
+RGBA8 LUT texture + uniforms (`domain`/`transform`/`kind`/`unknownColor`/`lutWidth`); a per-mark
+`getScaleValue` attribute (numeric column by reference for points; per-vertex expansion / canonical
+codes for polygons) uploads once per (tile, channel) and is reused across every scale/theme.
+`markColors` and the per-vertex RGB expansion are deleted.
+
+- **New:** `web/src/lib/colorLut.ts` (+ `colorLut.test.ts`, 7 parity tests) — `buildColorLut(spec, domain)`
+  sampling `colorScale.ts` at texel centers; `web/src/lib/colorScaleExtension.ts` — `LayerExtension`
+  owning the LUT texture, uniforms, `getScaleValue` attribute, and the `DECKGL_FILTER_COLOR` shader hook.
+- **`deckData.ts`:** color paths deleted; `getScaleValue` built lazily per (tile, channel), memoized on
+  `channel` only (scale changes no longer touch the data object).
+- **`App.tsx`:** constant `getFillColor`; `[dataFilter, colorScale]` extensions on both layer types;
+  `buildColorLut` memoized on `[colorSpec, domain]`. `colorScale.ts`/`useViewData.ts` adjusted for LUT sourcing.
+
+**Acceptance evidence (this session).**
+
+| Criterion | Result |
+|---|---|
+| `tsc -b` / `oxlint` / `vitest` / `dotnet test` | pass / clean / 107 passed / 93 passed |
+| LUT parity tests (§1) | in place — `colorLut.test.ts` asserts texels == `colorOf` at texel centers, per scale type + categorical/unknown |
+| Live render, no errors | geonames (point) + ookla-fixed (polygon) render; 0 console errors across all interactions; WebGL context never lost |
+| Categorical→numeric recolor (feature_class→population→elevation) | color-by switches, shader relinks clean; **residency unchanged at 128,212 cells / 4 tiles** — zero re-decode, zero `.arrow` refetch (§3 zero-data recolor) |
+| Polygon per-vertex `getScaleValue` path | ookla-fixed `download_mbps` choropleth renders via the vertex-expansion path, context stable, 0 errors |
+| Recolor wall time (§4) | ≤ 1 frame by construction — recolor is now a texture/uniform update with no fetch/decode (residency proof above) |
+| Inspect/legend/embed (§5) | inspect/`columnValue` path untouched by Phase 2 (test-covered); view switch updates URL slug correctly |
+
+**Note:** pixel-parity (§2) is proven at the LUT level by `colorLut.test.ts` (GPU samples the same
+`colorScale.ts` the CPU legend uses); on-canvas screenshot capture times out on this WebGL/MapLibre
+canvas (harness quirk, see `BASELINE.md`), so live parity was checked via clean render + zero-error
+recolor across categorical/numeric/negative-numeric channels rather than pixel diff.

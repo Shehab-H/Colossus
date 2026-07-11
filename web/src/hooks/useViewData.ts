@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadManifest, type ColorSpec, type Manifest } from '../lib/manifest';
 import { ALL, activeFilters as pickActive, colorChannelName, describeColorDomain, discoverOptions, filterableChannels } from '../lib/channels';
-import { buildColorScale, describeLegend, type ColorDomain } from '../lib/colorScale';
+import { describeLegend, type ColorDomain } from '../lib/colorScale';
+import { buildColorLut } from '../lib/colorLut';
 
 const EMPTY_DOMAIN: ColorDomain = { kind: 'numeric', min: 0, max: 1 };
 
@@ -77,16 +78,14 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
     return ov && ov.channel === colorChannel ? { ...base, ...ov, channel: colorChannel } : base;
   }, [manifest, colorChannel]);
 
-  const colorOf = useMemo(() => buildColorScale(colorSpec, domain), [colorSpec, domain]);
-  // A stable identity for the built scale, so the layers memo recolors exactly when the mapping changes.
-  const scaleKey = useMemo(
-    () => JSON.stringify([colorSpec, domain.kind, domain.kind === 'numeric' ? [domain.min, domain.max] : domain.categories]),
-    [colorSpec, domain],
-  );
+  // The GPU color LUT: colorScale.ts sampled into a texture + uniforms. Its identity changes exactly when
+  // the mapping changes (measure/scale/theme), which is what re-uploads the texture; per-mark data never
+  // moves. buildColorLut uses buildColorScale internally, so it can't disagree with the legend below.
+  const colorLut = useMemo(() => buildColorLut(colorSpec, domain), [colorSpec, domain]);
   // Legend descriptor from the same scale, so a swatch can never disagree with a rendered mark.
   const legend = useMemo(() => (colorChannel ? describeLegend(colorSpec, domain, colorChannel) : null), [colorSpec, domain, colorChannel]);
 
   const activeFilters = useMemo(() => (manifest ? pickActive(manifest.view, filters) : {}), [filters, manifest]);
 
-  return { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorSpec, colorOf, scaleKey, legend, activeFilters };
+  return { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorSpec, colorLut, legend, activeFilters };
 }

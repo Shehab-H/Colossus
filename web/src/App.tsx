@@ -21,6 +21,7 @@ import type { Manifest } from './lib/manifest';
 import { columnValue, type TileData } from './lib/tileData';
 import { colorableChannels, filterableChannels } from './lib/channels';
 import { filterSlots, filterRanges, anyActive } from './lib/gpuFilter';
+import { colorScaleExtension } from './lib/colorScaleExtension';
 import { initialViewState, type CameraState } from './lib/viewport';
 import { listViews, setUrlViewId, urlViewId, type ViewSummary } from './lib/views';
 
@@ -46,6 +47,10 @@ function DeckOverlay(props: MapboxOverlayProps) {
 
 // One stable deck layer id per tile (never folds in measure/filter — see the layers memo).
 const layerId = (viewId: string | null, version: string, key: string) => `t-${viewId}-${version}-${key}`;
+
+// Constant fill for every mark — the color extension overwrites rgb from the LUT in the vertex shader,
+// so no per-vertex color array exists anywhere. Module-level for stable prop identity.
+const WHITE: [number, number, number, number] = [255, 255, 255, 255];
 
 const inspectValue = (v: number | string | undefined): string =>
   v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v;
@@ -82,7 +87,7 @@ export default function App() {
   };
 
   const initial = useMemo(() => ({ color: embed.color, colorSpec: embed.colorSpec, filters: embed.filters }), [embed]);
-  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorOf, scaleKey, legend, activeFilters } =
+  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorLut, legend, activeFilters } =
     useViewData(viewId, initial);
   const [selection, setSelection] = useState<Selection | null>(null);
 
@@ -104,18 +109,30 @@ export default function App() {
 
   const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, slots);
 
-  // Filter → GPU uniforms: filterRange/filterEnabled ride on the layers (not tile identity), so a filter
-  // change makes new layer instances with the SAME id and SAME data object — deck diffs props and
-  // updates uniforms, re-uploading nothing. filterSize 1 uses a flat [min,max]; >1 uses per-slot pairs.
-  const filterProps = useMemo(() => {
-    if (!slots) return null;
-    const ranges = filterRanges(slots, activeFilters);
-    return {
-      extensions: [dataFilterExtensionFor(slots.size)],
-      filterRange: (slots.size === 1 ? ranges[0] : ranges) as number[] | number[][],
-      filterEnabled: anyActive(ranges),
-    };
-  }, [slots, activeFilters]);
+  // GPU state that rides on the layers, never on tile identity: the color LUT (Phase 2) and the filter
+  // uniforms (Phase 1). A measure/scale/theme change or a filter change makes new layer instances with the
+  // SAME id and SAME `data` object — deck diffs props and updates a texture / uniforms, re-uploading no
+  // per-mark data. Extension order is [dataFilter, colorScale] (they inject different shader stages).
+  const gpuProps = useMemo(() => {
+    const extensions = [];
+    const props: Record<string, unknown> = {};
+    if (slots) {
+      extensions.push(dataFilterExtensionFor(slots.size));
+      const ranges = filterRanges(slots, activeFilters);
+      props.filterRange = slots.size === 1 ? ranges[0] : ranges; // filterSize 1 → flat [min,max]; >1 → per-slot
+      props.filterEnabled = anyActive(ranges);
+    }
+    if (colorLut) {
+      extensions.push(colorScaleExtension);
+      props.getFillColor = WHITE; // constant; the color extension overwrites rgb from the LUT per mark
+      props.scaleLut = colorLut;
+    }
+    return { ...props, extensions };
+  }, [slots, activeFilters, colorLut]);
+
+  // Categorical color channels feed canonical codes into the value attribute (numeric → null). Stable
+  // per channel, so a scale/theme change never rebuilds the tile `data`.
+  const colorCategories = useMemo(() => (colorLut?.kind === 'categorical' ? colorLut.categories ?? null : null), [colorLut]);
 
   const isGeo = manifest?.view.viewport === 'geo';
   const isPolygon = manifest?.view.mark === 'polygon';
@@ -175,16 +192,16 @@ export default function App() {
       if (isPolygon) {
         return new SolidPolygonLayer({
           id,
-          // Binary layout: flat vertices + per-polygon start offsets + per-vertex colors. No object
-          // accessors, so nothing runs per-cell on the main thread — it uploads straight to the GPU.
-          // The GPU filter attribute (getFilterValue) rides in data.attributes (per-vertex).
-          data: tileDeckData(data, colorChannel, colorOf, scaleKey, slots?.size) as never,
+          // Binary layout: flat vertices + per-polygon start offsets. No object accessors, so nothing
+          // runs per-cell on the main thread — it uploads straight to the GPU. The GPU color value
+          // (getScaleValue) and filter (getFilterValue) attributes ride in data.attributes (per-vertex).
+          data: tileDeckData(data, colorChannel, colorCategories, slots?.size) as never,
           _normalize: false, // rings are already simple + consistent from the bake
           positionFormat: 'XY',
           coordinateSystem,
           opacity: 0.85,
           pickable,
-          ...filterProps,
+          ...gpuProps,
           // autoHighlight is intentionally OFF: it forces a full picking pass + synchronous
           // gl.readPixels on every pointermove (re-rasterizing every on-screen mark), which is the
           // dominant pan/hover stall. Click still picks on demand via onClick — inspection is intact.
@@ -193,7 +210,7 @@ export default function App() {
       }
       return new ScatterplotLayer({
         id,
-        data: tileDeckData(data, colorChannel, colorOf, scaleKey, slots?.size) as never,
+        data: tileDeckData(data, colorChannel, colorCategories, slots?.size) as never,
         coordinateSystem,
         radiusUnits: 'pixels',
         getRadius: 1.6,
@@ -202,11 +219,11 @@ export default function App() {
         stroked: false,
         opacity: 0.85,
         pickable,
-        ...filterProps,
+        ...gpuProps,
         autoHighlight: false, // see the polygon layer above — per-pointermove picking is the pan stall
       });
     });
-  }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorOf, scaleKey, inspect, slots, filterProps]);
+  }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorCategories, inspect, slots, gpuProps]);
 
   return (
     <div style={{ position: 'absolute', inset: 0, background: 'var(--app-bg)' }}>

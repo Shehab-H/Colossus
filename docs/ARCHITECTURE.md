@@ -75,8 +75,10 @@ Config-driven: the client reads the manifest descriptor and one code path render
 - `lib/channels.ts` — channel helpers: the color channel, its observed domain (numeric range / categories), filter option discovery, and the canonical category order (`canonicalCategories`).
 - `lib/gpuFilter.ts` — the GPU-filter mapping: filter slots per view, filter values per mark, and filter selections → `DataFilterExtension` `filterRange`/`filterEnabled` uniforms. A filter change touches no tile bytes.
 - `lib/colors.ts` / `lib/schemes.ts` — color primitives (hex + interpolation) and the named scheme registry (sequential / diverging / categorical families).
-- `lib/colorScale.ts` — the scale engine: `encoding.color` + observed domain → a `value → RGB` function, across all scale types and datatypes.
-- `lib/deckData.ts` — memoized deck binary attributes (geometry built once; recolor is a client scan through the scale; the GPU filter attribute rides in `data.attributes`).
+- `lib/colorScale.ts` — the scale engine: `encoding.color` + observed domain → a `value → RGB` function, across all scale types and datatypes. Stays the CPU authority the GPU LUT is sampled from and tested against.
+- `lib/colorLut.ts` — samples `colorScale.ts` into a small RGBA8 lookup-table texture + `domain`/`transform`/`kind` uniforms; parity with `colorScale` is asserted per scale type without a GPU.
+- `lib/colorScaleExtension.ts` — a deck `LayerExtension` that uploads the LUT texture and maps the per-mark `getScaleValue` attribute → color in the vertex shader. Recoloring is a texture/uniform update; no per-mark data moves.
+- `lib/deckData.ts` — memoized deck binary attributes (geometry built once; the per-mark `getScaleValue` value attribute is built once per (tile, channel); the GPU filter attribute rides in `data.attributes`; no CPU color array exists).
 - `components/InspectPanel.tsx` — the pinned click-to-inspect readout, driven by the view's `inspect` config.
 - `lib/tileCache.ts` — a framework-free `TileCache` publishing an immutable `TileSnapshot`; the
   `useTiles` hook consumes it via `useSyncExternalStore`, so React state stays derived, not juggled.
