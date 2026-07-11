@@ -11,6 +11,12 @@ public sealed record ReductionContext
     public required int MaxZoom { get; init; }
     public required ViewConfig View { get; init; }
 
+    /// <summary>Group regime (GROUP-MEASURES): <see cref="View"/> is the effective marks view and the
+    /// staging is the grouped marks table, so tiles also carry the mark <c>id</c> and each dict channel
+    /// (merged sub-pixel cells take the grid key and the mode). Default false — the row regime is
+    /// byte-for-byte unchanged.</summary>
+    public bool GroupRegime { get; init; }
+
     /// <summary>Canonical value order per dictionary-encoded channel (its full-extract domain, when not
     /// truncated), so tiles write dictionaries in this order and tile-local codes equal the canonical
     /// codes the client filters/colors by — no client remap. Null/absent channel → per-tile first-seen

@@ -23,13 +23,11 @@ public sealed class AggregateReducer : IReductionStrategy
 
     public ReductionResult Reduce(ReductionContext ctx)
     {
-        string[] measures = Measures(ctx.View);
-
         var tiles = new List<TileMeta>();
         long leafTotal = 0;
         using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!);
         LoadStaging(db, ctx.StagingParquetPath, ctx.Root);
-        BuildPyramid(db, ctx, measures, tiles, ref leafTotal);
+        BuildPyramid(db, ctx, tiles, ref leafTotal);
         return new ReductionResult(tiles, leafTotal);
     }
 
@@ -37,6 +35,15 @@ public sealed class AggregateReducer : IReductionStrategy
         .Where(c => c.Role == ChannelRole.Measure)
         .Select(c => c.Name)
         .ToArray();
+
+    // Group regime only: the dict channels a tile carries alongside geometry — perMark dimensions and
+    // argmax measures. Merged sub-pixel cells take the mode; the mark id is handled separately.
+    private static string[] DictCarry(ViewConfig view) => view.Source.Channels
+        .Where(c => c.Type == ChannelType.Dict && c.Name != TileSchema.Id)
+        .Select(c => c.Name)
+        .ToArray();
+
+    private static bool HasId(ViewConfig view) => view.Source.Channels.Any(c => c.Name == TileSchema.Id);
 
     // Loads staging and tags each row with zreal = the first zoom whose ~1px grid cell the polygon's
     // extent still exceeds, i.e. the level at which it stops being sub-pixel and becomes real.
@@ -61,7 +68,7 @@ public sealed class AggregateReducer : IReductionStrategy
             """);
     }
 
-    private static void BuildPyramid(DuckDbSession db, ReductionContext ctx, string[] measures,
+    private static void BuildPyramid(DuckDbSession db, ReductionContext ctx,
         List<TileMeta> tiles, ref long leafTotal)
     {
         if (db.Scalar("SELECT count(*) FROM t") == 0) return;
@@ -83,7 +90,7 @@ public sealed class AggregateReducer : IReductionStrategy
                 """);
             var internals = db.LongPairs("SELECT tx, ty FROM internals");
 
-            var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, measures),
+            var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, ctx.View, ctx.GroupRegime),
                 (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath),
                 ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
 
@@ -105,8 +112,10 @@ public sealed class AggregateReducer : IReductionStrategy
     }
 
     // Rows at this level, partitioned by (tx, ty): real polygons pass through untouched; sub-pixel rows
-    // collapse to one synthetic ~1px cell per occupied grid square, averaging each measure.
-    private static string ContentSql(Bbox root, int z, string[] measures)
+    // collapse to one synthetic ~1px cell per occupied grid square, averaging each measure. In the group
+    // regime the mark id and dict channels ride along too — a merged cell takes the grid key as its id
+    // (matching its fact companion, MarkKey) and the mode of each dict channel.
+    private static string ContentSql(Bbox root, int z, ViewConfig view, bool groupRegime)
     {
         string tx = TileSql.TileIndex(root, z, Axis.X);
         string ty = TileSql.TileIndex(root, z, Axis.Y);
@@ -118,10 +127,24 @@ public sealed class AggregateReducer : IReductionStrategy
         double halfX = TileSql.GridCellSize(root, z, Axis.X) / 2, halfY = TileSql.GridCellSize(root, z, Axis.Y) / 2;
         string ring = $"[{x0}::FLOAT, {y0}::FLOAT, {x1}::FLOAT, {y0}::FLOAT, {x1}::FLOAT, {y1}::FLOAT, {x0}::FLOAT, {y1}::FLOAT, {x0}::FLOAT, {y0}::FLOAT]";
 
+        string[] measures = Measures(view);
         // f32 with null → NaN so the tile buffer is view-safe on the client (format 2): no null bitmap,
         // no cast. avg() of an all-null group would otherwise be NULL.
         string measReal = string.Concat(measures.Select(m => $", COALESCE(\"{m}\"::FLOAT, 'nan'::FLOAT) AS \"{m}\""));
         string measAvg = string.Concat(measures.Select(m => $", COALESCE(avg(\"{m}\")::FLOAT, 'nan'::FLOAT) AS \"{m}\""));
+
+        string idReal = "", idMerged = "", dictReal = "", dictMerged = "";
+        if (groupRegime)
+        {
+            if (HasId(view))
+            {
+                idReal = $", \"{TileSchema.Id}\"";
+                idMerged = $", {MarkKey.MergedSql("gx", "gy")} AS \"{TileSchema.Id}\"";
+            }
+            string[] dicts = DictCarry(view);
+            dictReal = string.Concat(dicts.Select(d => $", \"{d}\""));
+            dictMerged = string.Concat(dicts.Select(d => $", mode(\"{d}\") AS \"{d}\""));
+        }
 
         return $"""
             WITH v AS (
@@ -129,14 +152,14 @@ public sealed class AggregateReducer : IReductionStrategy
               FROM t JOIN act ON {tx} = act.tx AND {ty} = act.ty
             )
             SELECT tx, ty, {TileSchema.X}::FLOAT AS {TileSchema.X}, {TileSchema.Y}::FLOAT AS {TileSchema.Y},
-                   {TileSchema.Geometry}, {TileSchema.PartOffsets}{measReal}
+                   {TileSchema.Geometry}, {TileSchema.PartOffsets}{idReal}{measReal}{dictReal}
             FROM v WHERE zreal <= {z}
             UNION ALL
             SELECT tx, ty,
                    ({x0} + {Sql.Lit(halfX)})::FLOAT AS {TileSchema.X},
                    ({y0} + {Sql.Lit(halfY)})::FLOAT AS {TileSchema.Y},
                    {ring} AS {TileSchema.Geometry},
-                   [0, 5]::INTEGER[] AS {TileSchema.PartOffsets}{measAvg}
+                   [0, 5]::INTEGER[] AS {TileSchema.PartOffsets}{idMerged}{measAvg}{dictMerged}
             FROM v WHERE zreal > {z}
             GROUP BY tx, ty, gx, gy
             ORDER BY tx, ty

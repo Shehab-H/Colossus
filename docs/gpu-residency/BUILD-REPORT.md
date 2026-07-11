@@ -30,7 +30,7 @@ Green before any code change:
 | 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
-| 4 — Group/measure | in progress | — | §1 config+parser+validation, §2 fact grouper done (below); §3–8 pending |
+| 4 — Group/measure | in progress | — | §1 config+parser+validation, §2 grouper, §3 effective view + reducer done (below); §4–8 pending |
 | 4-fetch — Fetch locality | not started | — | 4.1 SW cache + 4.2 prefetch in scope; 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
@@ -231,3 +231,26 @@ plumbing, DuckDB-only, no ClickHouse; nothing wired into the bake orchestration 
 facts parquet → marks: 2 marks for 4 facts; `total_tests`/`wavg`/`share`/`argmax` values exact;
 `region` classified perMark (carried via `first`), `operator`/`quarter`/`tests`/`download_mbps`
 perFact (dropped from marks); geometry ring carried; ids distinct.
+
+### §3 — Effective render view + AggregateReducer group-regime columns
+
+**What landed.** The reducer can now tile a marks table: it carries the mark `id` and dict channels
+alongside geometry/measures, with the right sub-pixel merge semantics. Still not wired into the bake
+(nothing sets `GroupRegime` yet) — so the row regime is byte-for-byte unchanged and all Phase-0–3
+tiles are identical.
+
+- **`EffectiveView.For(authored, grouping)`** (Application): builds the internal marks view — `id`
+  (identity/dict), each perMark channel (authored role/type), and every measure materialized
+  (numeric → measure/f32; argmax → dimension/dict). `Measures = null` (it is the materialized table,
+  not a group source), so `DictionaryEncodedChannels()` and the reducer treat it as an ordinary view.
+- **`ReductionContext.GroupRegime`** (default false). **`AggregateReducer`**: when true, `ContentSql`
+  also emits `id` (real → pass-through the marks id; merged → `MarkKey.MergedSql(gx,gy)`, matching the
+  companion) and every dict channel (real → pass-through; merged → `mode()`); measures still average.
+  When false the SQL is identical to before — the row-regime gate that keeps ookla-fixed/mobile-coverage
+  tiles untouched.
+
+**Acceptance evidence.** `dotnet test` 110 passed (+3). `EffectiveViewTests` pins the channel
+materialization + dict-encoding set. `AggregateReducerTests` (synthetic marks parquet → DuckDB):
+real marks pass `id`/`region`/`dominant_operator`/`total_tests` through; three sub-pixel marks in one
+cell collapse to one row with a `g:` grid-key id, `mode()` of each dict, and the measure averaged.
+Row-regime reducer/tiling tests unchanged.
