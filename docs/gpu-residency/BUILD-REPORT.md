@@ -300,3 +300,23 @@ domains, real scanner): only `apex` ever dominates, but `dominant_operator`'s co
 canonical order; `total_tests` numeric domain from marks, `quarter` temporal bounds from facts;
 grain = `[operator, quarter]`. Row-regime bake path unchanged (all prior tests green). Note: the full
 live bake of `mobile-dominance` (ClickHouse) is §9; this commit is unit-proven end to end without it.
+
+### §6 — Client types + parser mirror + classification
+
+**What landed.** The client-side data model for the group regime, plus the measure parser mirror. No
+rendering change yet (the group-regime decode/fold is §7–8); the row regime is untouched — all helpers
+short-circuit when `isGroupRegime` is false.
+
+- **`measures.ts`** (parser half): the AST + `parseMeasure`, a faithful port of the C# grammar (same
+  tokens, same errors). `measures.test.ts` pins it against the **shared** `measure-cases.json` — the
+  same file the C# `MeasureParserTests` read, so the two parsers can't drift. Fold engine is §7.
+- **`manifest.ts`:** `MeasureSpec`, `ViewConfig.measures?`, `FactChannels`, `Manifest.factChannels?`/
+  `companionTiles?`/`grainChannels?`, and `factsUrl` (the `.facts.arrow` companion URL).
+- **`channels.ts`:** `isGroupRegime`, `measureNames`, `measureChannelSpecs` (a measure → virtual
+  channel: argmax → dict dimension, else f32 measure), `renderChannels` (the columns a tile actually
+  carries — group regime = id + perMark + measures), group-aware `colorableChannels(manifest)`,
+  measure-aware `colorChannelName`/`describeColorDomain`, and `splitFilters` (perFact → fold context,
+  the rest → GPU predicate). Row-regime manifests split all-predicate — unchanged.
+
+**Acceptance evidence.** `tsc -b` clean, `oxlint` clean, `vitest` 112 passed (+2, the parser fixture).
+Cross-language parity: TS and C# now agree on every `measure-cases.json` AST and error.

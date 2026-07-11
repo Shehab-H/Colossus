@@ -258,7 +258,7 @@ export default function App() {
           viewId={viewId}
           onViewChange={selectView}
           error={error ?? loadError ?? (viewId ? null : viewsError)}
-          colorChannels={manifest ? colorableChannels(manifest.view) : []}
+          colorChannels={manifest ? colorableChannels(manifest) : []}
           colorChannel={colorChannel}
           onColorChannelChange={setColorChannel}
           channels={manifest ? filterableChannels(manifest.view) : []}

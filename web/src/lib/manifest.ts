@@ -74,6 +74,12 @@ export interface InspectSpec {
   title?: string;
 }
 
+/** A computed per-mark value (VIEW_CONFIG §4). Its presence opts the view into the group regime. */
+export interface MeasureSpec {
+  name: string;
+  expr: string;
+}
+
 export interface ViewConfig {
   id: string;
   title?: string;
@@ -81,8 +87,16 @@ export interface ViewConfig {
   mark: Mark;
   reduction?: string;
   source: SourceSpec;
+  measures?: MeasureSpec[];
   encoding?: EncodingSpec;
   inspect?: InspectSpec;
+}
+
+/** Group regime: the derived split of a view's channels. perMark channels ride the render tiles;
+ *  perFact channels live only in the fact companions and drive the fold. */
+export interface FactChannels {
+  perMark: string[];
+  perFact: string[];
 }
 
 export interface TileMeta {
@@ -120,6 +134,12 @@ export interface Manifest {
   tiles: TileMeta[];
   /** Absent on manifests from older bakes — consumers fall back to scanning the root tile. */
   channelDomains?: Record<string, ChannelDomain>;
+  /** Group regime only: the perMark/perFact split (routes a filter to a GPU predicate or the fold). */
+  factChannels?: FactChannels;
+  /** True when the bake wrote a `z/x/y.facts.arrow` companion beside every tile. */
+  companionTiles?: boolean;
+  /** The companion grain columns (perFact dict + temporal), the dimensions the fact partials key by. */
+  grainChannels?: string[];
 }
 
 const TILES_BASE = import.meta.env.VITE_TILES_BASE ?? 'http://localhost:5174/tiles';
@@ -127,6 +147,11 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? TILES_BASE.replace(/\/t
 
 export function tileUrl(viewId: string, version: string, z: number, x: number, y: number): string {
   return `${TILES_BASE}/${viewId}/${version}/${z}/${x}/${y}.arrow`;
+}
+
+/** The fact companion beside a group-regime render tile (GROUP-MEASURES §4). */
+export function factsUrl(viewId: string, version: string, z: number, x: number, y: number): string {
+  return `${TILES_BASE}/${viewId}/${version}/${z}/${x}/${y}.facts.arrow`;
 }
 
 /** Resolve latest.json → manifest.json for a view. */

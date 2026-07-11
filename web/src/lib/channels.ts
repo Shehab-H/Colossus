@@ -1,6 +1,7 @@
 import type { ChannelSpec, Manifest, ViewConfig } from './manifest';
 import { tileUrl } from './manifest';
 import { fetchArrowTable } from './arrow';
+import { parseMeasure } from './measures';
 import type { ColorDomain } from './colorScale';
 
 /** Sentinel filter value meaning "no predicate on this channel". */
@@ -43,23 +44,76 @@ export const NUMERIC_TYPES = new Set(['f32', 'f64', 'u8', 'u16', 'i32', 'i64']);
 
 export const isNumericChannel = (ch: ChannelSpec | undefined): boolean => !!ch && NUMERIC_TYPES.has(ch.type);
 
-/** Every measure channel — carried in every tile, and the usual choice to color by. */
+/** Every measure-role source channel — carried in every row-regime tile, the usual choice to color by. */
 export const measureChannels = (view: ViewConfig): ChannelSpec[] =>
   view.source.channels.filter((c) => c.role === 'measure');
 
-/** Any channel a view can color by (every carried channel). */
-export const colorableChannels = (view: ViewConfig): ChannelSpec[] => view.source.channels;
+/** A view is in the group regime iff it declares measures (VIEW_CONFIG §1). */
+export const isGroupRegime = (view: ViewConfig): boolean => (view.measures?.length ?? 0) > 0;
+
+export const measureNames = (view: ViewConfig): string[] => view.measures?.map((m) => m.name) ?? [];
+
+/** Each declared measure as a virtual channel: argmax/argmin colour categorically over the dimension's
+ *  domain (dict); every other measure is numeric (f32). Mirrors the bake's effective view. */
+export function measureChannelSpecs(view: ViewConfig): ChannelSpec[] {
+  return (view.measures ?? []).map((m) => {
+    const { kind } = parseMeasure(m.expr);
+    const categorical = kind === 'argmax' || kind === 'argmin';
+    return {
+      name: m.name,
+      column: m.name,
+      role: categorical ? 'dimension' : 'measure',
+      type: categorical ? 'dict' : 'f32',
+    };
+  });
+}
+
+/** The columns a render tile actually carries. Row regime: the source channels. Group regime: the
+ *  effective marks view — the mark `id`, the perMark channels, and each materialized measure. */
+export function renderChannels(manifest: Manifest): ChannelSpec[] {
+  const view = manifest.view;
+  if (!isGroupRegime(view)) return view.source.channels;
+  const perMark = new Set(manifest.factChannels?.perMark ?? []);
+  const id: ChannelSpec = { name: 'id', column: 'id', role: 'identity', type: 'dict' };
+  return [id, ...view.source.channels.filter((c) => perMark.has(c.name)), ...measureChannelSpecs(view)];
+}
+
+/** Any channel a view can color by. Row regime: every carried channel. Group regime: the measures plus
+ *  the perMark channels (a raw perFact channel has no single per-mark value to colour). */
+export function colorableChannels(manifest: Manifest): ChannelSpec[] {
+  const view = manifest.view;
+  if (!isGroupRegime(view)) return view.source.channels;
+  const perMark = new Set(manifest.factChannels?.perMark ?? []);
+  return [...view.source.channels.filter((c) => perMark.has(c.name)), ...measureChannelSpecs(view)];
+}
 
 export const filterableChannels = (view: ViewConfig): ChannelSpec[] =>
   view.source.channels.filter((c) => c.role === 'dimension' || c.role === 'temporal');
 
-/** The channel a view colors by initially: the authored `encoding.color.channel` if it's real, else the
- *  first measure, else the first channel. */
+/** The channel a view colors by initially: the authored `encoding.color.channel` if it names a channel
+ *  or a measure, else the first measure (group regime) / first measure channel, else the first channel. */
 export const colorChannelName = (view: ViewConfig): string => {
   const authored = view.encoding?.color?.channel;
-  if (authored && view.source.channels.some((c) => c.name === authored)) return authored;
+  const names = new Set<string>([...view.source.channels.map((c) => c.name), ...measureNames(view)]);
+  if (authored && names.has(authored)) return authored;
+  if (isGroupRegime(view)) return measureNames(view)[0] ?? view.source.channels[0]?.name ?? 'value';
   return measureChannels(view)[0]?.name ?? view.source.channels[0]?.name ?? 'value';
 };
+
+/** Split the active filters by classification: perFact filters are fold *context* (they never reach tile
+ *  decode); everything else is a GPU *predicate* exactly as in the row regime. Row-regime views (no
+ *  `factChannels`) yield an all-predicate split — unchanged behaviour. */
+export interface SplitFilters {
+  predicate: Record<string, string>;
+  context: Record<string, string>;
+}
+export function splitFilters(manifest: Manifest, active: Record<string, string>): SplitFilters {
+  const perFact = new Set(manifest.factChannels?.perFact ?? []);
+  const predicate: Record<string, string> = {};
+  const context: Record<string, string> = {};
+  for (const [name, v] of Object.entries(active)) (perFact.has(name) ? context : predicate)[name] = v;
+  return { predicate, context };
+}
 
 /** The active (non-ALL) filter selections, restricted to channels the view can filter — a stale
  *  selection left over from a previous view can never leak into another view's predicate. */
@@ -84,7 +138,9 @@ export function canonicalCategories(manifest: Manifest, channel: string): string
  *  manifests (or capped/truncated domains) fall back to scanning the root tile, exactly as before. */
 export async function describeColorDomain(manifest: Manifest, channel: string): Promise<ColorDomain> {
   const view = manifest.view;
-  const spec = view.source.channels.find((c) => c.name === channel);
+  const spec =
+    view.source.channels.find((c) => c.name === channel) ??
+    measureChannelSpecs(view).find((c) => c.name === channel);
   const numeric = isNumericChannel(spec);
 
   const baked = manifest.channelDomains?.[channel];
