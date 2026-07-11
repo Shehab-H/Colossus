@@ -30,7 +30,7 @@ Green before any code change:
 | 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
-| 4 — Group/measure | in progress | — | §1–4 done (config+parser+validation, grouper, effective view+reducer, companions); §5 domains/wiring + §6–8 client pending |
+| 4 — Group/measure | in progress | — | §1–5 done (bake half complete: config/parser/validation, grouper, effective view+reducer, companions, domains+wiring); §6–8 client pending |
 | 4-fetch — Fetch locality | not started | — | 4.1 SW cache + 4.2 prefetch in scope; 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
@@ -276,3 +276,27 @@ facts as partial-aggregate rows at grain, keyed by `mk` to the tile's mark ids. 
 `GroupBakeTests` (facts → grouper → effective view + companion → reducer, all DuckDB): real marks →
 companion with 4 grain rows whose `mk`s are exactly the tile's mark ids, `Σ sum__tests`/`Σ swp`
 correct; two marks that merge → companion keyed by the `g:` grid cell, partials folded across both.
+
+### §5 — Two-staging domains + bake wiring (bake half complete)
+
+**What landed.** The group regime is now wired into the bake end to end. This is the first commit that
+sets `GroupRegime`/`Companion` in production — a view with a `measures` block now bakes to grouped
+marks + companions; a view without one is unchanged (same path, same tiles).
+
+- **`GroupRegimeArtifacts.Build`** (Application): scans the marks staging (numeric measures + perMark
+  dims — default-context, stable scales) and the facts (perFact filter options + argmax colour
+  domains), then assembles the manifest domains, the companion spec, and the canonical dict orders.
+  **The crux:** an argmax measure colours over its *dimension's full domain* (a filter can make any
+  value dominant), and the argmax measure and its dimension get the **same** canonical order — so the
+  render tile's measure codes and the companion's dimension codes coincide, and the client folds
+  argmax straight into the tile's colours with no remap.
+- **`BakeViewUseCase`**: branches on `HasMeasures`. Group path: `GroupToMarks` → `GroupRegimeArtifacts`
+  → reduce the marks with `GroupRegime`/`Companion`/render canonical orders; manifest carries the
+  authored view plus `FactChannels`/`CompanionTiles`/`GrainChannels`. Grouper registered in DI.
+
+**Acceptance evidence.** `dotnet test` 115 passed (+1). `GroupRegimeArtifactsTests` (facts → grouper →
+domains, real scanner): only `apex` ever dominates, but `dominant_operator`'s colour domain is the full
+`{apex, nova, zenith}`; `dominant_operator` (render) and `operator` (companion) resolve to the **same**
+canonical order; `total_tests` numeric domain from marks, `quarter` temporal bounds from facts;
+grain = `[operator, quarter]`. Row-regime bake path unchanged (all prior tests green). Note: the full
+live bake of `mobile-dominance` (ClickHouse) is §9; this commit is unit-proven end to end without it.

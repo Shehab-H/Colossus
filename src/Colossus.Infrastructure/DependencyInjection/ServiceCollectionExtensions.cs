@@ -34,6 +34,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IBakeStore>(_ => new FileBakeStore());
         services.AddSingleton<IViewCatalog>(_ => new ViewRegistry());
         services.AddSingleton<IChannelDomainScanner, DuckDbChannelDomainScanner>();
+        services.AddSingleton<IFactGrouper, DuckDbFactGrouper>();
 
         // Use cases.
         services.AddSingleton<BakePlanner>();
