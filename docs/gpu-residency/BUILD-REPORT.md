@@ -30,7 +30,7 @@ Green before any code change:
 | 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
-| 4 — Group/measure | in progress | — | §1 config+parser+validation, §2 grouper, §3 effective view + reducer done (below); §4–8 pending |
+| 4 — Group/measure | in progress | — | §1–4 done (config+parser+validation, grouper, effective view+reducer, companions); §5 domains/wiring + §6–8 client pending |
 | 4-fetch — Fetch locality | not started | — | 4.1 SW cache + 4.2 prefetch in scope; 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
@@ -254,3 +254,25 @@ materialization + dict-encoding set. `AggregateReducerTests` (synthetic marks pa
 real marks pass `id`/`region`/`dominant_operator`/`total_tests` through; three sub-pixel marks in one
 cell collapse to one row with a `g:` grid-key id, `mode()` of each dict, and the measure averaged.
 Row-regime reducer/tiling tests unchanged.
+
+### §4 — Fact companions + manifest fields
+
+**What landed.** The reducer now writes a `z/x/y.facts.arrow` beside every render tile: the tile's
+facts as partial-aggregate rows at grain, keyed by `mk` to the tile's mark ids. Still gated behind
+`ctx.Companion` (unset until §5 wiring), so the row regime is untouched.
+
+- **`MeasurePartials`** (Domain.Measures): the union of partial columns the measures need, with the
+  deterministic names (`sum__ch`, `cnt`, `swp__ch__w`, `min__ch`, `max__ch`) that are the fourth
+  cross-language contract; `share`/`argmax` reduce to their inner agg's partials.
+- **`ReductionContext.Companion`** (`CompanionSpec`: facts path, grain channels, partials, canonical
+  dict orders). **`AggregateReducer`**: `LoadTagged` now loads the facts too (same zreal formula, so a
+  fact's merge decision matches its mark's); `CompanionSql` groups facts by `(mk, grain…)` where
+  `mk = zreal ≤ z ? MarkKey.RealSql : MarkKey.MergedSql(gx,gy)` — the exact id the render tile carries.
+  Companions ride the same active tiles, so each tile gets one.
+- **Manifest** gains `FactChannels` (perMark/perFact split), `CompanionTiles`, `GrainChannels`
+  (definitions only; populated in §5).
+
+**Acceptance evidence.** `dotnet test` 114 passed (+4). `MeasurePartialsTests` pins the partial union.
+`GroupBakeTests` (facts → grouper → effective view + companion → reducer, all DuckDB): real marks →
+companion with 4 grain rows whose `mk`s are exactly the tile's mark ids, `Σ sum__tests`/`Σ swp`
+correct; two marks that merge → companion keyed by the `g:` grid cell, partials folded across both.

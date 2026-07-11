@@ -1,3 +1,4 @@
+using Colossus.Domain.Measures;
 using Colossus.Domain.Model;
 using Colossus.Domain.Reduction;
 using Colossus.Domain.Tiling;
@@ -26,7 +27,11 @@ public sealed class AggregateReducer : IReductionStrategy
         var tiles = new List<TileMeta>();
         long leafTotal = 0;
         using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!);
-        LoadStaging(db, ctx.StagingParquetPath, ctx.Root);
+        LoadTagged(db, "t", ctx.StagingParquetPath, ctx.Root);
+        // Facts share each mark's geometry, so a fact's zreal equals its mark's — the merge decision
+        // (real vs grid-cell) that the marks pyramid makes and the companion mirrors are the same.
+        if (ctx.Companion is { } companion)
+            LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root);
         BuildPyramid(db, ctx, tiles, ref leafTotal);
         return new ReductionResult(tiles, leafTotal);
     }
@@ -45,9 +50,10 @@ public sealed class AggregateReducer : IReductionStrategy
 
     private static bool HasId(ViewConfig view) => view.Source.Channels.Any(c => c.Name == TileSchema.Id);
 
-    // Loads staging and tags each row with zreal = the first zoom whose ~1px grid cell the polygon's
-    // extent still exceeds, i.e. the level at which it stops being sub-pixel and becomes real.
-    private static void LoadStaging(DuckDbSession db, string stagingParquetPath, Bbox root)
+    // Loads a parquet and tags each row with zreal = the first zoom whose ~1px grid cell the polygon's
+    // extent still exceeds, i.e. the level at which it stops being sub-pixel and becomes real. Used for
+    // the marks staging (the pyramid) and, in the group regime, the facts (the companions).
+    private static void LoadTagged(DuckDbSession db, string table, string parquetPath, Bbox root)
     {
         string coordsAt(int parity) =>
             $"list_filter({TileSchema.Geometry}, (v, i) -> i % 2 = {parity})";
@@ -55,10 +61,10 @@ public sealed class AggregateReducer : IReductionStrategy
                         $"list_max({coordsAt(0)}) - list_min({coordsAt(0)}))";
 
         db.Exec($"""
-            CREATE TABLE t AS
+            CREATE TABLE {table} AS
             WITH s AS (
               SELECT *, {extent} AS ext
-              FROM read_parquet('{Sql.Path(stagingParquetPath)}')
+              FROM read_parquet('{Sql.Path(parquetPath)}')
             )
             SELECT *, CASE
               WHEN ext IS NULL OR ext <= 0 THEN {ZCap}
@@ -93,6 +99,14 @@ public sealed class AggregateReducer : IReductionStrategy
             var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, ctx.View, ctx.GroupRegime),
                 (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath),
                 ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+
+            // Companions ride the same active tiles (facts share their marks' (tx,ty)), so each render
+            // tile gets a z/x/y.facts.arrow with its facts' partials at grain, keyed by mk.
+            if (ctx.Companion is { } companion)
+                ArrowTileWriter.WritePartitioned(db.Connection, CompanionSql(ctx.Root, z, companion),
+                    (wtx, wty) => Path.Combine(ctx.OutputDirectory, $"{z}/{wtx}/{wty}.facts.arrow"),
+                    companion.GrainChannels.Where(c => c.Type == ChannelType.Dict).Select(c => c.Name).ToHashSet(),
+                    companion.CanonicalDictionaryOrders);
 
             foreach (var (wtx, wty, rows) in written)
             {
@@ -165,4 +179,39 @@ public sealed class AggregateReducer : IReductionStrategy
             ORDER BY tx, ty
             """;
     }
+
+    // Fact partials at grain for this level, partitioned by (tx, ty). Each fact is keyed by its mark's
+    // mk — the real geometry key while the mark is real (zreal ≤ z), else the grid-cell key it merged
+    // into — exactly the id the render tile carries, so the client joins the two by string equality.
+    private static string CompanionSql(Bbox root, int z, CompanionSpec c)
+    {
+        string tx = TileSql.TileIndex(root, z, Axis.X);
+        string ty = TileSql.TileIndex(root, z, Axis.Y);
+        string gx = TileSql.GridIndex(root, z, Axis.X);
+        string gy = TileSql.GridIndex(root, z, Axis.Y);
+        string mk = $"CASE WHEN zreal <= {z} THEN {MarkKey.RealSql()} ELSE {MarkKey.MergedSql("gx", "gy")} END";
+        string grain = string.Concat(c.GrainChannels.Select(ch => $", \"{ch.Name}\""));
+        string partials = string.Concat(c.Partials.Select(p => $", {PartialSql(p)} AS \"{p.Name}\""));
+
+        return $"""
+            WITH vf AS (
+              SELECT facts.*, {gx} AS gx, {gy} AS gy, {tx} AS tx, {ty} AS ty
+              FROM facts JOIN act ON {tx} = act.tx AND {ty} = act.ty
+            )
+            SELECT tx, ty, ({mk}) AS mk{grain}{partials}
+            FROM vf
+            GROUP BY ALL
+            ORDER BY tx, ty
+            """;
+    }
+
+    private static string PartialSql(Partial p) => p.Kind switch
+    {
+        PartialKind.Sum => $"COALESCE(sum(\"{p.Channel}\"), 0)::FLOAT",
+        PartialKind.Count => "count(*)::INTEGER",
+        PartialKind.Swp => $"COALESCE(sum(\"{p.Channel}\" * \"{p.Weight}\"), 0)::FLOAT",
+        PartialKind.Min => $"min(\"{p.Channel}\")::FLOAT",
+        PartialKind.Max => $"max(\"{p.Channel}\")::FLOAT",
+        _ => throw new InvalidOperationException($"unhandled partial {p.Kind}"),
+    };
 }

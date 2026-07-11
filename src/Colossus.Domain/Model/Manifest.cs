@@ -38,7 +38,21 @@ public sealed record Manifest
     /// sample — sees every row, so no category can be missing. Null on manifests from older bakes;
     /// the client falls back to its tile scan.</summary>
     public IReadOnlyDictionary<string, ChannelDomain>? ChannelDomains { get; init; }
+
+    /// <summary>Group regime only (GROUP-MEASURES): the derived perMark/perFact split so the client can
+    /// route a filter as a GPU predicate (perMark) or a fold context (perFact). Null in the row regime.</summary>
+    public FactChannels? FactChannels { get; init; }
+
+    /// <summary>True when the bake wrote a <c>z/x/y.facts.arrow</c> companion beside every tile.</summary>
+    public bool CompanionTiles { get; init; }
+
+    /// <summary>The companion grain columns (perFact dict + temporal channels), so the client knows what
+    /// dimensions its fact partials are keyed by. Null in the row regime.</summary>
+    public IReadOnlyList<string>? GrainChannels { get; init; }
 }
+
+/// <summary>The derived channel split of a group-regime view.</summary>
+public sealed record FactChannels(IReadOnlyList<string> PerMark, IReadOnlyList<string> PerFact);
 
 /// <summary>One channel's observed domain. Numeric channels carry min/max plus a quantile grid (the
 /// client derives quantile-scale breaks from it); non-numeric channels carry their distinct values,
