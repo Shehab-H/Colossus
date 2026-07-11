@@ -30,7 +30,8 @@ Green before any code change:
 | 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
-| 4 — Group/measure | not started | — | |
+| 4 — Group/measure | in progress | — | §1 config model + parser + validation done (below); §2–8 pending |
+| 4-fetch — Fetch locality | not started | — | 4.1 SW cache + 4.2 prefetch in scope; 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
 
@@ -175,3 +176,36 @@ on `manifest.tileFormat: 2`; the format-1 copy path stays for older bakes.
   test), so it is covered by the fresh re-bake + `verify` + the live render (names/classes decode correctly)
   rather than a DuckDB round-trip. The canonical-dictionary-order and tile-global-triangle writer changes have
   new `dotnet` round-trip tests.
+
+## Phase 4 — Group/measure model
+
+Executing GROUP-MEASURES.md v0 (the "In" column); the "Out (deferred)" column — GPU fold (5.3),
+keyed wkt/geohash/h3, point marks, server DuckDB fold, quadtree/raw group regime — stays unbuilt.
+
+### §1 — Config model + parser + validation
+
+**What landed.** The measure grammar (VIEW_CONFIG §4) as a pure Domain module, wired into config
+validation. No bake or client behavior changes yet — a view with no `measures` block is byte-for-byte
+as before (all row-regime checks unchanged; the new path is skipped when `HasMeasures` is false).
+
+- **New `Colossus.Domain.Measures`:** `MeasureExpr` AST (`Sum|Count|Avg|Wavg|Min|Max` under `Agg`
+  with optional `Where`; `Share(inner, whereCh, whereVal)`; `ArgExt(dim, inner, isMax)`) +
+  `MeasureParser` (recursive-descent tokenizer/parser, syntax only, errors name the offending token)
+  + `MeasureParseException`.
+- **`ViewConfig`:** `MeasureSpec(Name, Expr)` record; `Measures?` list; `HasMeasures`. `Validate()`
+  now parses every measure and applies the config-time subset of §11: measure-name uniqueness + no
+  channel collision, numeric verb args, dict `dim`/`where` channels, keyed geometry (v0 quadkey),
+  and `encoding.color`/`inspect` resolving against channels ∪ measures. Data-dependent rules
+  (perFact classification, companion budget) are deferred to bake §2–4.
+- **Cross-language fixture:** `tests/fixtures/measure-cases.json` (parse cases pin the AST, error
+  cases pin the message substring) — the third shared authority alongside tiling and schema. The C#
+  side (`MeasureParserTests`, `JsonNode.DeepEquals` on a canonical description) pins it now; the web
+  mirror (§7) will pin the same file.
+
+**Acceptance evidence.**
+
+| Criterion | Result |
+|---|---|
+| `dotnet build` (Domain) | succeeded, 0 warnings |
+| `dotnet test` (full suite) | 106 passed (was 93) — +2 parser fixture, +11 validation |
+| Row-regime unchanged | `Valid().HasMeasures == false`; no measure code runs; existing 93 still green |
