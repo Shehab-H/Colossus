@@ -31,7 +31,7 @@ Green before any code change:
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
 | 4 — Group/measure | done (v0) | — | §1–9 landed: bake (config/parser/validation, grouper, effective view+reducer, companions, domains+wiring), client (types+parser, fold, render integration), view+bake+verify PASS on 7.6M real facts. Live browser recolour is the one manual step left. |
-| 4-fetch — Fetch locality | in progress | — | 4.1 SW cache done (below); 4.2 prefetch pending; 4.3 pack container deferred (owner gate) |
+| 4-fetch — Fetch locality | done | — | 4.1 SW cache + 4.2 prefetch landed (below); 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
 
