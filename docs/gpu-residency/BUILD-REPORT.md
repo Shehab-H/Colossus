@@ -320,3 +320,23 @@ short-circuit when `isGroupRegime` is false.
 
 **Acceptance evidence.** `tsc -b` clean, `oxlint` clean, `vitest` 112 passed (+2, the parser fixture).
 Cross-language parity: TS and C# now agree on every `measure-cases.json` AST and error.
+
+### §7 — Fold engine (`foldTile`)
+
+**What landed.** The client counterpart to the bake's partials: `foldTile(companion, measures, context,
+markCount, markIndex, domains)` recomputes each measure over a tile's fact partials under the active
+context, in one pass. Same finalization as the bake's default-context SQL — only the surviving fact set
+differs, and partials are additive, so it's exact at every LOD.
+
+- `InnerAgg` accumulates a numeric inner agg over groups (a mark; a (mark, dim) pair for argmax; the
+  restricted/unrestricted halves of a share). `makeFolder` builds one folder per measure: flat aggs
+  (own `where` → row filter), `share` (COALESCE(restricted,0)/nullif(whole,0)), `argmax/argmin` (per-dim
+  inner, pick the extremal dim → its canonical code). A mark with no surviving fact is `NaN` / `ARGMAX_UNKNOWN`.
+- `buildFoldContext` splits the perFact context into equality selections + temporal ranges.
+- Date helpers moved to `dates.ts` (dependency-free) and re-exported from `channels.ts`, so `measures.ts`
+  and `channels.ts` share them without an import cycle.
+
+**Acceptance evidence.** `tsc -b`/`oxlint` clean, `vitest` 115 passed (+3). `foldTile` tests: default
+context reproduces `sum`/`wavg`/`share`/`argmax` exactly; a `operator=apex` context folds to the apex
+facts and turns a mark with none unknown (NaN / ARGMAX_UNKNOWN); a temporal range drops the out-of-range
+bins. The values match the bake's `GroupBakeTests` companions by construction (same partials, same math).
