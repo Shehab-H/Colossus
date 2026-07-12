@@ -439,6 +439,17 @@ resident, the likely-next tiles are warmed via `requestIdleCallback` (fallback `
 **Acceptance evidence.** `tsc -b`/`oxlint` clean; `vitest` 123 passed (+3). `prefetchCandidates` tests
 pin the candidate set (parents/ring/children, baked-only, never the selection, cap honoured).
 
+## Post-build verification (2026-07-12, owner-requested)
+
+Independent session, ClickHouse **available** (docker up, all three source tables at expected counts).
+Full rebake of all four views **from source** (not staging reuse): geonames 13,447,008 rows / 197
+tiles; mobile-coverage 7,607,947 / 69; mobile-dominance 7,607,947 facts → 627,511 marks / 69 tiles +
+companions; ookla-fixed 6,655,986 / 3,596. `verify` PASS on all four (leafRows == source for the row
+regime; leaf marks == distinct marks for the group regime). Suites green at the merge commit:
+`dotnet test` 115, `tsc -b`/`oxlint` clean, `vitest` 123. All served manifests `tileFormat: 2`;
+geonames residency 128,212 cells / 4 tiles at the baseline camera — identical to the build's
+evidence. Old tile versions (7 dirs, ~6.4GB) deleted; each view now has exactly one baked version.
+
 ## Status summary
 
 Group/measure v0 (§1–9) and fetch-locality 4.1–4.2 are complete: `dotnet test` 115, `vitest` 123, both

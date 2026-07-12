@@ -1,7 +1,9 @@
 # GPU Residency + Group/Measure Model — Charter & Index
 
-**Status: ONE-PASS BUILD, IN PROGRESS.** This folder is now a single combined workload executed in
-one pass, in this order:
+**Status: BUILT (v0), merged to main.** Phases 1–3, the group/measure model (§1–9), and
+fetch-locality 4.1–4.2 are complete — see [BUILD-REPORT.md](BUILD-REPORT.md) for evidence. Deferred:
+fetch-locality 4.3 (pack container, owner gate) and [PHASE-5](PHASE-5-deferred-frontier.md) (entry
+criteria unmet by design). The build executed as a single combined workload in this order:
 
 1. **[PHASE-1-gpu-filtering.md](PHASE-1-gpu-filtering.md)** — filters become GPU uniforms; cache
    key loses the filter; decode-time filtering deleted.
