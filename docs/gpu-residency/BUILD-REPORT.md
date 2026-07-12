@@ -30,7 +30,7 @@ Green before any code change:
 | 1 — GPU filtering | done | `1157d91` | filter → `DataFilterExtension` uniforms; decode-time filtering deleted; cache key = `(version, tileKey)`; all gates green |
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
-| 4 — Group/measure | in progress | — | §1–5 done (bake half complete: config/parser/validation, grouper, effective view+reducer, companions, domains+wiring); §6–8 client pending |
+| 4 — Group/measure | done (v0) | — | §1–9 landed: bake (config/parser/validation, grouper, effective view+reducer, companions, domains+wiring), client (types+parser, fold, render integration), view+bake+verify PASS on 7.6M real facts. Live browser recolour is the one manual step left. |
 | 4-fetch — Fetch locality | not started | — | 4.1 SW cache + 4.2 prefetch in scope; 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
@@ -363,3 +363,29 @@ inspect). Row regime untouched — every group path is gated on `isGroupRegime`/
 group tile decode (§8a), `decodeCompanion` (§8a), `foldTile` (§7), `tileDeckData` override (numeric
 passthrough, argmax code → unknown texel, context-keyed cache). The live browser scenario (dominant-operator
 map recolouring as the quarter range / operator filter changes) is proven in §9 against a real bake.
+
+### §9 — mobile-dominance view + fresh bake + verifier invariant
+
+**What landed.** `views/mobile-dominance.json` (the VIEW_CONFIG §3 flagship) and the group-regime
+verifier invariant. The view was baked **from the real 7.6M-fact `mobile-coverage` staging** (ClickHouse
+was unavailable in this environment, so the identical extract was reused rather than re-run — same data,
+same bake path as `BakeViewUseCase`'s group branch).
+
+- **`views/mobile-dominance.json`:** loads + validates; `dominant_operator = argmax(operator, sum(tests))`,
+  `apex_share = share(sum(tests)) where operator='apex'`, `avg_download = wavg(download_mbps, tests)`.
+- **`VerifyFidelityUseCase`:** row regime unchanged (leaf sum == source rows). Group regime learns the
+  honest invariant (GROUP-MEASURES §9): leaf **marks** == distinct marks (the grouped marks staging) and
+  Σ leaf-**companion** rows == source rows. Added `ITileReader.Exists` for the companion probe.
+
+**Acceptance evidence (real bake).**
+
+| Criterion | Result |
+|---|---|
+| Bake `mobile-dominance` from 7.6M facts | 627,511 distinct quadkeys → **leafMarks = 627,511**; 69 tiles (48 leaves), maxZoom 3; companions written beside every tile |
+| Classification | perFact = `operator, quarter, tests, download_mbps`; perMark = ∅ (geometry repeats per quarter×operator) — the marks pyramid is 627k, not 7.6M |
+| Argmax colour domain | `dominant_operator` domain = `[apex, nimbus, orbit, pulse]` (the operator dimension's full domain, from the facts) |
+| `verify` (all four views) | **PASS** — `mobile-dominance: leafRows=627,511 total=627,511 source=7,607,947` (leaf marks == distinct marks; companion facts == 7.6M source rows); geonames/mobile-coverage/ookla-fixed still PASS (row regime intact) |
+| `dotnet test` | 115 passed (verifier + view changes compile; row-regime suite green) |
+
+Live browser render/recolour of the dominant-operator map is the one remaining manual scenario (dev
+servers + browser); the bake artifacts it needs are now on disk and the client path is unit-proven.
