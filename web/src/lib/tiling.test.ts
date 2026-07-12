@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import type { Bbox } from './manifest';
-import { coverTiles, pointToTile, tileKey, tileRect } from './tiling';
+import { coverTiles, pointToTile, prefetchCandidates, tileKey, tileRect } from './tiling';
 
 // The shared cross-language tiling fixture — the SAME file the C# TileSql/TileMath tests verify. If the
 // TS tiling math ever drifts from the bake's, this fails. Read at runtime (Node) so the browser build
@@ -59,5 +59,32 @@ describe('coverTiles', () => {
     // All four loaded → the full child quad draws and the parent drops out.
     const full = coverTiles(children, has([parent, ...children]));
     expect(new Set(full)).toEqual(new Set(children));
+  });
+});
+
+describe('prefetchCandidates', () => {
+  const present: [number, number, number, boolean][] = [
+    [0, 0, 0, false],
+    [1, 0, 0, false], [1, 1, 0, true], [1, 0, 1, true], [1, 1, 1, true],
+    [2, 0, 0, true], [2, 1, 0, true], [2, 0, 1, true], [2, 1, 1, true],
+  ];
+  const manifest = { tiles: present.map(([z, x, y, isLeaf]) => ({ z, x, y, count: 1, isLeaf })) } as unknown as Manifest;
+  const keyset = new Set(present.map(([z, x, y]) => tileKey(z, x, y)));
+
+  test('warms parents, the pan ring, and children — only baked tiles, never the selection', () => {
+    const c = prefetchCandidates(manifest, ['1/0/0']);
+    expect(c).toContain('0/0/0'); // parent (zoom-out)
+    expect(c).toEqual(expect.arrayContaining(['1/1/0', '1/0/1', '1/1/1'])); // pan ring at this level
+    expect(c).toEqual(expect.arrayContaining(['2/0/0', '2/1/0', '2/0/1', '2/1/1'])); // children (zoom-in)
+    expect(c).not.toContain('1/0/0'); // never the selection itself
+    expect(c.every((k) => keyset.has(k))).toBe(true); // only tiles the manifest baked
+  });
+
+  test('excludes tiles the manifest did not bake (out-of-bounds ring neighbours)', () => {
+    expect(prefetchCandidates(manifest, ['1/1/1'])).not.toContain('1/2/1');
+  });
+
+  test('respects the cap', () => {
+    expect(prefetchCandidates(manifest, ['1/0/0'], 2)).toHaveLength(2);
   });
 });

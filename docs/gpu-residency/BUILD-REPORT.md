@@ -421,3 +421,29 @@ the SW is transparent.
 **Acceptance evidence.** `node --check public/sw.js` OK; `tsc -b`/`oxlint` clean; `vitest` 120 passed;
 `npm run build` succeeds and ships `dist/sw.js`. (Live offline-reload / version-flip is a production-bundle
 scenario; dev never registers the SW by design.)
+
+### 4.2 — Predictive prefetch
+
+**What landed.** During idle, once the tile selection has been stable ~300ms and every selected tile is
+resident, the likely-next tiles are warmed via `requestIdleCallback` (fallback `setTimeout`).
+
+- **`prefetchCandidates(manifest, selKeys, cap=12)`** (tiling.ts, pure): parents (zoom-out), the one-tile
+  pan ring, then children (zoom-in); only tiles the manifest baked, never the selection, capped.
+- **`useTiles`:** a debounced idle effect ensures the candidates through the normal cache path, guarded
+  by *all selected resident* (never race a demand load) and `bytesResident() < 75% TILE_BUDGET_BYTES`
+  (never evict for a guess). The selection effect keeps the candidates in `abortStale`'s survive-set, so a
+  resolving prefetch's snapshot commit doesn't cancel its siblings; a camera move drops them from the set
+  and cancels them — no new cancellation mechanism. `TileCache` gains `bytesResident()`; `TILE_BUDGET_BYTES`
+  is exported.
+
+**Acceptance evidence.** `tsc -b`/`oxlint` clean; `vitest` 123 passed (+3). `prefetchCandidates` tests
+pin the candidate set (parents/ring/children, baked-only, never the selection, cap honoured).
+
+## Status summary
+
+Group/measure v0 (§1–9) and fetch-locality 4.1–4.2 are complete: `dotnet test` 115, `vitest` 123, both
+green; `verify` PASS on all four views (incl. the group-regime `mobile-dominance` on 7.6M real facts);
+the live fold recolour proven in-browser. Deferred per the plan: fetch-locality 4.3 (pack container,
+owner sign-off) and PHASE-5 (deferred frontier). The group model's own v0 "Out" column (GPU fold,
+keyed wkt/geohash/h3, point group marks, server DuckDB fold, quadtree/raw group regime) also stays
+designed-not-built, as scoped.

@@ -73,6 +73,30 @@ export function selectTiles(manifest: Manifest, vb: ViewBounds, targetPx = GRID_
   return chosen;
 }
 
+/** Tiles likely wanted next, given the current selection: parents (zoom-out is instant), the one-tile
+ *  ring at the current level (pan), then the children of the selection (zoom-in). Only tiles the manifest
+ *  actually baked, never the current selection, first-seen priority, capped so a prefetch burst can't
+ *  flood the loader. Pure — the fetch-locality prefetcher (useTiles) warms these during idle. */
+export function prefetchCandidates(manifest: Manifest, selKeys: string[], cap = 12): string[] {
+  const present = tileIndex(manifest);
+  const out: string[] = [];
+  const seen = new Set(selKeys);
+  const consider = (z: number, x: number, y: number) => {
+    if (z < 0 || x < 0 || y < 0 || out.length >= cap) return;
+    const k = tileKey(z, x, y);
+    if (seen.has(k) || !present.has(k)) return;
+    seen.add(k);
+    out.push(k);
+  };
+  const parsed = selKeys.map((k) => k.split('/').map(Number) as [number, number, number]);
+  for (const [z, x, y] of parsed) if (z > 0) consider(z - 1, x >> 1, y >> 1); // parents
+  for (const [z, x, y] of parsed)
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if (dx || dy) consider(z, x + dx, y + dy); // ring
+  for (const [z, x, y] of parsed)
+    for (let q = 0; q < 4; q++) consider(z + 1, x * 2 + (q & 1), y * 2 + ((q >> 1) & 1)); // children
+  return out;
+}
+
 /** What to draw while desired tiles load: a missing tile is covered by its nearest loaded ancestor
  *  (zoom-in) or loaded descendants (zoom-out); a quad swaps parent→children only when all four are
  *  loaded. The pyramid makes parent and children pixel-identical at swap size, so refinement is a

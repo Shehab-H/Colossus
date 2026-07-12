@@ -2,11 +2,21 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import type { Manifest } from '../lib/manifest';
 import { renderDecodeView } from '../lib/channels';
 import type { FilterSlots } from '../lib/gpuFilter';
-import { TileCache } from '../lib/tileCache';
+import { TileCache, TILE_BUDGET_BYTES } from '../lib/tileCache';
 import type { TileData } from '../lib/tileData';
 import { tileLoader } from '../lib/tileLoader';
-import { coverTiles, selectTiles, tileKey } from '../lib/tiling';
+import { coverTiles, prefetchCandidates, selectTiles, tileKey } from '../lib/tiling';
 import { boundsFromViewport, viewportFor, type CameraState } from '../lib/viewport';
+
+// Prefetch never competes with demand loads: it only runs once the cache is below this share of budget.
+const PREFETCH_BUDGET_FRACTION = 0.75;
+
+const requestIdle = (fn: () => void): number =>
+  typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 500 }) : window.setTimeout(fn, 200);
+const cancelIdle = (id: number): void => {
+  if (typeof cancelIdleCallback === 'function') cancelIdleCallback(id);
+  else clearTimeout(id);
+};
 
 export interface RenderedTile {
   key: string;
@@ -53,15 +63,47 @@ export function useTiles(
       const cover = coverTiles(keys, (k) => cache.has(ck(k)));
       return new Set([...keys, ...cover].map(ck));
     };
-    // Loads only ever exist for selected keys, so anything in flight outside the current selection is a
-    // leftover from a zoom/pan the camera already left — cancel it before requesting the new set.
-    cache.abortStale(new Set(keys.map(ck)));
+    // Loads only ever exist for selected keys (plus in-flight prefetches for this selection), so anything
+    // in flight outside that set is a leftover from a zoom/pan the camera already left — cancel it before
+    // requesting the new set. Keeping the prefetch candidates in the survive-set stops a resolving
+    // prefetch's snapshot commit from cancelling its siblings.
+    cache.abortStale(new Set([...keys, ...prefetchCandidates(manifest, keys)].map(ck)));
     const tileFormat = manifest.tileFormat ?? 1;
     for (const key of keys) {
       cache.ensure(ck(key), () => tileLoader.load(decodeView!, manifest.version, key, slots, tileFormat), keepActive);
     }
     // `snapshot` is a dep so a resolved/failed load re-runs selection (and any retry) against fresh data.
   }, [manifest, decodeView, camera, size, slots, snapshot, cache]);
+
+  // Predictive prefetch (fetch-locality §4.2): once the selection has been stable ~300ms and every
+  // selected tile is resident, warm the likely-next tiles during idle — parents, the pan ring, children.
+  // Guarded so it never competes with demand loads or evicts them (budget backstop), and cancelled by the
+  // selection effect's abortStale as soon as the camera moves (the candidates leave the survive-set).
+  useEffect(() => {
+    if (!manifest || !decodeView || selKeys.length === 0) return;
+    const ck = (k: string) => compositeKey(manifest.version, k);
+    if (!selKeys.every((k) => cache.has(ck(k)))) return; // never race a demand load
+    if (cache.bytesResident() > PREFETCH_BUDGET_FRACTION * TILE_BUDGET_BYTES) return; // don't evict for a guess
+    const candidates = prefetchCandidates(manifest, selKeys);
+    if (candidates.length === 0) return;
+
+    const tileFormat = manifest.tileFormat ?? 1;
+    const keepActive = () => new Set([...selKeys, ...candidates].map(ck));
+    const run = () => {
+      for (const key of candidates)
+        cache.ensure(ck(key), () => tileLoader.load(decodeView, manifest.version, key, slots, tileFormat), keepActive);
+    };
+    // This effect re-runs on every load (snapshot dep), so the timer keeps resetting until the demand set
+    // has settled — the ~300ms "stable selection" gate.
+    let idleId: number | undefined;
+    const timer = window.setTimeout(() => {
+      idleId = requestIdle(run);
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      if (idleId !== undefined) cancelIdle(idleId);
+    };
+  }, [manifest, decodeView, selKeys, slots, snapshot, cache]);
 
   // Draw the cover, not the raw selection, with each tile's loaded data attached.
   const rendered = useMemo<RenderedTile[]>(() => {
