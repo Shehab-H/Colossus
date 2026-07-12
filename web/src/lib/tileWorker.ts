@@ -5,13 +5,15 @@
 // decoded and kept (the bytes are paid for, and it may be wanted again on zoom-back).
 import { loadTile, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
+import type { FilterSlots } from './gpuFilter';
 
 interface LoadRequest {
   id: number;
   view: ViewConfig;
   version: string;
   key: string;
-  filters: Record<string, string>;
+  slots: FilterSlots | null;
+  tileFormat: number;
 }
 
 interface CancelRequest {
@@ -31,10 +33,13 @@ function transferable(tile: TileData): Transferable[] {
   const add = (v: ArrayBufferView | undefined) => {
     if (v) buffers.add(v.buffer as ArrayBuffer);
   };
+  // Format 2: the retained buffer; every view into it dedups against this entry in the Set.
+  if (tile.buffer) buffers.add(tile.buffer);
   add(tile.positions);
   add(tile.polyPositions);
   add(tile.polyStartIndices);
   add(tile.polyTriangles);
+  add(tile.filterValues);
   for (const col of Object.values(tile.values)) {
     if (col instanceof Float32Array) add(col);
     else if (Array.isArray(col)) continue;
@@ -54,11 +59,11 @@ ctx.onmessage = async (e) => {
     inflight.get(e.data.cancel)?.abort();
     return;
   }
-  const { id, view, version, key, filters } = e.data;
+  const { id, view, version, key, slots, tileFormat } = e.data;
   const ac = new AbortController();
   inflight.set(id, ac);
   try {
-    const tile = await loadTile(view, version, key, filters, ac.signal);
+    const tile = await loadTile(view, version, key, slots, tileFormat, ac.signal);
     ctx.postMessage({ id, tile }, transferable(tile));
   } catch (err) {
     const aborted = ac.signal.aborted;

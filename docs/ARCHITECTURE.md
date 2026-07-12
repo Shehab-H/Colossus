@@ -71,11 +71,14 @@ Config-driven: the client reads the manifest descriptor and one code path render
 - `lib/manifest.ts`, `lib/views.ts` — load the manifest + view registry API.
 - `lib/schema.ts` — the canonical-schema mirror (above).
 - `lib/tiling.ts` — pyramid math: `selectTiles`, `coverTiles`, `pointToTile`, `tileRect` (contract mirror).
-- `lib/tileData.ts` — Arrow → typed arrays (points, polygons, bake-time triangles). Zero per-mark objects.
-- `lib/channels.ts` — channel helpers: the color channel, its observed domain (numeric range / categories), filter option discovery.
+- `lib/tileData.ts` — Arrow → typed arrays (points, polygons, bake-time triangles). Zero per-mark objects. Also bakes the per-mark GPU filter attribute (`filterValues`) once per tile from the view's filter slots. Under tile format 2 it decodes as views over the one retained buffer (no column copies, no triangle rebase); format 1 keeps the copy path.
+- `lib/channels.ts` — channel helpers: the color channel, its observed domain (numeric range / categories), filter option discovery, and the canonical category order (`canonicalCategories`).
+- `lib/gpuFilter.ts` — the GPU-filter mapping: filter slots per view, filter values per mark, and filter selections → `DataFilterExtension` `filterRange`/`filterEnabled` uniforms. A filter change touches no tile bytes.
 - `lib/colors.ts` / `lib/schemes.ts` — color primitives (hex + interpolation) and the named scheme registry (sequential / diverging / categorical families).
-- `lib/colorScale.ts` — the scale engine: `encoding.color` + observed domain → a `value → RGB` function, across all scale types and datatypes.
-- `lib/deckData.ts` — memoized deck binary attributes (geometry built once; recolor is a client scan through the scale).
+- `lib/colorScale.ts` — the scale engine: `encoding.color` + observed domain → a `value → RGB` function, across all scale types and datatypes. Stays the CPU authority the GPU LUT is sampled from and tested against.
+- `lib/colorLut.ts` — samples `colorScale.ts` into a small RGBA8 lookup-table texture + `domain`/`transform`/`kind` uniforms; parity with `colorScale` is asserted per scale type without a GPU.
+- `lib/colorScaleExtension.ts` — a deck `LayerExtension` that uploads the LUT texture and maps the per-mark `getScaleValue` attribute → color in the vertex shader. Recoloring is a texture/uniform update; no per-mark data moves.
+- `lib/deckData.ts` — memoized deck binary attributes (geometry built once; the per-mark `getScaleValue` value attribute is built once per (tile, channel); the GPU filter attribute rides in `data.attributes`; no CPU color array exists).
 - `components/InspectPanel.tsx` — the pinned click-to-inspect readout, driven by the view's `inspect` config.
 - `lib/tileCache.ts` — a framework-free `TileCache` publishing an immutable `TileSnapshot`; the
   `useTiles` hook consumes it via `useSyncExternalStore`, so React state stays derived, not juggled.

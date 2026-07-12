@@ -19,7 +19,8 @@ internal sealed class ArrowColumnBuilder
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
-    public static ArrowColumnBuilder For(string name, Type clrType, string dataTypeName, bool dictionaryEncode = false)
+    public static ArrowColumnBuilder For(string name, Type clrType, string dataTypeName,
+        bool dictionaryEncode = false, IReadOnlyList<string>? canonicalOrder = null)
     {
         bool isList = dataTypeName.EndsWith("[]", StringComparison.Ordinal)
             || (clrType.IsGenericType && clrType.GetGenericTypeDefinition() == typeof(List<>))
@@ -32,7 +33,7 @@ internal sealed class ArrowColumnBuilder
                 : ElementClrType(dataTypeName);
             return List(name, elem, dataTypeName);
         }
-        if (dictionaryEncode && clrType == typeof(string)) return DictionaryScalar(name);
+        if (dictionaryEncode && clrType == typeof(string)) return DictionaryScalar(name, canonicalOrder);
         return Scalar(name, clrType, dataTypeName);
     }
 
@@ -43,11 +44,17 @@ internal sealed class ArrowColumnBuilder
     /// <summary>String column as Arrow dictionary: integer codes per row + one small value dictionary,
     /// so repeated categories cost bytes once per tile instead of once per row — and the client reads
     /// the codes as a zero-copy typed array. Index width (8/16/32-bit) is chosen from the final
-    /// cardinality; over the cap the exact same rows are rebuilt as a plain string column.</summary>
-    private static ArrowColumnBuilder DictionaryScalar(string name)
+    /// cardinality; over the cap the exact same rows are rebuilt as a plain string column.
+    /// When a <paramref name="canonicalOrder"/> is given the dictionary is pre-seeded with it, so a
+    /// row's code is its canonical code (format 2) — the client filters/colors by it without remapping.
+    /// Unseen values still append after the seed (a no-op for a complete domain).</summary>
+    private static ArrowColumnBuilder DictionaryScalar(string name, IReadOnlyList<string>? canonicalOrder = null)
     {
         var codeOf = new Dictionary<string, int>();
         var dict = new List<string>();
+        if (canonicalOrder is not null)
+            foreach (string s in canonicalOrder)
+                if (codeOf.TryAdd(s, dict.Count)) dict.Add(s);
         var codes = new List<int>(); // -1 = null row
         bool overCap() => dict.Count > DictionaryCardinalityCap;
 

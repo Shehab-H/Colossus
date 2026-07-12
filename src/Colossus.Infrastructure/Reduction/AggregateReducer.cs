@@ -1,3 +1,4 @@
+using Colossus.Domain.Measures;
 using Colossus.Domain.Model;
 using Colossus.Domain.Reduction;
 using Colossus.Domain.Tiling;
@@ -23,13 +24,15 @@ public sealed class AggregateReducer : IReductionStrategy
 
     public ReductionResult Reduce(ReductionContext ctx)
     {
-        string[] measures = Measures(ctx.View);
-
         var tiles = new List<TileMeta>();
         long leafTotal = 0;
         using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!);
-        LoadStaging(db, ctx.StagingParquetPath, ctx.Root);
-        BuildPyramid(db, ctx, measures, tiles, ref leafTotal);
+        LoadTagged(db, "t", ctx.StagingParquetPath, ctx.Root);
+        // Facts share each mark's geometry, so a fact's zreal equals its mark's — the merge decision
+        // (real vs grid-cell) that the marks pyramid makes and the companion mirrors are the same.
+        if (ctx.Companion is { } companion)
+            LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root);
+        BuildPyramid(db, ctx, tiles, ref leafTotal);
         return new ReductionResult(tiles, leafTotal);
     }
 
@@ -38,9 +41,19 @@ public sealed class AggregateReducer : IReductionStrategy
         .Select(c => c.Name)
         .ToArray();
 
-    // Loads staging and tags each row with zreal = the first zoom whose ~1px grid cell the polygon's
-    // extent still exceeds, i.e. the level at which it stops being sub-pixel and becomes real.
-    private static void LoadStaging(DuckDbSession db, string stagingParquetPath, Bbox root)
+    // Group regime only: the dict channels a tile carries alongside geometry — perMark dimensions and
+    // argmax measures. Merged sub-pixel cells take the mode; the mark id is handled separately.
+    private static string[] DictCarry(ViewConfig view) => view.Source.Channels
+        .Where(c => c.Type == ChannelType.Dict && c.Name != TileSchema.Id)
+        .Select(c => c.Name)
+        .ToArray();
+
+    private static bool HasId(ViewConfig view) => view.Source.Channels.Any(c => c.Name == TileSchema.Id);
+
+    // Loads a parquet and tags each row with zreal = the first zoom whose ~1px grid cell the polygon's
+    // extent still exceeds, i.e. the level at which it stops being sub-pixel and becomes real. Used for
+    // the marks staging (the pyramid) and, in the group regime, the facts (the companions).
+    private static void LoadTagged(DuckDbSession db, string table, string parquetPath, Bbox root)
     {
         string coordsAt(int parity) =>
             $"list_filter({TileSchema.Geometry}, (v, i) -> i % 2 = {parity})";
@@ -48,10 +61,10 @@ public sealed class AggregateReducer : IReductionStrategy
                         $"list_max({coordsAt(0)}) - list_min({coordsAt(0)}))";
 
         db.Exec($"""
-            CREATE TABLE t AS
+            CREATE TABLE {table} AS
             WITH s AS (
               SELECT *, {extent} AS ext
-              FROM read_parquet('{Sql.Path(stagingParquetPath)}')
+              FROM read_parquet('{Sql.Path(parquetPath)}')
             )
             SELECT *, CASE
               WHEN ext IS NULL OR ext <= 0 THEN {ZCap}
@@ -61,7 +74,7 @@ public sealed class AggregateReducer : IReductionStrategy
             """);
     }
 
-    private static void BuildPyramid(DuckDbSession db, ReductionContext ctx, string[] measures,
+    private static void BuildPyramid(DuckDbSession db, ReductionContext ctx,
         List<TileMeta> tiles, ref long leafTotal)
     {
         if (db.Scalar("SELECT count(*) FROM t") == 0) return;
@@ -83,9 +96,17 @@ public sealed class AggregateReducer : IReductionStrategy
                 """);
             var internals = db.LongPairs("SELECT tx, ty FROM internals");
 
-            var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, measures),
+            var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, ctx.View, ctx.GroupRegime),
                 (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath),
-                ctx.View.DictionaryEncodedChannels());
+                ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+
+            // Companions ride the same active tiles (facts share their marks' (tx,ty)), so each render
+            // tile gets a z/x/y.facts.arrow with its facts' partials at grain, keyed by mk.
+            if (ctx.Companion is { } companion)
+                ArrowTileWriter.WritePartitioned(db.Connection, CompanionSql(ctx.Root, z, companion),
+                    (wtx, wty) => Path.Combine(ctx.OutputDirectory, $"{z}/{wtx}/{wty}.facts.arrow"),
+                    companion.GrainChannels.Where(c => c.Type == ChannelType.Dict).Select(c => c.Name).ToHashSet(),
+                    companion.CanonicalDictionaryOrders);
 
             foreach (var (wtx, wty, rows) in written)
             {
@@ -105,8 +126,10 @@ public sealed class AggregateReducer : IReductionStrategy
     }
 
     // Rows at this level, partitioned by (tx, ty): real polygons pass through untouched; sub-pixel rows
-    // collapse to one synthetic ~1px cell per occupied grid square, averaging each measure.
-    private static string ContentSql(Bbox root, int z, string[] measures)
+    // collapse to one synthetic ~1px cell per occupied grid square, averaging each measure. In the group
+    // regime the mark id and dict channels ride along too — a merged cell takes the grid key as its id
+    // (matching its fact companion, MarkKey) and the mode of each dict channel.
+    private static string ContentSql(Bbox root, int z, ViewConfig view, bool groupRegime)
     {
         string tx = TileSql.TileIndex(root, z, Axis.X);
         string ty = TileSql.TileIndex(root, z, Axis.Y);
@@ -118,8 +141,24 @@ public sealed class AggregateReducer : IReductionStrategy
         double halfX = TileSql.GridCellSize(root, z, Axis.X) / 2, halfY = TileSql.GridCellSize(root, z, Axis.Y) / 2;
         string ring = $"[{x0}::FLOAT, {y0}::FLOAT, {x1}::FLOAT, {y0}::FLOAT, {x1}::FLOAT, {y1}::FLOAT, {x0}::FLOAT, {y1}::FLOAT, {x0}::FLOAT, {y0}::FLOAT]";
 
-        string measReal = string.Concat(measures.Select(m => $", \"{m}\"::FLOAT AS \"{m}\""));
-        string measAvg = string.Concat(measures.Select(m => $", avg(\"{m}\")::FLOAT AS \"{m}\""));
+        string[] measures = Measures(view);
+        // f32 with null → NaN so the tile buffer is view-safe on the client (format 2): no null bitmap,
+        // no cast. avg() of an all-null group would otherwise be NULL.
+        string measReal = string.Concat(measures.Select(m => $", COALESCE(\"{m}\"::FLOAT, 'nan'::FLOAT) AS \"{m}\""));
+        string measAvg = string.Concat(measures.Select(m => $", COALESCE(avg(\"{m}\")::FLOAT, 'nan'::FLOAT) AS \"{m}\""));
+
+        string idReal = "", idMerged = "", dictReal = "", dictMerged = "";
+        if (groupRegime)
+        {
+            if (HasId(view))
+            {
+                idReal = $", \"{TileSchema.Id}\"";
+                idMerged = $", {MarkKey.MergedSql("gx", "gy")} AS \"{TileSchema.Id}\"";
+            }
+            string[] dicts = DictCarry(view);
+            dictReal = string.Concat(dicts.Select(d => $", \"{d}\""));
+            dictMerged = string.Concat(dicts.Select(d => $", mode(\"{d}\") AS \"{d}\""));
+        }
 
         return $"""
             WITH v AS (
@@ -127,17 +166,52 @@ public sealed class AggregateReducer : IReductionStrategy
               FROM t JOIN act ON {tx} = act.tx AND {ty} = act.ty
             )
             SELECT tx, ty, {TileSchema.X}::FLOAT AS {TileSchema.X}, {TileSchema.Y}::FLOAT AS {TileSchema.Y},
-                   {TileSchema.Geometry}, {TileSchema.PartOffsets}{measReal}
+                   {TileSchema.Geometry}, {TileSchema.PartOffsets}{idReal}{measReal}{dictReal}
             FROM v WHERE zreal <= {z}
             UNION ALL
             SELECT tx, ty,
                    ({x0} + {Sql.Lit(halfX)})::FLOAT AS {TileSchema.X},
                    ({y0} + {Sql.Lit(halfY)})::FLOAT AS {TileSchema.Y},
                    {ring} AS {TileSchema.Geometry},
-                   [0, 5]::INTEGER[] AS {TileSchema.PartOffsets}{measAvg}
+                   [0, 5]::INTEGER[] AS {TileSchema.PartOffsets}{idMerged}{measAvg}{dictMerged}
             FROM v WHERE zreal > {z}
             GROUP BY tx, ty, gx, gy
             ORDER BY tx, ty
             """;
     }
+
+    // Fact partials at grain for this level, partitioned by (tx, ty). Each fact is keyed by its mark's
+    // mk — the real geometry key while the mark is real (zreal ≤ z), else the grid-cell key it merged
+    // into — exactly the id the render tile carries, so the client joins the two by string equality.
+    private static string CompanionSql(Bbox root, int z, CompanionSpec c)
+    {
+        string tx = TileSql.TileIndex(root, z, Axis.X);
+        string ty = TileSql.TileIndex(root, z, Axis.Y);
+        string gx = TileSql.GridIndex(root, z, Axis.X);
+        string gy = TileSql.GridIndex(root, z, Axis.Y);
+        string mk = $"CASE WHEN zreal <= {z} THEN {MarkKey.RealSql()} ELSE {MarkKey.MergedSql("gx", "gy")} END";
+        string grain = string.Concat(c.GrainChannels.Select(ch => $", \"{ch.Name}\""));
+        string partials = string.Concat(c.Partials.Select(p => $", {PartialSql(p)} AS \"{p.Name}\""));
+
+        return $"""
+            WITH vf AS (
+              SELECT facts.*, {gx} AS gx, {gy} AS gy, {tx} AS tx, {ty} AS ty
+              FROM facts JOIN act ON {tx} = act.tx AND {ty} = act.ty
+            )
+            SELECT tx, ty, ({mk}) AS mk{grain}{partials}
+            FROM vf
+            GROUP BY ALL
+            ORDER BY tx, ty
+            """;
+    }
+
+    private static string PartialSql(Partial p) => p.Kind switch
+    {
+        PartialKind.Sum => $"COALESCE(sum(\"{p.Channel}\"), 0)::FLOAT",
+        PartialKind.Count => "count(*)::INTEGER",
+        PartialKind.Swp => $"COALESCE(sum(\"{p.Channel}\" * \"{p.Weight}\"), 0)::FLOAT",
+        PartialKind.Min => $"min(\"{p.Channel}\")::FLOAT",
+        PartialKind.Max => $"max(\"{p.Channel}\")::FLOAT",
+        _ => throw new InvalidOperationException($"unhandled partial {p.Kind}"),
+    };
 }

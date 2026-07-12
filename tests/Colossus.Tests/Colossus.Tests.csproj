@@ -19,8 +19,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Shared cross-language tiling fixture; the web Vitest suite reads the same file. -->
+    <!-- Shared cross-language fixtures; the web Vitest suite reads the same files. -->
     <None Include="..\fixtures\tiling-cases.json" Link="fixtures\tiling-cases.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\measure-cases.json" Link="fixtures\measure-cases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

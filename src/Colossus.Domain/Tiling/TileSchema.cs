@@ -19,7 +19,8 @@ public static class TileSchema
     /// <summary>Ring/part start indices delimiting parts within <see cref="Geometry"/>.</summary>
     public const string PartOffsets = "part_offsets";
 
-    /// <summary>Bake-time triangle indices (per row, row-local) so the client never tessellates.</summary>
+    /// <summary>Bake-time triangle indices, tile-global (each row's indices rebased by its vertex start)
+    /// so the client takes one view over the whole buffer and never tessellates.</summary>
     public const string Triangles = "triangles";
 
     /// <summary>Optional source identity for tooltips / client-side joins.</summary>

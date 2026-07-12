@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import DeckGL from '@deck.gl/react';
 import { COORDINATE_SYSTEM, OrthographicView, type PickingInfo } from '@deck.gl/core';
 import { ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers';
+import { DataFilterExtension } from '@deck.gl/extensions';
 import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox';
 // Aliased: a bare `Map` import would shadow the built-in Map constructor.
 import { Map as BaseMap, useControl } from 'react-map-gl/maplibre';
@@ -12,15 +13,30 @@ import LegendBox from './components/Legend';
 import ThemeToggle from './components/ThemeToggle';
 import { useTiles } from './hooks/useTiles';
 import { useViewData } from './hooks/useViewData';
+import { useMeasureFold } from './hooks/useMeasureFold';
 import { basemapStyle } from './lib/basemap';
 import { useTheme } from './lib/theme';
 import { buildEmbedUrl, embedSnippet, readEmbedParams } from './lib/embed';
 import { tileDeckData } from './lib/deckData';
 import type { Manifest } from './lib/manifest';
 import { columnValue, type TileData } from './lib/tileData';
-import { colorableChannels, filterableChannels } from './lib/channels';
+import { colorableChannels, filterableChannels, splitFilters } from './lib/channels';
+import { filterSlots, filterRanges, anyActive } from './lib/gpuFilter';
+import { colorScaleExtension } from './lib/colorScaleExtension';
 import { initialViewState, type CameraState } from './lib/viewport';
 import { listViews, setUrlViewId, urlViewId, type ViewSummary } from './lib/views';
+
+// One DataFilterExtension per filterSize, shared across all layers. A fresh instance per render would
+// defeat deck's prop diffing (it compares extension identity), forcing a shader relink each frame.
+const filterExtensions = new Map<number, DataFilterExtension>();
+function dataFilterExtensionFor(size: number): DataFilterExtension {
+  let ext = filterExtensions.get(size);
+  if (!ext) {
+    ext = new DataFilterExtension({ filterSize: size as 1 | 2 | 3 | 4 });
+    filterExtensions.set(size, ext);
+  }
+  return ext;
+}
 
 // deck.gl layers as a MapLibre control, overlaid on the base map. Geo views mount MapLibre as the
 // root so the map owns camera + canvas sizing; the marks ride on top through this overlay.
@@ -32,6 +48,10 @@ function DeckOverlay(props: MapboxOverlayProps) {
 
 // One stable deck layer id per tile (never folds in measure/filter — see the layers memo).
 const layerId = (viewId: string | null, version: string, key: string) => `t-${viewId}-${version}-${key}`;
+
+// Constant fill for every mark — the color extension overwrites rgb from the LUT in the vertex shader,
+// so no per-vertex color array exists anywhere. Module-level for stable prop identity.
+const WHITE: [number, number, number, number] = [255, 255, 255, 255];
 
 const inspectValue = (v: number | string | undefined): string =>
   v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v;
@@ -68,7 +88,7 @@ export default function App() {
   };
 
   const initial = useMemo(() => ({ color: embed.color, colorSpec: embed.colorSpec, filters: embed.filters }), [embed]);
-  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorOf, scaleKey, legend, activeFilters } =
+  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorLut, legend, activeFilters } =
     useViewData(viewId, initial);
   const [selection, setSelection] = useState<Selection | null>(null);
 
@@ -83,35 +103,92 @@ export default function App() {
     setSelection(null);
   }
 
-  const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, activeFilters);
+  // GPU filter slots (one per filterable channel) — the tile identity that rides into the worker so each
+  // tile bakes its filter attribute once; not part of the cache key. Recomputed only when the manifest
+  // or its options change, so it stays a stable object across filter changes.
+  const slots = useMemo(() => (manifest ? filterSlots(manifest, options) : null), [manifest, options]);
+
+  const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, slots);
+
+  // A filter is a GPU predicate (perMark → tile decode/uniforms, exactly as the row regime) or a fold
+  // context (perFact → recompute measures over the surviving facts). Row-regime views split all-predicate.
+  const { predicate: predicateFilters, context: contextFilters } = useMemo(
+    () => (manifest ? splitFilters(manifest, activeFilters) : { predicate: {}, context: {} }),
+    [manifest, activeFilters],
+  );
+
+  // Per-tile folded measure columns under the active context, or null when there is no context (colour
+  // straight from the baked default-context columns). Keyed so the color override + inspect agree.
+  const folded = useMeasureFold(manifest, rendered, contextFilters);
+  const contextKey = useMemo(() => (folded ? JSON.stringify(contextFilters) : undefined), [folded, contextFilters]);
+
+  // GPU state that rides on the layers, never on tile identity: the color LUT (Phase 2) and the filter
+  // uniforms (Phase 1). A measure/scale/theme change or a filter change makes new layer instances with the
+  // SAME id and SAME `data` object — deck diffs props and updates a texture / uniforms, re-uploading no
+  // per-mark data. Extension order is [dataFilter, colorScale] (they inject different shader stages).
+  const gpuProps = useMemo(() => {
+    const extensions = [];
+    const props: Record<string, unknown> = {};
+    if (slots) {
+      extensions.push(dataFilterExtensionFor(slots.size));
+      // Only predicate (perMark) filters are GPU-side; perFact context filters drive the fold, never a
+      // filterRange (their slots stay open, so no mark is discarded for a context selection).
+      const ranges = filterRanges(slots, predicateFilters);
+      props.filterRange = slots.size === 1 ? ranges[0] : ranges; // filterSize 1 → flat [min,max]; >1 → per-slot
+      props.filterEnabled = anyActive(ranges);
+    }
+    if (colorLut) {
+      extensions.push(colorScaleExtension);
+      props.getFillColor = WHITE; // constant; the color extension overwrites rgb from the LUT per mark
+      props.scaleLut = colorLut;
+    }
+    return { ...props, extensions };
+  }, [slots, predicateFilters, colorLut]);
+
+  // Categorical color channels feed canonical codes into the value attribute (numeric → null). Stable
+  // per channel, so a scale/theme change never rebuilds the tile `data`.
+  const colorCategories = useMemo(() => (colorLut?.kind === 'categorical' ? colorLut.categories ?? null : null), [colorLut]);
 
   const isGeo = manifest?.view.viewport === 'geo';
   const isPolygon = manifest?.view.mark === 'polygon';
   const inspect = manifest?.view.inspect;
 
-  // Layer id → its tile data, so a pick can read the clicked mark's channel values (deck returns the
-  // mark index, not the row, for binary layers).
+  // Layer id → its tile (data + key), so a pick can read the clicked mark's channel values (deck returns
+  // the mark index, not the row, for binary layers) and its folded measures under the active context.
   const dataByLayerId = useMemo(() => {
-    const m = new Map<string, TileData>();
-    if (manifest) for (const { key, data } of rendered) m.set(layerId(viewId, manifest.version, key), data);
+    const m = new Map<string, { data: TileData; key: string }>();
+    if (manifest) for (const { key, data } of rendered) m.set(layerId(viewId, manifest.version, key), { data, key });
     return m;
   }, [rendered, viewId, manifest]);
 
   const onPick = useCallback(
     (info: PickingInfo) => {
       if (!inspect) return;
-      const tile = info.layer ? dataByLayerId.get(info.layer.id) : undefined;
+      const hit = info.layer ? dataByLayerId.get(info.layer.id) : undefined;
       const i = info.index;
-      if (!tile || i == null || i < 0) {
+      if (!hit || i == null || i < 0) {
         setSelection(null); // click on empty map dismisses
         return;
       }
+      // A measure under active context reads its folded value (numeric, or an argmax code decoded through
+      // its category domain); everything else, and the no-context case, reads the baked tile column.
+      const cols = folded?.get(hit.key);
+      const valueAt = (name: string) => {
+        const fc = cols?.[name];
+        if (!fc) return inspectValue(columnValue(hit.data.values[name], i));
+        const v = fc[i];
+        if (fc instanceof Uint16Array) {
+          const cats = manifest?.channelDomains?.[name]?.values;
+          return inspectValue(cats && v < cats.length ? cats[v] : undefined);
+        }
+        return inspectValue(Number.isNaN(v) ? undefined : v);
+      };
       setSelection({
-        title: inspect.title ? inspectValue(columnValue(tile.values[inspect.title], i)) : undefined,
-        rows: inspect.channels.map((name) => ({ name, value: inspectValue(columnValue(tile.values[name], i)) })),
+        title: inspect.title ? valueAt(inspect.title) : undefined,
+        rows: inspect.channels.map((name) => ({ name, value: valueAt(name) })),
       });
     },
-    [inspect, dataByLayerId],
+    [inspect, dataByLayerId, folded, manifest],
   );
 
   const orthographicView = useMemo(
@@ -143,14 +220,16 @@ export default function App() {
       if (isPolygon) {
         return new SolidPolygonLayer({
           id,
-          // Binary layout: flat vertices + per-polygon start offsets + per-vertex colors. No object
-          // accessors, so nothing runs per-cell on the main thread — it uploads straight to the GPU.
-          data: tileDeckData(data, colorChannel, colorOf, scaleKey) as never,
+          // Binary layout: flat vertices + per-polygon start offsets. No object accessors, so nothing
+          // runs per-cell on the main thread — it uploads straight to the GPU. The GPU color value
+          // (getScaleValue) and filter (getFilterValue) attributes ride in data.attributes (per-vertex).
+          data: tileDeckData(data, colorChannel, colorCategories, slots?.size, folded?.get(key)?.[colorChannel], contextKey) as never,
           _normalize: false, // rings are already simple + consistent from the bake
           positionFormat: 'XY',
           coordinateSystem,
           opacity: 0.85,
           pickable,
+          ...gpuProps,
           // autoHighlight is intentionally OFF: it forces a full picking pass + synchronous
           // gl.readPixels on every pointermove (re-rasterizing every on-screen mark), which is the
           // dominant pan/hover stall. Click still picks on demand via onClick — inspection is intact.
@@ -159,7 +238,7 @@ export default function App() {
       }
       return new ScatterplotLayer({
         id,
-        data: tileDeckData(data, colorChannel, colorOf, scaleKey) as never,
+        data: tileDeckData(data, colorChannel, colorCategories, slots?.size) as never,
         coordinateSystem,
         radiusUnits: 'pixels',
         getRadius: 1.6,
@@ -168,10 +247,11 @@ export default function App() {
         stroked: false,
         opacity: 0.85,
         pickable,
+        ...gpuProps,
         autoHighlight: false, // see the polygon layer above — per-pointermove picking is the pan stall
       });
     });
-  }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorOf, scaleKey, inspect]);
+  }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorCategories, inspect, slots, gpuProps, folded, contextKey]);
 
   return (
     <div style={{ position: 'absolute', inset: 0, background: 'var(--app-bg)' }}>
@@ -206,7 +286,7 @@ export default function App() {
           viewId={viewId}
           onViewChange={selectView}
           error={error ?? loadError ?? (viewId ? null : viewsError)}
-          colorChannels={manifest ? colorableChannels(manifest.view) : []}
+          colorChannels={manifest ? colorableChannels(manifest) : []}
           colorChannel={colorChannel}
           onColorChannelChange={setColorChannel}
           channels={manifest ? filterableChannels(manifest.view) : []}

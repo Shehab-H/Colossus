@@ -1,15 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { ColorFn } from './colorScale';
 import { tileDeckData } from './deckData';
 import type { TileData } from './tileData';
 
-type Attrs = { attributes: { getFillColor: { value: Uint8Array } } };
-
-const colorOf: ColorFn = (v) => {
-  if (v === 'x') return [1, 2, 3];
-  if (v === 'y') return [4, 5, 6];
-  if (typeof v === 'number') return [v, 0, 0];
-  return [9, 9, 9];
+type Attrs = {
+  attributes: { getScaleValue: { value: Float32Array; size: number }; getFilterValue?: { value: Float32Array; size: number } };
 };
 
 const pointTile = (values: TileData['values'], count: number): TileData => ({
@@ -18,33 +12,39 @@ const pointTile = (values: TileData['values'], count: number): TileData => ({
   values,
 });
 
-describe('tileDeckData colors', () => {
-  it('dict LUT path matches per-row colorOf output', () => {
-    const d = pointTile({ c: { kind: 'dict', codes: new Uint8Array([0, 1, 0]), dict: ['x', 'y'] } }, 3);
-    const { attributes } = tileDeckData(d, 'c', colorOf, 's') as Attrs;
-    expect([...attributes.getFillColor.value]).toEqual([1, 2, 3, 4, 5, 6, 1, 2, 3]);
+describe('tileDeckData — numeric value attribute', () => {
+  it('uses the resident f32 column by reference (zero copy)', () => {
+    const col = new Float32Array([7, 8, 9]);
+    const d = pointTile({ m: col }, 3);
+    const { attributes } = tileDeckData(d, 'm', null) as Attrs;
+    expect(attributes.getScaleValue.value).toBe(col); // same object, not a copy
+    expect(attributes.getScaleValue.size).toBe(1);
   });
 
-  it('numeric columns run the scale per mark', () => {
-    const d = pointTile({ m: new Float32Array([7, 8]) }, 2);
-    const { attributes } = tileDeckData(d, 'm', colorOf, 's') as Attrs;
-    expect([...attributes.getFillColor.value]).toEqual([7, 0, 0, 8, 0, 0]);
-  });
-
-  it('missing channel fills with the unknown color', () => {
+  it('a missing channel becomes NaN (the shader maps NaN → unknown color)', () => {
     const d = pointTile({}, 2);
-    const { attributes } = tileDeckData(d, 'nope', colorOf, 's') as Attrs;
-    expect([...attributes.getFillColor.value]).toEqual([9, 9, 9, 9, 9, 9]);
+    const { attributes } = tileDeckData(d, 'nope', null) as Attrs;
+    expect([...attributes.getScaleValue.value].every((v) => Number.isNaN(v))).toBe(true);
+  });
+});
+
+describe('tileDeckData — categorical codes', () => {
+  it('maps each mark to its canonical code; out-of-domain → the trailing unknown texel', () => {
+    // canonical ['x','y'] → codes 0,1; 'z' is out-of-domain → code 2 (== categories.length)
+    const d = pointTile({ c: { kind: 'dict', codes: new Uint8Array([0, 1, 2]), dict: ['x', 'y', 'z'] } }, 3);
+    const { attributes } = tileDeckData(d, 'c', ['x', 'y']) as Attrs;
+    expect([...attributes.getScaleValue.value]).toEqual([0, 1, 2]);
   });
 
-  it('memoizes per (tile, channel, scaleKey)', () => {
-    const d = pointTile({ m: new Float32Array([1]) }, 1);
-    const a = tileDeckData(d, 'm', colorOf, 's1');
-    expect(tileDeckData(d, 'm', colorOf, 's1')).toBe(a);
-    expect(tileDeckData(d, 'm', colorOf, 's2')).not.toBe(a);
+  it('a missing categorical channel is all-unknown', () => {
+    const d = pointTile({}, 2);
+    const { attributes } = tileDeckData(d, 'c', ['x', 'y']) as Attrs;
+    expect([...attributes.getScaleValue.value]).toEqual([2, 2]);
   });
+});
 
-  it('expands per-mark colors across each polygon ring', () => {
+describe('tileDeckData — polygons', () => {
+  it('expands per-mark values across each ring', () => {
     const d: TileData = {
       count: 2,
       polyPositions: new Float32Array(8),
@@ -52,7 +52,47 @@ describe('tileDeckData colors', () => {
       vertexCount: 4,
       values: { c: { kind: 'dict', codes: new Uint8Array([0, 1]), dict: ['x', 'y'] } },
     };
-    const { attributes } = tileDeckData(d, 'c', colorOf, 's') as Attrs;
-    expect([...attributes.getFillColor.value]).toEqual([1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6]);
+    const { attributes } = tileDeckData(d, 'c', ['x', 'y']) as Attrs;
+    expect([...attributes.getScaleValue.value]).toEqual([0, 0, 1, 1]);
+  });
+});
+
+describe('tileDeckData — caching and filter attribute', () => {
+  it('memoizes per (tile, channel) — stable identity across recolor (scale is GPU state now)', () => {
+    const d = pointTile({ m: new Float32Array([1]), n: new Float32Array([2]) }, 1);
+    const a = tileDeckData(d, 'm', null);
+    expect(tileDeckData(d, 'm', null)).toBe(a); // same channel → same object
+    expect(tileDeckData(d, 'n', null)).not.toBe(a); // different channel → different object
+  });
+
+  it('carries the Phase-1 filter attribute when filterSize is given', () => {
+    const d: TileData = { ...pointTile({ m: new Float32Array([1, 2]) }, 2), filterValues: new Float32Array([5, 6]) };
+    const { attributes } = tileDeckData(d, 'm', null, 1) as Attrs;
+    expect(attributes.getFilterValue).toEqual({ value: d.filterValues, size: 1 });
+  });
+});
+
+describe('tileDeckData — folded measure override (group regime)', () => {
+  it('numeric override supplies the value attribute (folded values, not the baked column)', () => {
+    const baked = new Float32Array([1, 2, 3]);
+    const d = pointTile({ total_tests: baked }, 3);
+    const override = new Float32Array([10, 20, NaN]); // last mark emptied by context → NaN → unknown
+    const { attributes } = tileDeckData(d, 'total_tests', null, undefined, override, 'ctx') as Attrs;
+    expect([...attributes.getScaleValue.value]).toEqual([10, 20, NaN]);
+    expect(attributes.getScaleValue.value).not.toBe(baked);
+  });
+
+  it('argmax override codes map through the category domain; ARGMAX_UNKNOWN → the unknown texel', () => {
+    const d = pointTile({ dominant_operator: { kind: 'dict', codes: new Uint8Array([0, 0]), dict: ['apex'] } }, 2);
+    const override = new Uint16Array([1, 0xffff]); // canonical code 1, then an emptied mark
+    const { attributes } = tileDeckData(d, 'dominant_operator', ['apex', 'zenith'], undefined, override, 'ctx') as Attrs;
+    expect([...attributes.getScaleValue.value]).toEqual([1, 2]); // 2 == categories.length (unknown texel)
+  });
+
+  it('the context key separates cached buffers (scrub back reuses without a rebuild)', () => {
+    const d = pointTile({ m: new Float32Array([1, 2]) }, 2);
+    const a = tileDeckData(d, 'm', null, undefined, new Float32Array([5, 6]), 'ctxA');
+    expect(tileDeckData(d, 'm', null, undefined, new Float32Array([5, 6]), 'ctxA')).toBe(a); // same context → cached
+    expect(tileDeckData(d, 'm', null, undefined, new Float32Array([7, 8]), 'ctxB')).not.toBe(a); // new context → new buffer
   });
 });

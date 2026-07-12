@@ -5,6 +5,9 @@ const RETRY_MS = 2000;
 // GeoNames point tile ≈ 12MB decoded), and a count cap let the heap run to gigabytes.
 const BUDGET_BYTES = 384 * 1024 * 1024;
 
+/** The resident-tile budget, exported so the prefetcher can back off before it competes for it. */
+export const TILE_BUDGET_BYTES = BUDGET_BYTES;
+
 /** An immutable view of the cache. Its reference changes on every mutation (load, eviction, failure,
  *  retry, abort), which is exactly what React's useSyncExternalStore needs to decide when to re-render —
  *  and what lets the consumer derive from `tiles`/`error` directly, with no separate trigger dependency. */
@@ -39,6 +42,14 @@ export class TileCache {
 
   has(key: string): boolean {
     return this.snapshot.tiles.has(key);
+  }
+
+  /** Approximate resident bytes — the prefetcher backs off above a fraction of the budget so a
+   *  speculative warm never evicts a demand-loaded tile. */
+  bytesResident(): number {
+    let total = 0;
+    for (const key of this.snapshot.tiles.keys()) total += this.sizes.get(key) ?? 0;
+    return total;
   }
 
   /** Fetch `key` if it isn't resident, in flight, or in failure back-off. `keepActive` returns the set

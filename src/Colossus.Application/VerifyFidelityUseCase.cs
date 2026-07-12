@@ -55,12 +55,12 @@ public sealed class VerifyFidelityUseCase(
         var report = new FidelityReport(viewId, true, leafRows, manifest.TotalPoints, manifest.SourceRows,
             leaves, manifest.Tiles.Count - leaves, overBudget, null);
 
-        if (Diagnose(viewId, manifest, leafRows, overBudget) is { } failure)
+        if (Diagnose(viewId, version, manifest, leafRows, overBudget) is { } failure)
             return report with { Passed = false, Message = failure };
         return report;
     }
 
-    private string? Diagnose(string viewId, Manifest manifest, long leafRows, int overBudget)
+    private string? Diagnose(string viewId, string version, Manifest manifest, long leafRows, int overBudget)
     {
         if (leafRows != manifest.TotalPoints)
             return $"leaf rows {leafRows:N0} != manifest totalPoints {manifest.TotalPoints:N0}";
@@ -71,7 +71,17 @@ public sealed class VerifyFidelityUseCase(
         if (stagedRows is { } staged && manifest.SourceRows is { } source && staged != source)
             return $"staged extract has {staged:N0} rows, source reported {source:N0} — the extract lost rows";
 
-        long? expected = stagedRows ?? manifest.SourceRows;
+        // Group regime: a leaf holds distinct *marks*, not source rows, so the leaf sum witnesses against
+        // the grouped marks staging; the source rows are witnessed by the fact companions instead
+        // (GROUP-MEASURES §9). Row regime is unchanged: the leaf sum is the source rows.
+        return manifest.CompanionTiles
+            ? DiagnoseGroup(viewId, version, manifest, leafRows, stagingPath, stagedRows, overBudget)
+            : DiagnoseRow(leafRows, stagedRows, manifest.SourceRows, overBudget);
+    }
+
+    private string? DiagnoseRow(long leafRows, long? stagedRows, long? sourceRows, int overBudget)
+    {
+        long? expected = stagedRows ?? sourceRows;
         if (expected is null)
             return "no staged extract and no sourceRows in the manifest — the leaf sum has no independent witness";
 
@@ -84,4 +94,33 @@ public sealed class VerifyFidelityUseCase(
 
         return overBudget > 0 ? $"{overBudget} internal tile(s) over the merge-grid cap" : null;
     }
+
+    private string? DiagnoseGroup(string viewId, string version, Manifest manifest, long leafRows,
+        string stagingPath, long? stagedRows, int overBudget)
+    {
+        // Leaf marks == distinct marks (one row per geometry in the grouped marks staging).
+        string marksPath = MarksPath(stagingPath);
+        if (staging.Exists(marksPath) && staging.RowCount(marksPath) is var marks && leafRows != marks)
+            return $"leaf marks {leafRows:N0} != distinct marks {marks:N0} (marks staging) — grouping lost or split a mark";
+
+        // Σ leaf-companion rows == source rows: every fact lands in exactly one leaf's companion, and the
+        // reference source is already at the companion grain, so the two agree.
+        long? source = stagedRows ?? manifest.SourceRows;
+        if (source is { } src)
+        {
+            long companionRows = 0;
+            foreach (var tile in manifest.Tiles.Where(t => t.IsLeaf))
+            {
+                string facts = CompanionPath(store.TilePath(viewId, version, tile.Id));
+                if (tiles.Exists(facts)) companionRows += tiles.RowCount(facts);
+            }
+            if (companionRows != src)
+                return $"companion facts {companionRows:N0} != source {src:N0} — a fact reached no leaf companion (or was double-counted)";
+        }
+
+        return overBudget > 0 ? $"{overBudget} internal tile(s) over the merge-grid cap" : null;
+    }
+
+    private static string MarksPath(string staging) => Path.ChangeExtension(staging, ".marks.parquet");
+    private static string CompanionPath(string tilePath) => Path.ChangeExtension(tilePath, ".facts.arrow");
 }

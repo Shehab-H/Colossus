@@ -12,6 +12,11 @@ public readonly record struct TileMeta(int Z, int X, int Y, long Count, bool IsL
 public sealed record Manifest
 {
     public int SchemaVersion { get; init; } = 1;
+    /// <summary>Tile binary format. 2 = the zero-copy contract (single record batch, no nulls,
+    /// tile-global triangle indices, canonical dictionaries, f32 measures) the client decodes as
+    /// typed-array views over the one fetched buffer. Absent/0/1 on older manifests selects the
+    /// copy-based format-1 decode, which the client keeps until every view is re-baked.</summary>
+    public int TileFormat { get; init; }
     public required string Version { get; init; }
     public required ViewConfig View { get; init; }
     /// <summary>The reduction the planner chose for this bake (derived from data shape, not authored).
@@ -33,7 +38,21 @@ public sealed record Manifest
     /// sample — sees every row, so no category can be missing. Null on manifests from older bakes;
     /// the client falls back to its tile scan.</summary>
     public IReadOnlyDictionary<string, ChannelDomain>? ChannelDomains { get; init; }
+
+    /// <summary>Group regime only (GROUP-MEASURES): the derived perMark/perFact split so the client can
+    /// route a filter as a GPU predicate (perMark) or a fold context (perFact). Null in the row regime.</summary>
+    public FactChannels? FactChannels { get; init; }
+
+    /// <summary>True when the bake wrote a <c>z/x/y.facts.arrow</c> companion beside every tile.</summary>
+    public bool CompanionTiles { get; init; }
+
+    /// <summary>The companion grain columns (perFact dict + temporal channels), so the client knows what
+    /// dimensions its fact partials are keyed by. Null in the row regime.</summary>
+    public IReadOnlyList<string>? GrainChannels { get; init; }
 }
+
+/// <summary>The derived channel split of a group-regime view.</summary>
+public sealed record FactChannels(IReadOnlyList<string> PerMark, IReadOnlyList<string> PerFact);
 
 /// <summary>One channel's observed domain. Numeric channels carry min/max plus a quantile grid (the
 /// client derives quantile-scale breaks from it); non-numeric channels carry their distinct values,

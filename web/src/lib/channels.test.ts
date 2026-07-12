@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Manifest, ViewConfig } from './manifest';
-import { describeColorDomain, discoverOptions, inDateRange, makeDateRange, parseDateRange } from './channels';
+import { canonicalCategories, describeColorDomain, discoverOptions, inDateRange, makeDateRange, parseDateRange } from './channels';
 
 // Baked manifest domains must answer WITHOUT touching the tile store; only the legacy fallback
 // (old manifests / truncated domains) may fetch the root tile.
@@ -62,6 +62,24 @@ describe('describeColorDomain from baked domains', () => {
       'unexpected tile fetch',
     );
     expect(fetchArrowTable).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('canonicalCategories', () => {
+  it('prefers the baked full-extract domain', () => {
+    expect(canonicalCategories(manifest({ cat: { values: ['a', 'b', 'z'] } }), 'cat')).toEqual(['a', 'b', 'z']);
+  });
+
+  it('returns null for a truncated or absent domain (caller falls back to options)', () => {
+    expect(canonicalCategories(manifest({ cat: { valuesTruncated: true, values: ['a'] } }), 'cat')).toBeNull();
+    expect(canonicalCategories(manifest({}), 'cat')).toBeNull();
+  });
+
+  it('agrees with the color domain category order (one shared source)', async () => {
+    const m = manifest({ cat: { values: ['b', 'a', 'z'] } });
+    const canon = canonicalCategories(m, 'cat');
+    const color = await describeColorDomain(m, 'cat');
+    expect(color).toEqual({ kind: 'categorical', categories: canon });
   });
 });
 

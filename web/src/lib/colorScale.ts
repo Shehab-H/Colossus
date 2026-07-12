@@ -189,6 +189,24 @@ export function buildColorScale(spec: ColorSpec, domain: ColorDomain): ColorFn {
   };
 }
 
+/** What the GPU LUT needs to bake itself: either the resolved numeric sampling domain (value space,
+ *  plus a log flag when the ramp is sampled in log space) or the category order. Derived from the SAME
+ *  `resolveScale` the CPU color function and legend use, so the baked texels can never drift from
+ *  `buildColorScale`. */
+export type ScaleShape =
+  | { kind: 'numeric'; lo: number; hi: number; log: boolean }
+  | { kind: 'categorical'; categories: string[] };
+
+export function scaleShape(spec: ColorSpec, domain: ColorDomain): ScaleShape {
+  const r = resolveScale(spec, domain);
+  if (r.kind === 'categorical') return { kind: 'categorical', categories: r.order };
+  if (r.kind === 'continuous') return { kind: 'numeric', lo: r.min, hi: r.max, log: r.type === 'log' };
+  // Binned (quantize/quantile/threshold): sample across the full data range so every break is covered.
+  const lo = domain.kind === 'numeric' ? domain.min : 0;
+  const hi = domain.kind === 'numeric' ? domain.max : 1;
+  return { kind: 'numeric', lo, hi, log: false };
+}
+
 // ── Legend ──────────────────────────────────────────────────────────────────────────────────────
 // A structured description of what the coloring means, derived from the SAME resolved scale so it can
 // never drift from the rendered marks. Every map with a color-by shows one (components/Legend.tsx).

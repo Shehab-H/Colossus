@@ -1,0 +1,28 @@
+{
+  "id": "mobile-dominance",
+  "title": "Dominant operator by tile",
+  "viewport": "geo",
+  "mark": "polygon",
+  "source": {
+    "adapter": "clickhouse",
+    "query": "SELECT quadkey, quarter, operator, toFloat32(tests) AS tests, download_mbps FROM colossus.mobile_coverage",
+    "geometry": { "kind": "quadkey", "column": "quadkey" },
+    "channels": [
+      { "name": "operator", "column": "operator", "role": "dimension", "type": "dict" },
+      { "name": "quarter", "column": "quarter", "role": "temporal", "type": "date" },
+      { "name": "tests", "column": "tests", "role": "measure", "type": "f32" },
+      { "name": "download_mbps", "column": "download_mbps", "role": "measure", "type": "f32" }
+    ]
+  },
+  "measures": [
+    { "name": "total_tests", "expr": "sum(tests)" },
+    { "name": "avg_download", "expr": "wavg(download_mbps, tests)" },
+    { "name": "apex_share", "expr": "share(sum(tests)) where operator = 'apex'" },
+    { "name": "dominant_operator", "expr": "argmax(operator, sum(tests))" }
+  ],
+  "encoding": { "color": { "channel": "dominant_operator", "type": "categorical" } },
+  "inspect": {
+    "title": "dominant_operator",
+    "channels": ["dominant_operator", "total_tests", "avg_download", "apex_share"]
+  }
+}

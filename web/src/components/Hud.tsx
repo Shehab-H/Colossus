@@ -88,7 +88,7 @@ export default function Hud(p: HudProps) {
         <div style={{ opacity: 0.85, lineHeight: 1.6, marginTop: 8 }}>
           <div>cells total: {p.manifest.totalPoints.toLocaleString()}</div>
           <div>
-            in view: {p.tilesInView} tiles · {p.marksLoaded.toLocaleString()} cells
+            in view: {p.tilesInView} tiles · {p.marksLoaded.toLocaleString()} cells resident
           </div>
           <div style={{ marginTop: 4, fontWeight: 600, color: p.atFullFidelity ? 'var(--good)' : 'var(--warn)' }}>
             {p.atFullFidelity ? '● full fidelity — every cell' : '◐ aggregated — zoom in to resolve'}

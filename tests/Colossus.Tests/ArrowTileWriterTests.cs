@@ -38,7 +38,7 @@ public class ArrowTileWriterTests : IDisposable
     }
 
     [Fact]
-    public void Write_GeometryTile_GetsValidTrianglesColumn()
+    public void Write_GeometryTile_TrianglesAreTileGlobal()
     {
         string path = TilePath("poly.arrow");
         using (var db = DuckDbSession.InMemory())
@@ -54,15 +54,23 @@ public class ArrowTileWriterTests : IDisposable
         }
 
         var batch = ReadSingleBatch(path);
+        var geometry = Assert.IsType<ListArray>(batch.Column("geometry"));
         var triangles = Assert.IsType<ListArray>(batch.Column("triangles"));
         Assert.Equal(2, triangles.Length);
+
+        // Format 2: each row's indices are rebased by its vertex start, so they index the whole tile's
+        // coordinate buffer — row 1's indices sit above row 0's vertex count, never overlapping it.
+        int vertexBase = 0;
         for (int row = 0; row < 2; row++)
         {
+            int rowVertices = ((FloatArray)geometry.GetSlicedValues(row)).Length / 2;
             var indices = (Int32Array)triangles.GetSlicedValues(row);
             Assert.Equal(6, indices.Length); // a quad → 2 triangles
             for (int i = 0; i < indices.Length; i++)
-                Assert.InRange(indices.GetValue(i)!.Value, 0, 4); // row-local vertex indices
+                Assert.InRange(indices.GetValue(i)!.Value, vertexBase, vertexBase + rowVertices - 1);
+            vertexBase += rowVertices;
         }
+        Assert.Equal(10, vertexBase); // two 5-vertex rings, one contiguous vertex space
     }
 
     [Fact]
@@ -111,6 +119,32 @@ public class ArrowTileWriterTests : IDisposable
             if (i % 3 == 2) Assert.True(indices.IsNull(i));
             else Assert.Equal(i % 3, indices.GetValue(i)!.Value);
         }
+    }
+
+    [Fact]
+    public void Write_DictionaryColumn_WithCanonicalOrder_CodesAreCanonical()
+    {
+        string path = TilePath("dict-canon.arrow");
+        using (var db = DuckDbSession.InMemory())
+        {
+            // First-seen order here would be gamma, alpha, beta; the canonical order must win so a row's
+            // code is its canonical index (alpha=0, beta=1, gamma=2) and the client needs no remap.
+            ArrowTileWriter.Write(db.Connection, """
+                SELECT x::FLOAT AS x, x::FLOAT AS y,
+                       CASE x % 3 WHEN 0 THEN 'gamma' WHEN 1 THEN 'alpha' ELSE 'beta' END AS cat
+                FROM range(6) r(x)
+                """, path,
+                dictionaryColumns: new HashSet<string> { "cat" },
+                canonicalOrders: new Dictionary<string, IReadOnlyList<string>> { ["cat"] = new[] { "alpha", "beta", "gamma" } });
+        }
+
+        var batch = ReadSingleBatch(path);
+        var col = Assert.IsType<DictionaryArray>(batch.Column("cat"));
+        var dict = Assert.IsType<StringArray>(col.Dictionary);
+        Assert.Equal(["alpha", "beta", "gamma"], Enumerable.Range(0, dict.Length).Select(i => dict.GetString(i)));
+
+        var indices = (Int8Array)col.Indices;
+        Assert.Equal([2, 0, 1, 2, 0, 1], Enumerable.Range(0, 6).Select(i => (int)indices.GetValue(i)!.Value));
     }
 
     [Fact]

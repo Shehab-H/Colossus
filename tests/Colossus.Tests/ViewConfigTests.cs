@@ -116,6 +116,90 @@ public class ViewConfigTests
         Assert.Throws<ArgumentException>(view.Validate);
     }
 
+    // ── Group regime (measures) — VIEW_CONFIG §4/§11 config-time validation ──
+
+    private static ViewConfig ValidGroup(params (string name, string expr)[] measures) => new()
+    {
+        Id = "mobile-dominance",
+        Viewport = Viewport.Geo,
+        Mark = Mark.Polygon,
+        Source = new SourceSpec
+        {
+            Query = "SELECT quadkey, quarter, operator, tests, download_mbps FROM db.t",
+            Geometry = new GeometrySpec { Kind = GeometryKind.Quadkey, Column = "quadkey" },
+            Channels = new[]
+            {
+                new ChannelSpec { Name = "operator", Column = "operator", Role = ChannelRole.Dimension, Type = ChannelType.Dict },
+                new ChannelSpec { Name = "quarter", Column = "quarter", Role = ChannelRole.Temporal, Type = ChannelType.Date },
+                new ChannelSpec { Name = "tests", Column = "tests", Role = ChannelRole.Measure, Type = ChannelType.F32 },
+                new ChannelSpec { Name = "download_mbps", Column = "download_mbps", Role = ChannelRole.Measure, Type = ChannelType.F32 },
+            },
+        },
+        Measures = measures.Select(m => new MeasureSpec { Name = m.name, Expr = m.expr }).ToArray(),
+    };
+
+    [Fact]
+    public void GroupRegime_FlagshipMeasures_Pass() => (ValidGroup(
+        ("total_tests", "sum(tests)"),
+        ("avg_download", "wavg(download_mbps, tests)"),
+        ("apex_share", "share(sum(tests)) where operator = 'apex'"),
+        ("dominant_operator", "argmax(operator, sum(tests))")) with
+    {
+        Encoding = new EncodingSpec { Color = new ColorSpec { Channel = "dominant_operator", Type = "categorical" } },
+        Inspect = new InspectSpec { Title = "dominant_operator", Channels = new[] { "dominant_operator", "total_tests" } },
+    }).Validate();
+
+    [Fact]
+    public void HasMeasures_TrueOnlyWithMeasures()
+    {
+        Assert.True(ValidGroup(("m", "count()")).HasMeasures);
+        Assert.False(Valid().HasMeasures);
+    }
+
+    [Fact]
+    public void Measure_NameCollidesWithChannel_Throws() =>
+        Assert.Throws<ArgumentException>(() => ValidGroup(("tests", "sum(tests)")).Validate());
+
+    [Fact]
+    public void Measure_DuplicateName_Throws() =>
+        Assert.Throws<ArgumentException>(() => ValidGroup(("m", "sum(tests)"), ("m", "count()")).Validate());
+
+    [Fact]
+    public void Measure_BadGrammar_Throws() =>
+        Assert.Throws<ArgumentException>(() => ValidGroup(("m", "sum(")).Validate());
+
+    [Fact]
+    public void Measure_VerbArgNotNumeric_Throws() =>
+        Assert.Throws<ArgumentException>(() => ValidGroup(("m", "sum(operator)")).Validate());
+
+    [Fact]
+    public void Measure_ArgmaxDimNotDict_Throws() =>
+        Assert.Throws<ArgumentException>(() => ValidGroup(("m", "argmax(tests, sum(tests))")).Validate());
+
+    [Fact]
+    public void Measure_WhereChannelNotDict_Throws() =>
+        Assert.Throws<ArgumentException>(() => ValidGroup(("m", "share(sum(tests)) where tests = '1'")).Validate());
+
+    [Fact]
+    public void Measure_NonQuadkeyGeometry_Throws()
+    {
+        var view = ValidGroup(("m", "count()")) with
+        {
+            Source = ValidGroup(("m", "count()")).Source with
+            {
+                Geometry = new GeometrySpec { Kind = GeometryKind.LonLat, Lon = "lon", Lat = "lat" },
+            },
+        };
+        Assert.Throws<ArgumentException>(view.Validate);
+    }
+
+    [Fact]
+    public void Measure_ColorByUnknownName_Throws() =>
+        Assert.Throws<ArgumentException>(() => (ValidGroup(("m", "count()")) with
+        {
+            Encoding = new EncodingSpec { Color = new ColorSpec { Channel = "ghost" } },
+        }).Validate());
+
     [Fact]
     public void DictionaryEncodedChannels_IsDictTypeMinusIdentityRole()
     {

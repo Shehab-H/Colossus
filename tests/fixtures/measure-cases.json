@@ -1,0 +1,30 @@
+{
+  "_comment": "Shared measure-grammar fixture (VIEW_CONFIG §4). Both C# MeasureParser (tests/Colossus.Tests/MeasureParserTests.cs) and web measures.ts (web/src/lib/measures.test.ts) verify against it: `parse` cases pin the AST shape, `errors` cases pin the failure message substring. Keep both parsers in lockstep — a change here must pass on both sides.",
+  "parse": [
+    { "expr": "sum(tests)", "ast": { "kind": "sum", "channel": "tests" } },
+    { "expr": "count()", "ast": { "kind": "count" } },
+    { "expr": "avg(download_mbps)", "ast": { "kind": "avg", "channel": "download_mbps" } },
+    { "expr": "wavg(download_mbps, tests)", "ast": { "kind": "wavg", "channel": "download_mbps", "weight": "tests" } },
+    { "expr": "min(latency_ms)", "ast": { "kind": "min", "channel": "latency_ms" } },
+    { "expr": "max(tests)", "ast": { "kind": "max", "channel": "tests" } },
+    { "expr": "  sum(  tests )  ", "ast": { "kind": "sum", "channel": "tests" } },
+    { "expr": "sum(tests) where operator = 'apex'", "ast": { "kind": "sum", "channel": "tests", "where": { "channel": "operator", "value": "apex" } } },
+    { "expr": "count() where operator = 'apex'", "ast": { "kind": "count", "where": { "channel": "operator", "value": "apex" } } },
+    { "expr": "share(sum(tests)) where operator = 'apex'", "ast": { "kind": "share", "inner": { "kind": "sum", "channel": "tests" }, "whereChannel": "operator", "whereValue": "apex" } },
+    { "expr": "argmax(operator, sum(tests))", "ast": { "kind": "argmax", "dimension": "operator", "inner": { "kind": "sum", "channel": "tests" } } },
+    { "expr": "argmin(operator, avg(latency_ms))", "ast": { "kind": "argmin", "dimension": "operator", "inner": { "kind": "avg", "channel": "latency_ms" } } }
+  ],
+  "errors": [
+    { "expr": "sum()", "message": "expected a numeric channel" },
+    { "expr": "sum('tests')", "message": "expected a numeric channel" },
+    { "expr": "foo(x)", "message": "unknown aggregate verb 'foo'" },
+    { "expr": "argmax(operator)", "message": "expected ','" },
+    { "expr": "share(sum(tests))", "message": "requires a 'where'" },
+    { "expr": "sum(tests) extra", "message": "unexpected trailing token" },
+    { "expr": "argmax(operator, argmax(operator, sum(tests)))", "message": "expected an aggregate verb" },
+    { "expr": "argmax(operator, sum(tests) where operator = 'apex')", "message": "may not carry a 'where'" },
+    { "expr": "sum(tests", "message": "expected ')'" },
+    { "expr": "sum(tests) where operator 'apex'", "message": "expected '='" },
+    { "expr": "", "message": "expected an aggregate verb" }
+  ]
+}

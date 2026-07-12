@@ -194,7 +194,7 @@ appear in the bake log.
 | `source` | ✅ | ✓ | § 6. |
 | `bakeFilters` | | ✓ | SQL predicates AND-ed into the extract `WHERE`. Fixed at bake. |
 | `measures` | | ◦ | § 4. Presence = group regime. |
-| `filters` | | ◦ | § 7. Absent = every dimension/temporal channel auto-gets a control (✓ current behavior). |
+| `filters` | | ◦ | § 7. Absent = every dimension/temporal channel auto-gets a control (✓ current behavior). Predicate filters execute GPU-side (✓ live, PHASE-1). |
 | `storage` | | ◦ | Parquet queryable-store layout (RULES R4/S4). Unchanged from prior spec; § 9. |
 | `encoding` | | ✓ | § 8. `color` ✓ (full scale system) · `size` ◦. |
 | `inspect` | | ✓ | § 10. Omit → marks not pickable. |
@@ -216,6 +216,8 @@ owns only bake-time shaping.
 ## 7. `filters[]` (◦ specified; auto-derived controls are ✓ live)
 
 When absent, every `dimension`/`temporal` channel gets a default control — exactly today's HUD.
+Predicate (perMark) filters execute GPU-side via `DataFilterExtension` (✓ live, PHASE-1): a filter
+change updates only uniforms, touching no tile bytes; the tile identity never includes the filter.
 When present, it curates which channels get controls and how:
 
 | Field | Notes |

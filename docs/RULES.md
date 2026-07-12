@@ -54,6 +54,14 @@ client, and the GPU never see a source-specific layout.
 > `Apache.Arrow` writer is also the only stable option: the DuckDB nanoarrow extension segfaults on
 > DuckDB.NET 1.5.3.)
 
+**Tile format 2** (`manifest.tileFormat: 2`) hardens the same schema into a zero-copy *contract*, so the
+client decodes each tile as typed-array views over the one fetched buffer rather than copying columns: a
+single record batch, no nulls in any viewed column (strings coalesce to `'null'`, measures to `NaN`),
+tile-global triangle indices (rebased at bake, not on the client), dictionary columns written in their
+canonical domain order (tile codes are the client's canonical codes — no remap), and measures stored as
+Float32 (the stored buffer *is* the render buffer). The schema is unchanged; format 1 (older bakes) stays
+readable via the client's copy path until every view is re-baked.
+
 Canonical tile schema (target):
 
 | Column         | Type                 | When            | Purpose                                                        |
@@ -124,4 +132,8 @@ Honest status so this file stays truthful as the slices land:
     WKT/geohash/H3 are still adapter TODOs.
   - R4: tiles are Hilbert-sorted, but the Parquet queryable-store sidecar, the DuckDB-WASM client, and
     deliberate zone-map / dictionary / bloom tuning are all pending (S4). Interactive `filters` are
-    declared in config but not yet honored by the bake or client.
+    honored **client-side on the GPU**: each filterable channel is a `DataFilterExtension` float slot
+    baked into the tile once (per-mark for points, per-vertex for area marks), and a filter change
+    updates only `filterRange`/`filterEnabled` uniforms — zero tile bytes, no refetch/decode. The
+    tile identity is `(version, tileKey)` alone; filter/color/measure are GPU state, never cache keys.
+    Bake-side predicate pushdown into the queryable store is still pending (S4).
