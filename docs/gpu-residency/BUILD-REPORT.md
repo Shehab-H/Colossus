@@ -387,5 +387,16 @@ same bake path as `BakeViewUseCase`'s group branch).
 | `verify` (all four views) | **PASS** — `mobile-dominance: leafRows=627,511 total=627,511 source=7,607,947` (leaf marks == distinct marks; companion facts == 7.6M source rows); geonames/mobile-coverage/ookla-fixed still PASS (row regime intact) |
 | `dotnet test` | 115 passed (verifier + view changes compile; row-regime suite green) |
 
-Live browser render/recolour of the dominant-operator map is the one remaining manual scenario (dev
-servers + browser); the bake artifacts it needs are now on disk and the client path is unit-proven.
+**Acceptance evidence (live browser, worktree servers).** Served the worktree tiles (:5174) + web
+(:5173) and loaded `?view=mobile-dominance`:
+
+- Manifest + companions load (200), **zero console errors**. Color-by lists the measures
+  (`total_tests/avg_download/apex_share/dominant_operator`); `operator` filter shows `[apex,nimbus,orbit,pulse]`;
+  legend = `dominant_operator` categorical over that domain; 161,132 marks resident in view.
+- **The fold, run in-page over the real baked tile `3/1/0` (3,222 marks, 38,778 companion rows):** the
+  `dominant_operator` distribution recolours completely per context — all facts → `{apex 2140, orbit 840,
+  nimbus 185, pulse 57}`; `operator=apex` → `{apex 3088, unknown 134}` (apex's footprint); `operator=nimbus`
+  → `{nimbus 2843, unknown 379}`. Marks with no surviving fact go unknown; the numeric `total_tests` mean
+  recomputes (80 → 26 → 21). This is the archetypal filter-dependent computed colour, exact on real data.
+- Not observable here: literal map pixels — the sandbox blocks MapLibre's external basemap tiles, so the
+  map canvas never sizes/paints; the deck fold that drives the colours is proven above instead.
