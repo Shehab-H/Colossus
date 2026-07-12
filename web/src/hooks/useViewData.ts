@@ -3,6 +3,7 @@ import { loadManifest, type ColorSpec, type Manifest } from '../lib/manifest';
 import { ALL, activeFilters as pickActive, colorChannelName, describeColorDomain, discoverOptions, filterableChannels } from '../lib/channels';
 import { describeLegend, type ColorDomain } from '../lib/colorScale';
 import { buildColorLut } from '../lib/colorLut';
+import { activateTileVersion } from '../lib/swClient';
 
 const EMPTY_DOMAIN: ColorDomain = { kind: 'numeric', min: 0, max: 1 };
 
@@ -38,6 +39,8 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
         if (!alive) return;
         const seed = initialRef.current;
         setManifest(m);
+        // Version rotation is the SW's cache GC: tell it which version is live now.
+        activateTileVersion(m.view.id, m.version);
         setColorChannel(seed?.color || colorChannelName(m.view));
         const o = await discoverOptions(m);
         if (!alive) return;

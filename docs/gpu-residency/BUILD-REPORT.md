@@ -31,7 +31,7 @@ Green before any code change:
 | 2 — GPU color | done | `c123749` | color → LUT texture + `getScaleValue` attribute; `markColors`/CPU recolor deleted; all gates green + live recolor verified |
 | 3 — Zero-copy tiles v2 | done | _(this commit)_ | tile format v2 (global triangles, no-null, canonical dicts, f32 measures) + client view-based decode; gates green; fresh bake + verify PASS; view residency proven live |
 | 4 — Group/measure | done (v0) | — | §1–9 landed: bake (config/parser/validation, grouper, effective view+reducer, companions, domains+wiring), client (types+parser, fold, render integration), view+bake+verify PASS on 7.6M real facts. Live browser recolour is the one manual step left. |
-| 4-fetch — Fetch locality | not started | — | 4.1 SW cache + 4.2 prefetch in scope; 4.3 pack container deferred (owner gate) |
+| 4-fetch — Fetch locality | in progress | — | 4.1 SW cache done (below); 4.2 prefetch pending; 4.3 pack container deferred (owner gate) |
 
 ## Deviations from phase docs
 
@@ -400,3 +400,24 @@ same bake path as `BakeViewUseCase`'s group branch).
   recomputes (80 → 26 → 21). This is the archetypal filter-dependent computed colour, exact on real data.
 - Not observable here: literal map pixels — the sandbox blocks MapLibre's external basemap tiles, so the
   map canvas never sizes/paints; the deck fold that drives the colours is proven above instead.
+
+## Phase 4-fetch — Fetch locality (PHASE-4-fetch-locality.md)
+
+Building the non-deferred half: 4.1 SW cache + 4.2 prefetch. 4.3 (pack container) stays deferred
+behind owner sign-off, and the whole phase remains gated on real production latency data — this is
+the additive, independently-landable infrastructure, not a data-model change.
+
+### 4.1 — Persistent tile cache (Service Worker + Cache API)
+
+**What landed.** `web/public/sw.js` (~65 lines, plain JS, no deps): immutable versioned tile paths
+(`…/<viewId>/<version>/z/x/y[.facts].arrow`) are served cache-first from the Cache API; `latest.json`,
+manifests, and the API pass through untouched. Cache name per `(viewId, version)`; on manifest
+activation the client posts `{viewId, version}` and the SW drops the view's other-version caches
+(version rotation = the GC). `cache.put` is wrapped for `QuotaExceededError` (evict oldest tile cache,
+retry once, else network-only). `web/src/lib/swClient.ts` registers it **production-only** (`import.meta.env.PROD`)
+and posts the activation message from `useViewData` after `loadManifest`. `fetchArrowTable` is untouched —
+the SW is transparent.
+
+**Acceptance evidence.** `node --check public/sw.js` OK; `tsc -b`/`oxlint` clean; `vitest` 120 passed;
+`npm run build` succeeds and ships `dist/sw.js`. (Live offline-reload / version-flip is a production-bundle
+scenario; dev never registers the SW by design.)
