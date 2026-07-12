@@ -15,8 +15,8 @@ namespace Colossus.Tests;
 
 /// <summary>End-to-end group-regime bake through DuckDB (no ClickHouse): facts → grouper → effective
 /// view + companion spec → AggregateReducer. Pins that each render tile gets a fact companion whose
-/// rows are the fact partials at grain, keyed by an <c>mk</c> that matches the tile's mark ids — real
-/// keys while marks are real, the grid-cell key once they merge.</summary>
+/// rows are the fact partials at grain, keyed by <c>mki</c> — the row index of the fact's mark within
+/// the render tile (real mark, or the grid cell it merged into), the client fold's O(1) join.</summary>
 public class GroupBakeTests : IDisposable
 {
     private readonly DirectoryInfo _dir = Directory.CreateTempSubdirectory("colossus-tests-");
@@ -95,12 +95,17 @@ public class GroupBakeTests : IDisposable
 
         var tile = ReadArrow(Path.Combine(outDir, "0/0/0.arrow"));
         var tileIds = Ids(tile, TileSchema.Id);
-        Assert.Equal(new HashSet<string> { "p:1.0:1.0", "p:3.0:3.0" }, tileIds);
+        Assert.Equal(new HashSet<string> { "p:1.0:1.0", "p:3.0:3.0" }, tileIds.ToHashSet());
 
         var comp = ReadArrow(Path.Combine(outDir, "0/0/0.facts.arrow"));
         Assert.Equal(4, comp.Length); // one row per (mark, operator, quarter)
-        Assert.Subset(tileIds, Ids(comp, "mk"));                       // every companion mk is a real tile mark
-        Assert.Equal(26f, Sum(comp, "sum__tests"), 3);                // 10+5+3+8
+        var mki = Mki(comp);
+        Assert.All(mki, i => Assert.InRange(i, 0, tile.Length - 1)); // every row keys a real tile mark
+        // Partials gather to the right mark through mki: p:1:1 has apex Q1 10 + apex Q2 5 + zenith Q1 3,
+        // p:3:3 has zenith Q1 8.
+        var perMark = SumByMark(comp, "sum__tests", mki, tileIds);
+        Assert.Equal(18f, perMark["p:1.0:1.0"], 3);
+        Assert.Equal(8f, perMark["p:3.0:3.0"], 3);
         Assert.Equal(1130f, Sum(comp, "swp__download_mbps__tests"), 3); // 500+200+270+160
     }
 
@@ -118,9 +123,13 @@ public class GroupBakeTests : IDisposable
               v(x, y, geometry, part_offsets, operator, quarter, tests, download_mbps)
             """);
 
+        var tile = ReadArrow(Path.Combine(outDir, "0/0/0.arrow"));
+        var tileIds = Ids(tile, TileSchema.Id);
+        Assert.All(tileIds, id => Assert.StartsWith("g:", id)); // both marks merged into grid cells
+
         var comp = ReadArrow(Path.Combine(outDir, "0/0/0.facts.arrow"));
-        Assert.Equal(2, comp.Length); // grain (grid-cell mk, operator)
-        Assert.All(Ids(comp, "mk"), mk => Assert.StartsWith("g:", mk));
+        Assert.Equal(2, comp.Length); // grain (grid-cell mki, operator)
+        Assert.All(Mki(comp), i => Assert.InRange(i, 0, tile.Length - 1));
         Assert.Equal(41f, Sum(comp, "sum__tests"), 3); // apex 10+20, zenith 3+8, folded across both merged marks
     }
 
@@ -137,10 +146,28 @@ public class GroupBakeTests : IDisposable
         return reader.ReadNextRecordBatch()!;
     }
 
-    private static HashSet<string> Ids(RecordBatch b, string col)
+    private static string[] Ids(RecordBatch b, string col)
     {
         var a = (StringArray)b.Column(col);
-        return Enumerable.Range(0, a.Length).Select(i => a.GetString(i)).ToHashSet();
+        return [.. Enumerable.Range(0, a.Length).Select(i => a.GetString(i))];
+    }
+
+    private static int[] Mki(RecordBatch b)
+    {
+        var a = (Int32Array)b.Column("mki");
+        return [.. Enumerable.Range(0, a.Length).Select(i => a.GetValue(i)!.Value)];
+    }
+
+    private static Dictionary<string, float> SumByMark(RecordBatch b, string col, int[] mki, string[] tileIds)
+    {
+        var a = (FloatArray)b.Column(col);
+        var sums = new Dictionary<string, float>();
+        for (int i = 0; i < a.Length; i++)
+        {
+            string id = tileIds[mki[i]];
+            sums[id] = sums.GetValueOrDefault(id) + a.GetValue(i)!.Value;
+        }
+        return sums;
     }
 
     private static float Sum(RecordBatch b, string col)

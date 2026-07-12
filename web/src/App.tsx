@@ -20,7 +20,7 @@ import { buildEmbedUrl, embedSnippet, readEmbedParams } from './lib/embed';
 import { tileDeckData } from './lib/deckData';
 import type { Manifest } from './lib/manifest';
 import { columnValue, type TileData } from './lib/tileData';
-import { colorableChannels, filterableChannels, splitFilters } from './lib/channels';
+import { carriedFilterableChannels, colorableChannels, splitFilters } from './lib/channels';
 import { filterSlots, filterRanges, anyActive } from './lib/gpuFilter';
 import { colorScaleExtension } from './lib/colorScaleExtension';
 import { initialViewState, type CameraState } from './lib/viewport';
@@ -118,9 +118,11 @@ export default function App() {
   );
 
   // Per-tile folded measure columns under the active context, or null when there is no context (colour
-  // straight from the baked default-context columns). Keyed so the color override + inspect agree.
+  // straight from the baked default-context columns). Derived buffers are keyed by the context that
+  // PRODUCED the fold (folded.contextSig), never the live selection — an in-flight fold would otherwise
+  // cache the previous context's colours under the new key and serve them forever.
   const folded = useMeasureFold(manifest, rendered, contextFilters);
-  const contextKey = useMemo(() => (folded ? JSON.stringify(contextFilters) : undefined), [folded, contextFilters]);
+  const contextKey = folded?.contextSig;
 
   // GPU state that rides on the layers, never on tile identity: the color LUT (Phase 2) and the filter
   // uniforms (Phase 1). A measure/scale/theme change or a filter change makes new layer instances with the
@@ -172,7 +174,7 @@ export default function App() {
       }
       // A measure under active context reads its folded value (numeric, or an argmax code decoded through
       // its category domain); everything else, and the no-context case, reads the baked tile column.
-      const cols = folded?.get(hit.key);
+      const cols = folded?.byTile.get(hit.key);
       const valueAt = (name: string) => {
         const fc = cols?.[name];
         if (!fc) return inspectValue(columnValue(hit.data.values[name], i));
@@ -223,7 +225,7 @@ export default function App() {
           // Binary layout: flat vertices + per-polygon start offsets. No object accessors, so nothing
           // runs per-cell on the main thread — it uploads straight to the GPU. The GPU color value
           // (getScaleValue) and filter (getFilterValue) attributes ride in data.attributes (per-vertex).
-          data: tileDeckData(data, colorChannel, colorCategories, slots?.size, folded?.get(key)?.[colorChannel], contextKey) as never,
+          data: tileDeckData(data, colorChannel, colorCategories, slots?.size, folded?.byTile.get(key)?.[colorChannel], contextKey) as never,
           _normalize: false, // rings are already simple + consistent from the bake
           positionFormat: 'XY',
           coordinateSystem,
@@ -289,7 +291,7 @@ export default function App() {
           colorChannels={manifest ? colorableChannels(manifest) : []}
           colorChannel={colorChannel}
           onColorChannelChange={setColorChannel}
-          channels={manifest ? filterableChannels(manifest.view) : []}
+          channels={manifest ? carriedFilterableChannels(manifest) : []}
           options={options}
           filters={filters}
           onFilterChange={(name, value) => setFilters((f) => ({ ...f, [name]: value }))}

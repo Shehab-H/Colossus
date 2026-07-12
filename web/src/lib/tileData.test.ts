@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Field, Float32, Int32, List, Table, Utf8, makeBuilder, makeVector, tableFromIPC, tableToIPC, vectorFromArray } from 'apache-arrow';
 import type { Manifest, ViewConfig } from './manifest';
-import { columnValue, decodeCompanion, decodeTile, tileBytes, type DictColumn, type Utf8Column } from './tileData';
+import { columnValue, companionGrain, decodeCompanion, decodeTile, tileBytes, type DictColumn, type Utf8Column } from './tileData';
 import { MISSING_CODE, NULL_DAY, type FilterSlots } from './gpuFilter';
 
 const utf8Vec = (vals: (string | null)[]) => {
@@ -390,19 +390,31 @@ describe('decodeCompanion', () => {
     grainChannels: ['operator', 'quarter'],
   } as unknown as Manifest;
 
-  it('splits mk, grain dims, grain temporal, and partial columns', () => {
+  it('splits mki, grain dims (codes), grain temporal (day numbers), and partial columns', () => {
     const table = roundTrip({
-      mk: utf8Vec(['p:1', 'p:1', 'p:2']),
+      mki: makeVector(new Int32Array([0, 0, 1])),
       operator: utf8Vec(['apex', 'zenith', 'apex']),
       quarter: utf8Vec(['2025-01-01', '2025-01-01', '2025-04-01']),
       sum__tests: makeVector(new Float32Array([10, 3, 20])),
     });
-    const c = decodeCompanion(table, manifest);
+    const c = decodeCompanion(table, companionGrain(manifest));
 
     expect(c.rowCount).toBe(3);
-    expect(c.mk).toEqual(['p:1', 'p:1', 'p:2']);
-    expect(c.dim.operator).toEqual(['apex', 'zenith', 'apex']);
-    expect(c.temporal.quarter).toEqual(['2025-01-01', '2025-01-01', '2025-04-01']);
+    expect([...c.mki]).toEqual([0, 0, 1]);
+    expect(c.dim.operator.dict).toEqual(['apex', 'zenith']);
+    expect([...c.dim.operator.codes]).toEqual([0, 1, 0]);
+    const day = (iso: string) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86400000);
+    expect([...c.temporalDays.quarter]).toEqual([day('2025-01-01'), day('2025-01-01'), day('2025-04-01')]);
     expect([...c.partial.sum__tests]).toEqual([10, 3, 20]);
+  });
+
+  it('throws on a companion without mki (an old bake) so the fold is skipped, not wrong', () => {
+    const table = roundTrip({
+      mk: utf8Vec(['p:1']),
+      operator: utf8Vec(['apex']),
+      quarter: utf8Vec(['2025-01-01']),
+      sum__tests: makeVector(new Float32Array([10])),
+    });
+    expect(() => decodeCompanion(table, companionGrain(manifest))).toThrow('mki');
   });
 });

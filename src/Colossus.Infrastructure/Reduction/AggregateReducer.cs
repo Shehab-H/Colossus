@@ -96,17 +96,37 @@ public sealed class AggregateReducer : IReductionStrategy
                 """);
             var internals = db.LongPairs("SELECT tx, ty FROM internals");
 
-            var written = ArrowTileWriter.WritePartitioned(db.Connection, ContentSql(ctx.Root, z, ctx.View, ctx.GroupRegime),
-                (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath),
-                ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+            string contentSql = ContentSql(ctx.Root, z, ctx.View, ctx.GroupRegime);
+            Func<long, long, string> tilePath =
+                (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath);
 
-            // Companions ride the same active tiles (facts share their marks' (tx,ty)), so each render
-            // tile gets a z/x/y.facts.arrow with its facts' partials at grain, keyed by mk.
+            List<(long Tx, long Ty, long Rows)> written;
             if (ctx.Companion is { } companion)
+            {
+                // Materialize the level's content with each mark's row index within its tile, so the
+                // companion can carry `mki` — the client's O(1) join to the rendered mark (no string
+                // keys). The within-tile order (ORDER BY id) only has to match between the two writes.
+                db.Exec($"""
+                    CREATE OR REPLACE TABLE content AS
+                    SELECT *, (row_number() OVER (PARTITION BY tx, ty ORDER BY "{TileSchema.Id}") - 1)::INTEGER AS mki
+                    FROM ({contentSql})
+                    """);
+                written = ArrowTileWriter.WritePartitioned(db.Connection,
+                    "SELECT * EXCLUDE (mki) FROM content ORDER BY tx, ty, mki", tilePath,
+                    ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+
+                // Companions ride the same active tiles (facts share their marks' (tx,ty)), so each
+                // render tile gets a z/x/y.facts.arrow with its facts' partials at grain, keyed by mki.
                 ArrowTileWriter.WritePartitioned(db.Connection, CompanionSql(ctx.Root, z, companion),
                     (wtx, wty) => Path.Combine(ctx.OutputDirectory, $"{z}/{wtx}/{wty}.facts.arrow"),
                     companion.GrainChannels.Where(c => c.Type == ChannelType.Dict).Select(c => c.Name).ToHashSet(),
                     companion.CanonicalDictionaryOrders);
+            }
+            else
+            {
+                written = ArrowTileWriter.WritePartitioned(db.Connection, contentSql, tilePath,
+                    ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+            }
 
             foreach (var (wtx, wty, rows) in written)
             {
@@ -180,9 +200,10 @@ public sealed class AggregateReducer : IReductionStrategy
             """;
     }
 
-    // Fact partials at grain for this level, partitioned by (tx, ty). Each fact is keyed by its mark's
-    // mk — the real geometry key while the mark is real (zreal ≤ z), else the grid-cell key it merged
-    // into — exactly the id the render tile carries, so the client joins the two by string equality.
+    // Fact partials at grain for this level, partitioned by (tx, ty). Each fact keys to its mark — the
+    // real geometry key while the mark is real (zreal ≤ z), else the grid-cell key it merged into —
+    // then joins the materialized content to carry `mki`, the mark's row index within its render tile.
+    // The client fold is then an integer gather (out[mki[row]] += partial[row]), never a string join.
     private static string CompanionSql(Bbox root, int z, CompanionSpec c)
     {
         string tx = TileSql.TileIndex(root, z, Axis.X);
@@ -191,17 +212,23 @@ public sealed class AggregateReducer : IReductionStrategy
         string gy = TileSql.GridIndex(root, z, Axis.Y);
         string mk = $"CASE WHEN zreal <= {z} THEN {MarkKey.RealSql()} ELSE {MarkKey.MergedSql("gx", "gy")} END";
         string grain = string.Concat(c.GrainChannels.Select(ch => $", \"{ch.Name}\""));
+        string grainOut = string.Concat(c.GrainChannels.Select(ch => $", g.\"{ch.Name}\""));
         string partials = string.Concat(c.Partials.Select(p => $", {PartialSql(p)} AS \"{p.Name}\""));
+        string partialsOut = string.Concat(c.Partials.Select(p => $", g.\"{p.Name}\""));
 
         return $"""
             WITH vf AS (
               SELECT facts.*, {gx} AS gx, {gy} AS gy, {tx} AS tx, {ty} AS ty
               FROM facts JOIN act ON {tx} = act.tx AND {ty} = act.ty
+            ),
+            g AS (
+              SELECT tx, ty, ({mk}) AS mk{grain}{partials}
+              FROM vf
+              GROUP BY ALL
             )
-            SELECT tx, ty, ({mk}) AS mk{grain}{partials}
-            FROM vf
-            GROUP BY ALL
-            ORDER BY tx, ty
+            SELECT g.tx, g.ty, content.mki{grainOut}{partialsOut}
+            FROM g JOIN content ON content.tx = g.tx AND content.ty = g.ty AND content."{TileSchema.Id}" = g.mk
+            ORDER BY g.tx, g.ty, content.mki
             """;
     }
 

@@ -83,11 +83,14 @@ key instead — below).
 ### 4. Companions (AggregateReducer)
 
 Alongside each level-z tile write, a second `WritePartitioned` over the **facts** table produces
-`<z>/<x>/<y>.facts.arrow` with grain `(mk, <temporal channels>, <perFact dict channels>)`:
+`<z>/<x>/<y>.facts.arrow` with grain `(mki, <temporal channels>, <perFact dict channels>)`:
 
-- `mk`: the mark key — the geometry key for real marks, `'g:'||gx||':'||gy` for facts whose mark
-  merged at this z (same CASE the tile SQL uses, so both sides derive identical keys). Tiles write
-  the same synthetic key into `id` for merged cells (replacing NULL above — one rule: id = mk).
+- `mki`: the row index of the fact's mark **within the render tile** (Int32). The reducer
+  materializes the level's content with `row_number() OVER (PARTITION BY tx, ty ORDER BY id)` and
+  the companion joins it on the mark key (the geometry key for real marks, `'g:'||gx||':'||gy` for
+  facts whose mark merged at this z — same CASE both sides), so alignment holds by construction.
+  The client fold is then an O(1) integer gather — no mark-key strings ship to the client at all
+  (they were the largest companion column and the fold's per-row hash lookup).
 - One column per grain channel, by its channel name (dict / DATE).
 - Partial columns, deterministically named (client mirrors this exactly):
   `sum__<ch>` · `cnt` · `swp__<ch>__<w>` (Σ ch·w) · `min__<ch>` · `max__<ch>` — the union of what
@@ -119,12 +122,15 @@ aggregate-reducer tiles.
   `tests/fixtures/measure-cases.json`, both sides pin it — the third cross-language authority,
   alongside tiling and schema).
 - `foldTile(companion, measures, context): Record<name, Float32Array | Uint16Array>` — one pass
-  over companion cells: skip cells failing context (temporal day-range on the bin column, equality
-  on dim codes), accumulate partials per (mk, argmax-dim) then finalize per measure
+  over companion cells: skip cells failing context (temporal day-range on the day-number column,
+  equality on dim codes), accumulate partials per (mki, argmax-dim) then finalize per measure
   (`avg=sum/cnt`, `wavg=swp/sum`, `share=restricted/unrestricted`, `argmax` → code into the dim's
-  canonical domain). Mark alignment: tile `id` column → `mk` map built once per tile.
-- Companion decode rides the existing worker path (`fetchArrowTable` on `.facts.arrow`), cached in
-  a small Map keyed `version|tileKey`, evicted with the tile.
+  canonical domain). Mark alignment is the companion's own `mki` column — typed-array arithmetic
+  end to end, no strings, no hashing, no per-row allocation.
+- Companion fetch + decode runs on the tile worker pool (`tileLoader.loadCompanion`): the decoded
+  form is all typed arrays (dict codes, day numbers, f32 partials) and transfers back zero-copy.
+  Companions cache per `version|tileKey`; fold results cache per `(version, tileKey, contextSig)`,
+  so pan/zoom under a fixed context re-folds nothing — only new tiles or a new context fold.
 
 ### 8. Rendering integration
 

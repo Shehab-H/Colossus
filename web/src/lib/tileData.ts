@@ -3,7 +3,7 @@ import type { Manifest, ViewConfig } from './manifest';
 import { factsUrl, tileUrl } from './manifest';
 import { fetchArrowTable } from './arrow';
 import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
-import type { CompanionData } from './measures';
+import type { CompanionData, CompanionDim } from './measures';
 import { buildFilterValues, canonicalCodeLut, dayNumber, MISSING_CODE, type FilterSlots } from './gpuFilter';
 import { TileColumns } from './schema';
 
@@ -82,50 +82,108 @@ export async function loadTile(
   return decodeTile(view, table, slots, tileFormat, buffer);
 }
 
-/** Decode a fact companion (.facts.arrow) into the per-row shape the fold reads: the mark key `mk`, each
- *  grain dict value as a string, grain temporal as YYYY-MM-DD, and every partial column as a Float32Array.
- *  Companions are small (grain cells, not marks), so a per-row decode is fine. */
-export function decodeCompanion(table: Table, manifest: Manifest): CompanionData {
+/** Which companion columns are grain (and their temporality) — the minimal, structured-clone-friendly
+ *  slice of the manifest the worker needs to decode a companion. */
+export interface CompanionGrain {
+  name: string;
+  temporal: boolean;
+}
+
+export const companionGrain = (manifest: Manifest): CompanionGrain[] =>
+  (manifest.grainChannels ?? []).map((g) => {
+    const ch = manifest.view.source.channels.find((c) => c.name === g);
+    return { name: g, temporal: ch?.role === 'temporal' || ch?.type === 'date' };
+  });
+
+/** Decode a fact companion (.facts.arrow) into the typed shape the fold reads: `mki` (each row's mark
+ *  index in the render tile, written by the bake), grain dimensions as dict codes (canonical order),
+ *  grain temporal values as day numbers, and every partial column as f32. No per-row strings — a
+ *  low-zoom companion runs to millions of rows, and every array here transfers across the worker
+ *  boundary. Throws on a companion without `mki` (an old bake) — the caller skips the fold. */
+export function decodeCompanion(table: Table, grain: CompanionGrain[]): CompanionData {
   const n = table.numRows;
-  const byName = new Map(manifest.view.source.channels.map((c) => [c.name, c] as const));
-  const grain = manifest.grainChannels ?? [];
 
-  const mkCol = table.getChild('mk');
-  const mk = new Array<string>(n);
-  for (let i = 0; i < n; i++) mk[i] = String(mkCol?.get(i));
+  const mkiCol = table.getChild('mki');
+  if (!mkiCol) throw new Error('companion has no mki column (re-bake the view)');
+  const mki = int32Column(mkiCol, n);
 
-  const dim: Record<string, string[]> = {};
-  const temporal: Record<string, string[]> = {};
+  const dim: Record<string, CompanionDim> = {};
+  const temporalDays: Record<string, Float32Array> = {};
   for (const g of grain) {
-    const col = table.getChild(g);
+    const col = table.getChild(g.name);
     if (!col) continue;
-    const isTemporal = byName.get(g)?.role === 'temporal' || byName.get(g)?.type === 'date';
-    const norm = isTemporal ? isoDate : plainString;
-    const out = new Array<string>(n);
-    for (let i = 0; i < n; i++) out[i] = norm(col.get(i));
-    (isTemporal ? temporal : dim)[g] = out;
+    if (g.temporal) temporalDays[g.name] = temporalDaysColumn(col, n);
+    else dim[g.name] = dictFromArrow(col, plainString) ?? dictByScan(col, n);
   }
 
-  const skip = new Set<string>([...grain, 'mk']);
+  const skip = new Set<string>([...grain.map((g) => g.name), 'mki']);
   const partial: Record<string, Float32Array> = {};
   for (const field of table.schema.fields) {
     if (skip.has(field.name)) continue;
     const col = table.getChild(field.name);
     if (col) partial[field.name] = numericColumn(col);
   }
-  return { rowCount: n, mk, dim, temporal, partial };
+  return { rowCount: n, mki, dim, temporalDays, partial };
 }
 
 /** Fetch + decode a tile's fact companion. */
 export async function loadCompanion(
-  manifest: Manifest,
+  viewId: string,
   version: string,
   key: string,
+  grain: CompanionGrain[],
   signal?: AbortSignal,
 ): Promise<CompanionData> {
   const [z, x, y] = key.split('/').map(Number);
-  const { table } = await fetchArrowTable(factsUrl(manifest.view.id, version, z, x, y), signal);
-  return decodeCompanion(table, manifest);
+  const { table } = await fetchArrowTable(factsUrl(viewId, version, z, x, y), signal);
+  return decodeCompanion(table, grain);
+}
+
+/** Single-chunk non-null Int32 column viewed in place, else copied. */
+function int32Column(col: Vector, n: number): Int32Array {
+  const d = col.data.length === 1 && col.nullCount === 0 ? col.data[0] : undefined;
+  if (d && d.values instanceof Int32Array) return d.values.subarray(d.offset, d.offset + n);
+  return Int32Array.from(col.toArray() as ArrayLike<number>);
+}
+
+/** A temporal companion column as day numbers. Arrow DateDay stores days directly (viewed, then widened
+ *  to f32); a dictionary-encoded date converts its small dictionary once; anything else falls back to a
+ *  per-row conversion. */
+function temporalDaysColumn(col: Vector, n: number): Float32Array {
+  const ad = arrowDict(col);
+  if (ad) {
+    const lut = new Float32Array(ad.dict.length);
+    for (let c = 0; c < ad.dict.length; c++) lut[c] = dayNumber(ad.dict.get(c));
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = lut[ad.codes[i]];
+    return out;
+  }
+  const d = col.data.length === 1 && col.nullCount === 0 ? col.data[0] : undefined;
+  if (col.type.typeId === Type.Date && d && d.values instanceof Int32Array) {
+    // DateDay: the underlying int32 IS the day number.
+    return Float32Array.from(d.values.subarray(d.offset, d.offset + n));
+  }
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = dayNumber(col.get(i));
+  return out;
+}
+
+/** Dict codes by scanning a small non-dictionary column (companion grain cardinality is tiny). */
+function dictByScan(col: Vector, n: number): CompanionDim {
+  const codeOf = new Map<string, number>();
+  const dict: string[] = [];
+  const codes = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = String(col.get(i));
+    let c = codeOf.get(s);
+    if (c === undefined) {
+      c = dict.length;
+      codeOf.set(s, c);
+      dict.push(s);
+    }
+    codes[i] = c;
+  }
+  return { codes: packCodes(codes, dict.length), dict };
 }
 
 /** Arrow table → TileData. Pure (no fetch) so the decode is unit-testable. The whole tile is decoded

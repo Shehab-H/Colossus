@@ -450,6 +450,54 @@ regime; leaf marks == distinct marks for the group regime). Suites green at the 
 geonames residency 128,212 cells / 4 tiles at the baseline camera — identical to the build's
 evidence. Old tile versions (7 dirs, ~6.4GB) deleted; each view now has exactly one baked version.
 
+## Owner-verification fixes (2026-07-12, second pass)
+
+Live inspection by the owner surfaced four issues in the group regime's first cut; all fixed, all
+verified live against the real bake:
+
+1. **Silent default context (UX + perf).** `useViewData` defaulted every *polygon* view to one clean
+   slice (first dimension value + latest temporal) — right for row-regime overdraw, wrong for the
+   group regime: mobile-dominance loaded with `operator=apex, quarter=latest` silently active, so the
+   fold ran from first paint and the filter UI read as inverted. Group-regime views now start
+   unfiltered — baked colours, zero fold work; the slice heuristic stays for row-regime polygons.
+2. **Poisoned override cache (the "one-behind" filters).** `App` keyed fold-derived GPU buffers by the
+   *live* selection while `folded` still held the previous context's arrays — stale colours were
+   cached under the new key and served forever. `useMeasureFold` now returns `{byTile, contextSig}`
+   and buffers key on the sig that produced the fold, so an in-flight fold can never mislabel buffers.
+3. **mobile-coverage rendered blank.** Row-regime aggregate tiles carry no dimension/temporal columns
+   (the reducer averages every slice per cell), but the view still offered those filters and the slice
+   default selected one — every mark read `MISSING_CODE` and was GPU-discarded. New
+   `carriedFilterableChannels`/`predicateChannels` (channels.ts): controls render only for channels
+   the tiles can answer; filter slots build only from predicate-capable ones. mobile-coverage now
+   renders the all-facts average map with no dead controls. (Its hard data edge at lon 0–45°E is the
+   dataset's real extent — see scripts/seed-mobile-coverage.ps1 — not a rendering fault.)
+4. **Companion pipeline rebuilt for scale.** Companions were 459MB of the 603MB view; a low-zoom
+   companion was fetched, Arrow-parsed, and string-joined **on the main thread**, serially, and
+   re-folded from scratch on every pan. Now:
+   - **Bake:** companions carry `mki` (Int32 — the fact's mark row index within its render tile, via
+     a materialized `row_number()` content join) and drop the `mk` strings; render-tile row order is
+     deterministic (`ORDER BY id` within tile). Root companion 29.3MB → **18.4MB**; all companions
+     459MB → **232MB** (view total 603MB → 376MB). Render tiles byte-equivalent.
+   - **Client:** companion fetch+decode moved to the tile worker pool (typed columns — dict codes,
+     day numbers, f32 partials — transferred zero-copy); loads parallelized; fold results cached per
+     `(version, tile, contextSig)` so pan/zoom under a held context re-folds nothing; `foldTile`'s
+     hot loop is typed-array compares/adds joined by `mki` — no strings, no hashing, no per-row
+     allocation. The `tileDeckData` per-tile cache is capped (16, oldest-first) so context scrubs
+     can't pin unbounded per-vertex buffers.
+
+   **Measured live** (root tile as rendered at world zoom: 60,741 marks, 1,225,878 companion rows):
+   companion fetch+decode **101ms** (on the worker in-app), fold **33–43ms per context** (140ms first
+   call, JIT), **zero main-thread long tasks** through a full `operator=apex` apply in the UI. Fold
+   distributions on the live tile: all → {apex 33,312, orbit 12,587, nimbus 11,864, pulse 2,978};
+   `operator=apex` → {apex 59,142, unknown 1,599}; `operator=nimbus` → {nimbus 57,111, unknown 3,630};
+   2024-Q1-only → 20,383 unknown, mean total_tests 683 → 92 — filter-dependent computed colour, exact.
+
+Suites after the pass: `dotnet test` 115, `vitest` 125 (+2), `tsc -b`/`oxlint` clean; mobile-dominance
+re-baked (`v20260712T081835Z`) and `verify` PASS on all four views (the group invariant is
+schema-agnostic, so `mki` needed no verifier change). Also fixed in passing: `deckData.ts` contained a
+literal NUL byte (git treated the file as binary) — the cache-key separator is now the source escape
+sequence for U+0000. GROUP-MEASURES.md §4/§7 updated to the `mki` contract.
+
 ## Status summary
 
 Group/measure v0 (§1–9) and fetch-locality 4.1–4.2 are complete: `dotnet test` 115, `vitest` 123, both

@@ -70,6 +70,25 @@ export function colorableChannels(manifest: Manifest): ChannelSpec[] {
 export const filterableChannels = (view: ViewConfig): ChannelSpec[] =>
   view.source.channels.filter((c) => c.role === 'dimension' || c.role === 'temporal');
 
+/** The filterable channels a view can actually answer, so only live controls render. Group regime:
+ *  all of them (perMark → GPU predicate, perFact → fold context). Row regime: the aggregate reducer
+ *  drops dimension/temporal columns from its tiles (each cell averages every slice), so nothing is
+ *  filterable — offering those controls would silently blank the view (every mark reads MISSING_CODE). */
+export function carriedFilterableChannels(manifest: Manifest): ChannelSpec[] {
+  if (isGroupRegime(manifest.view)) return filterableChannels(manifest.view);
+  return manifest.reduction === 'aggregate' ? [] : filterableChannels(manifest.view);
+}
+
+/** The channels whose values ride in the render tiles for the GPU filter. Group regime: the perMark
+ *  ones only — a perFact selection is fold context and must never become a filterRange (no mark may be
+ *  discarded for it). */
+export function predicateChannels(manifest: Manifest): ChannelSpec[] {
+  const carried = carriedFilterableChannels(manifest);
+  if (!isGroupRegime(manifest.view)) return carried;
+  const perFact = new Set(manifest.factChannels?.perFact ?? []);
+  return carried.filter((c) => !perFact.has(c.name));
+}
+
 /** The channel a view colors by initially: the authored `encoding.color.channel` if it names a channel
  *  or a measure, else the first measure (group regime) / first measure channel, else the first channel. */
 export const colorChannelName = (view: ViewConfig): string => {
@@ -155,11 +174,11 @@ export async function describeColorDomain(manifest: Manifest, channel: string): 
   return { kind: 'categorical', categories: [...set].sort() };
 }
 
-/** Distinct values of each filterable (dimension/temporal) channel, for the filter controls. Baked
- *  manifest domains answer without any fetch; only channels the manifest can't answer (older bake, or
- *  truncated) scan the root tile — fetched once, lazily. */
+/** Distinct values of each live filterable channel, for the filter controls. Baked manifest domains
+ *  answer without any fetch; only channels the manifest can't answer (older bake, or truncated) scan
+ *  the root tile — fetched once, lazily. */
 export async function discoverOptions(manifest: Manifest): Promise<Record<string, string[]>> {
-  const channels = filterableChannels(manifest.view);
+  const channels = carriedFilterableChannels(manifest);
   if (channels.length === 0) return {};
 
   const options: Record<string, string[]> = {};

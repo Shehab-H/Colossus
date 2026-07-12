@@ -1,16 +1,18 @@
-import { loadTile, type TileData } from './tileData';
+import { type CompanionGrain, loadCompanion, loadTile, type TileData } from './tileData';
+import type { CompanionData } from './measures';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
 
 interface LoadResponse {
   id: number;
   tile?: TileData;
+  companion?: CompanionData;
   error?: string;
   aborted?: boolean;
 }
 
 interface Pending {
-  resolve: (tile: TileData) => void;
+  resolve: (result: LoadResponse) => void;
   reject: (err: Error) => void;
 }
 
@@ -55,7 +57,7 @@ class TileLoader {
       const e = new Error(res.error);
       if (res.aborted) e.name = 'AbortError';
       p.reject(e);
-    } else p.resolve(res.tile as TileData);
+    } else p.resolve(res);
   }
 
   // A worker died (e.g. module load failed): tear the pool down and reject in-flight loads. The cache's
@@ -77,12 +79,25 @@ class TileLoader {
     }
     const id = this.nextId++;
     const worker = this.workers[this.rr++ % this.workers.length];
-    const promise = new Promise<TileData>((resolve, reject) => {
+    const promise = new Promise<LoadResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       worker.postMessage({ id, view, version, key, slots, tileFormat });
-    });
+    }).then((r) => r.tile as TileData);
     // postMessage on a terminated worker is a silent no-op, so a late cancel is always safe.
     return { promise, cancel: () => worker.postMessage({ cancel: id }) };
+  }
+
+  /** Fetch + decode a tile's fact companion on the worker pool (main-thread fallback when workers are
+   *  unavailable). The typed columns transfer back — the main thread never parses companion Arrow. */
+  loadCompanion(viewId: string, version: string, key: string, grain: CompanionGrain[]): Promise<CompanionData> {
+    this.ensure();
+    if (!this.workers.length) return loadCompanion(viewId, version, key, grain);
+    const id = this.nextId++;
+    const worker = this.workers[this.rr++ % this.workers.length];
+    return new Promise<LoadResponse>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      worker.postMessage({ id, companion: { viewId, version, key, grain } });
+    }).then((r) => r.companion as CompanionData);
   }
 }
 

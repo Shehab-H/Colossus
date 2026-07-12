@@ -3,7 +3,7 @@
 // (foldTile, below) recomputes each measure over a tile's fact partials under the active context.
 
 import type { ChannelSpec, ViewConfig } from './manifest';
-import { type DateRange, inDateRange, parseDateRange } from './dates';
+import { type DateRange, MAX_SAFE_F32, dayNumberOfIso, parseDateRange } from './dates';
 
 export interface WhereClause {
   channel: string;
@@ -146,13 +146,23 @@ function expect(t: Tok[], p: Pos, kind: TokKind, expr: string): void {
 // additive, so this is the same operation the bake did at the default context — only the surviving fact
 // set differs. Mirror of the bake's default-context SQL (DuckDbFactGrouper), evaluated over companions.
 
-/** A decoded fact companion: per-row grain values (dict channels as strings, temporal as YYYY-MM-DD)
- *  and partial columns, plus the mark key each row folds into. */
+/** One grain dimension of a companion: per-row codes into its small dictionary (written in the canonical
+ *  order at bake). Codes stay integers through the whole fold — values only exist to resolve a context
+ *  selection or a `where` literal to a code, once per fold. */
+export interface CompanionDim {
+  codes: Uint8Array | Uint16Array | Uint32Array;
+  dict: string[];
+}
+
+/** A decoded fact companion, fully typed: `mki` keys each row to its mark's row index in the render
+ *  tile (the bake writes it — no client-side string join), grain dimensions are dict codes, grain
+ *  temporal values are day numbers, and partials are f32. Every array transfers across the worker
+ *  boundary; nothing here allocates per-row strings. */
 export interface CompanionData {
   rowCount: number;
-  mk: string[];
-  dim: Record<string, string[]>;
-  temporal: Record<string, string[]>;
+  mki: Int32Array;
+  dim: Record<string, CompanionDim>;
+  temporalDays: Record<string, Float32Array>;
   partial: Record<string, Float32Array>;
 }
 
@@ -267,8 +277,12 @@ interface Folder {
   finalize(survived: Uint8Array): Float32Array | Uint16Array;
 }
 
-const matches = (c: CompanionData, where: WhereClause | undefined, row: number): boolean =>
-  !where || c.dim[where.channel]?.[row] === where.value;
+/** Resolve a dimension literal to its per-row codes and the code to match: a value absent from the
+ *  companion's dictionary matches nothing (want = -1; codes are ≥ 0). */
+function resolveDim(c: CompanionData, channel: string, value: string): { codes: CompanionDim['codes']; want: number } {
+  const d = c.dim[channel];
+  return d ? { codes: d.codes, want: d.dict.indexOf(value) } : { codes: new Uint8Array(c.rowCount), want: -1 };
+}
 
 function makeFolder(
   name: string,
@@ -278,16 +292,20 @@ function makeFolder(
   domains: Record<string, string[]>,
 ): Folder {
   if (ast.kind === 'argmax' || ast.kind === 'argmin') {
-    const domain = domains[ast.dimension] ?? [];
-    const code = new Map(domain.map((v, i) => [v, i]));
+    const domain = domains[ast.dimension] ?? c.dim[ast.dimension]?.dict ?? [];
     const d = domain.length || 1;
     const isMax = ast.kind === 'argmax';
+    // The companion's dictionary is written in the canonical order, so this LUT is normally the
+    // identity — it only remaps if a bake and its manifest ever disagree.
+    const dim = c.dim[ast.dimension];
+    const lut = dim ? Int32Array.from(dim.dict, (v) => domain.indexOf(v)) : new Int32Array(0);
+    const codes = dim?.codes ?? new Uint8Array(c.rowCount);
     const agg = new InnerAgg(ast.inner, c, n * d, aggCh(ast.inner), aggW(ast.inner));
     return {
       name,
       add(mi, row) {
-        const k = code.get(c.dim[ast.dimension]?.[row]);
-        if (k !== undefined) agg.add(mi * d + k, row);
+        const k = lut[codes[row]];
+        if (k >= 0) agg.add(mi * d + k, row);
       },
       finalize(survived) {
         const out = new Uint16Array(n).fill(ARGMAX_UNKNOWN);
@@ -313,13 +331,14 @@ function makeFolder(
   }
 
   if (ast.kind === 'share') {
+    const { codes, want } = resolveDim(c, ast.whereChannel, ast.whereValue);
     const restricted = new InnerAgg(ast.inner, c, n, aggCh(ast.inner), aggW(ast.inner));
     const unrestricted = new InnerAgg(ast.inner, c, n, aggCh(ast.inner), aggW(ast.inner));
     return {
       name,
       add(mi, row) {
         unrestricted.add(mi, row);
-        if (c.dim[ast.whereChannel]?.[row] === ast.whereValue) restricted.add(mi, row);
+        if (codes[row] === want) restricted.add(mi, row);
       },
       finalize(survived) {
         const out = new Float32Array(n);
@@ -340,11 +359,12 @@ function makeFolder(
   // A plain aggregate, optionally restricted by its own `where`. (argmax/argmin/share returned above;
   // TS can't narrow the union's argmax|argmin member out through the early returns, hence the cast.)
   const flat = ast as Agg;
+  const where = flat.where ? resolveDim(c, flat.where.channel, flat.where.value) : null;
   const agg = new InnerAgg(flat, c, n, aggCh(flat), aggW(flat));
   return {
     name,
     add(mi, row) {
-      if (matches(c, flat.where, row)) agg.add(mi, row);
+      if (!where || where.codes[row] === where.want) agg.add(mi, row);
     },
     finalize(survived) {
       const out = new Float32Array(n);
@@ -357,33 +377,62 @@ function makeFolder(
 const aggCh = (a: Agg): string | undefined => ('channel' in a ? a.channel : undefined);
 const aggW = (a: Agg): string | undefined => (a.kind === 'wavg' ? a.weight : undefined);
 
-function passesContext(c: CompanionData, ctx: FoldContext, row: number): boolean {
-  for (const ch in ctx.equals) if (c.dim[ch]?.[row] !== ctx.equals[ch]) return false;
-  for (const ch in ctx.ranges) if (!inDateRange(c.temporal[ch]?.[row] ?? '', ctx.ranges[ch])) return false;
-  return true;
+/** The context compiled against one companion: per-row code equality tests + day-number range tests.
+ *  `impossible` short-circuits the whole fold (a selection no fact can satisfy — every mark unknown). */
+function compileContext(c: CompanionData, ctx: FoldContext) {
+  const eqs: { codes: CompanionDim['codes']; want: number }[] = [];
+  const rgs: { days: Float32Array; lo: number; hi: number }[] = [];
+  let impossible = false;
+  for (const ch in ctx.equals) {
+    const r = resolveDim(c, ch, ctx.equals[ch]);
+    if (r.want < 0) impossible = true;
+    eqs.push(r);
+  }
+  for (const ch in ctx.ranges) {
+    const days = c.temporalDays[ch];
+    if (!days) {
+      impossible = true;
+      continue;
+    }
+    const r = ctx.ranges[ch];
+    rgs.push({
+      days,
+      lo: r.from ? dayNumberOfIso(r.from) : -MAX_SAFE_F32,
+      hi: r.to ? dayNumberOfIso(r.to) : MAX_SAFE_F32,
+    });
+  }
+  return { eqs, rgs, impossible };
 }
 
 /** Fold a tile's companion into per-mark measure values under the active context. Output arrays are
- *  indexed by mark index (via `markIndex`, the tile's id→index map); numeric measures come back as
- *  Float32Array, argmax/argmin as Uint16Array of codes into the dimension's canonical domain. A mark
- *  with no surviving fact is NaN / ARGMAX_UNKNOWN — the unknown colour. */
+ *  indexed by the mark's row index in the render tile (the companion's `mki` column); numeric measures
+ *  come back as Float32Array, argmax/argmin as Uint16Array of codes into the dimension's canonical
+ *  domain. A mark with no surviving fact is NaN / ARGMAX_UNKNOWN — the unknown colour. The hot loop is
+ *  integer compares and float adds over typed arrays; no strings, no hashing, no per-row allocation. */
 export function foldTile(
   c: CompanionData,
   measures: { name: string; ast: MeasureExpr }[],
   ctx: FoldContext,
   markCount: number,
-  markIndex: Map<string, number>,
   domains: Record<string, string[]>,
 ): Record<string, Float32Array | Uint16Array> {
   const survived = new Uint8Array(markCount);
   const folders = measures.map((m) => makeFolder(m.name, m.ast, c, markCount, domains));
+  const { eqs, rgs, impossible } = compileContext(c, ctx);
+  const mki = c.mki;
 
-  for (let row = 0; row < c.rowCount; row++) {
-    if (!passesContext(c, ctx, row)) continue;
-    const mi = markIndex.get(c.mk[row]);
-    if (mi === undefined) continue;
-    survived[mi] = 1;
-    for (const f of folders) f.add(mi, row);
+  if (!impossible) {
+    rows: for (let row = 0; row < c.rowCount; row++) {
+      for (const e of eqs) if (e.codes[row] !== e.want) continue rows;
+      for (const g of rgs) {
+        const day = g.days[row];
+        if (day < g.lo || day > g.hi) continue rows;
+      }
+      const mi = mki[row];
+      if (mi < 0 || mi >= markCount) continue;
+      survived[mi] = 1;
+      for (const f of folders) f.add(mi, row);
+    }
   }
 
   const out: Record<string, Float32Array | Uint16Array> = {};

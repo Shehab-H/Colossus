@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadManifest, type ColorSpec, type Manifest } from '../lib/manifest';
-import { ALL, activeFilters as pickActive, colorChannelName, describeColorDomain, discoverOptions, filterableChannels } from '../lib/channels';
+import { ALL, activeFilters as pickActive, carriedFilterableChannels, colorChannelName, describeColorDomain, discoverOptions, isGroupRegime } from '../lib/channels';
 import { describeLegend, type ColorDomain } from '../lib/colorScale';
 import { buildColorLut } from '../lib/colorLut';
 import { activateTileVersion } from '../lib/swClient';
@@ -45,11 +45,15 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
         const o = await discoverOptions(m);
         if (!alive) return;
         setOptions(o);
+        // Row-regime polygon views default to one clean slice (overlapping slices per geometry would
+        // overdraw). A group-regime view needs no slice — its marks are unique per geometry and its
+        // measures are baked at the default context, so it starts unfiltered: no fold, zero extra work.
+        const slice = m.view.mark === 'polygon' && !isGroupRegime(m.view);
         const defaults: Record<string, string> = {};
-        for (const ch of filterableChannels(m.view)) {
+        for (const ch of carriedFilterableChannels(m)) {
           const opts = o[ch.name] ?? [];
           const pick = ch.role === 'temporal' ? opts[opts.length - 1] : opts[0];
-          defaults[ch.name] = m.view.mark === 'polygon' ? pick ?? ALL : ALL;
+          defaults[ch.name] = slice ? pick ?? ALL : ALL;
         }
         setFilters({ ...defaults, ...seed?.filters });
       })

@@ -1,5 +1,6 @@
 import type { Manifest } from './manifest';
-import { filterableChannels, canonicalCategories, parseDateRange, ALL } from './channels';
+import { predicateChannels, canonicalCategories, parseDateRange, ALL } from './channels';
+import { MAX_SAFE_F32, NULL_DAY, dayNumber, dayNumberOfIso } from './dates';
 
 // GPU filtering: every filter is a numeric range on one float slot of a DataFilterExtension. A filter
 // change is then a uniform update (filterRange/filterEnabled layer props) — no fetch, decode, or
@@ -7,11 +8,8 @@ import { filterableChannels, canonicalCategories, parseDateRange, ALL } from './
 // main thread. This module is pure (no deck import) so all of it is unit-tested. See
 // docs/gpu-residency/PHASE-1-gpu-filtering.md §1.
 
-// Finite f32 sentinels (never Infinity — uniforms are f32). MAX_SAFE_F32 < f32 max (~3.4e38).
-export const MAX_SAFE_F32 = 3.0e38;
-// Null/NaN temporal marks: passes any `from` bound, fails any finite `to` (only an open `to`, whose
-// sentinel is MAX_SAFE_F32 > NULL_DAY, keeps them) — reproduces isoDate('null') lexicographic order.
-export const NULL_DAY = 2.0e38;
+// Day/sentinel helpers live in dates.ts (measures.ts shares them); re-exported for existing importers.
+export { MAX_SAFE_F32, NULL_DAY, dayNumber, dayNumberOfIso };
 // A dict code for a tile value absent from the canonical category list: matched by nothing, kept by (all).
 export const MISSING_CODE = 2.0e38;
 
@@ -30,12 +28,14 @@ export interface FilterSlots {
   size: 1 | 2 | 3 | 4;
 }
 
-/** The filter slots for a view: one per filterable (dimension/temporal) channel, in a deterministic
- *  order, capped at 4 (DataFilterExtension's max). Dimension slots carry the canonical category order
- *  (baked domain, else the discovered option list — same array the UI shows, so codes and options can
- *  never disagree). Null when the view has no filterable channels. */
+/** The filter slots for a view: one per predicate-capable channel (a dimension/temporal channel whose
+ *  values the render tiles actually carry — perFact context channels fold instead, and row-regime
+ *  aggregate tiles carry no dimensions at all), in a deterministic order, capped at 4
+ *  (DataFilterExtension's max). Dimension slots carry the canonical category order (baked domain, else
+ *  the discovered option list — same array the UI shows, so codes and options can never disagree).
+ *  Null when no channel can predicate — then no filter attribute is built or uploaded at all. */
 export function filterSlots(manifest: Manifest, options?: Record<string, string[]>): FilterSlots | null {
-  const channels = filterableChannels(manifest.view);
+  const channels = predicateChannels(manifest);
   if (channels.length === 0) return null;
   if (channels.length > 4)
     console.warn(
@@ -48,28 +48,6 @@ export function filterSlots(manifest: Manifest, options?: Record<string, string[
     return { name: ch.name, kind: 'dimension' as const, categories: canonicalCategories(manifest, ch.name) ?? options?.[ch.name] };
   });
   return { specs, size: specs.length as 1 | 2 | 3 | 4 };
-}
-
-/** Day number (days since Unix epoch, floored) for a raw temporal value — mirrors tileData's isoDate
- *  storage heuristic exactly, so a filter range built from endpoint strings compares equal to the
- *  column's own day numbers. null/NaN → NULL_DAY. */
-export function dayNumber(v: unknown): number {
-  if (v === null || v === undefined) return NULL_DAY;
-  if (v instanceof Date) return Math.floor(v.getTime() / 86400000);
-  const n = Number(v);
-  if (Number.isFinite(n)) {
-    const ms = Math.abs(n) < 1e7 ? n * 86400000 : n; // day-count vs epoch-millis storage
-    return Math.floor(ms / 86400000);
-  }
-  if (typeof v === 'string') return dayNumberOfIso(v); // a date string like YYYY-MM-DD
-  return NULL_DAY;
-}
-
-/** Day number for a filter endpoint 'YYYY-MM-DD'. Unparseable → NULL_DAY (treated as no real value). */
-export function dayNumberOfIso(s: string): number {
-  const [y, m, d] = s.slice(0, 10).split('-').map(Number);
-  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return NULL_DAY;
-  return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
 }
 
 /** The per-slot filter ranges for the active selection, in slot order. An absent/`(all)` selection or a
