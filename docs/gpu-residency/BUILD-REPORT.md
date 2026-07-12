@@ -340,3 +340,26 @@ differs, and partials are additive, so it's exact at every LOD.
 context reproduces `sum`/`wavg`/`share`/`argmax` exactly; a `operator=apex` context folds to the apex
 facts and turns a mark with none unknown (NaN / ARGMAX_UNKNOWN); a temporal range drops the out-of-range
 bins. The values match the bake's `GroupBakeTests` companions by construction (same partials, same math).
+
+### §8 — Rendering integration
+
+**What landed.** The group regime renders end to end on the client. Split across two commits: §8a decode
+(id + render channels + companion decode), §8b the fold wiring (hook + colour override + filter split +
+inspect). Row regime untouched — every group path is gated on `isGroupRegime`/active context.
+
+- **§8a:** `renderDecodeView` swaps the authored channels for the effective marks channels so a tile's
+  measure/id columns decode with the right types; `fieldSelection` adds the mark `id`; `useTiles` passes
+  the decode view to the worker. `decodeCompanion`/`loadCompanion` parse a `.facts.arrow` into
+  `CompanionData` (mk, grain dims as strings, temporal as YYYY-MM-DD, partials as f32).
+- **§8b:** `useMeasureFold(manifest, rendered, context)` decodes each tile's companion (cached, evicted
+  with the tile) and folds it to per-mark measure columns, or `null` when there is no context (baked
+  colours, zero cost). `tileDeckData` gains a folded `override` + a context key, so the colour value
+  attribute comes from the fold and cached buffers are reused while scrubbing. `App` splits active
+  filters via `splitFilters` — predicate (perMark) → the GPU `filterRange` exactly as before; context
+  (perFact) → the fold, never a filterRange. Inspect reads folded measure values (numeric, or an argmax
+  code decoded through its category domain) under context, baked otherwise.
+
+**Acceptance evidence.** `tsc -b`/`oxlint` clean, `vitest` 120 passed (+3 over §8a's 117). Unit-verified:
+group tile decode (§8a), `decodeCompanion` (§8a), `foldTile` (§7), `tileDeckData` override (numeric
+passthrough, argmax code → unknown texel, context-keyed cache). The live browser scenario (dominant-operator
+map recolouring as the quarter range / operator filter changes) is proven in §9 against a real bake.
