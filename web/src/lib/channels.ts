@@ -49,6 +49,15 @@ export function renderChannels(manifest: Manifest): ChannelSpec[] {
   return [id, ...view.source.channels.filter((c) => perMark.has(c.name)), ...measureChannelSpecs(view)];
 }
 
+/** The view the tile decoder should use. Row regime: the authored view. Group regime: the authored view
+ *  with its channels swapped for the render channels, so a tile's measure/id columns decode with the
+ *  right types (the authored perFact channels aren't in the tile at all). */
+export function renderDecodeView(manifest: Manifest): ViewConfig {
+  const view = manifest.view;
+  if (!isGroupRegime(view)) return view;
+  return { ...view, source: { ...view.source, channels: renderChannels(manifest) } };
+}
+
 /** Any channel a view can color by. Row regime: every carried channel. Group regime: the measures plus
  *  the perMark channels (a raw perFact channel has no single per-mark value to colour). */
 export function colorableChannels(manifest: Manifest): ChannelSpec[] {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Field, Float32, Int32, List, Table, Utf8, makeBuilder, makeVector, tableFromIPC, tableToIPC, vectorFromArray } from 'apache-arrow';
-import type { ViewConfig } from './manifest';
-import { columnValue, decodeTile, tileBytes, type DictColumn, type Utf8Column } from './tileData';
+import type { Manifest, ViewConfig } from './manifest';
+import { columnValue, decodeCompanion, decodeTile, tileBytes, type DictColumn, type Utf8Column } from './tileData';
 import { MISSING_CODE, NULL_DAY, type FilterSlots } from './gpuFilter';
 
 const utf8Vec = (vals: (string | null)[]) => {
@@ -319,5 +319,90 @@ describe('decodeTile format 2 (zero-copy views)', () => {
     const d = decodeTile(view, table, null, 2, buffer);
     // population is a view (already inside buffer.byteLength); only the built interleaved positions add.
     expect(tileBytes(d)).toBe(buffer.byteLength + d.positions!.byteLength);
+  });
+});
+
+describe('group regime decode', () => {
+  const xs = makeVector(new Float32Array([0, 1, 2]));
+  const ys = makeVector(new Float32Array([10, 11, 12]));
+
+  // The decode view the client builds for a group-regime tile: id + materialized measures as channels.
+  const groupDecodeView: ViewConfig = {
+    id: 'g',
+    viewport: 'geo',
+    mark: 'point',
+    source: {
+      adapter: 'test',
+      query: '',
+      geometry: { kind: 'quadkey' },
+      channels: [
+        { name: 'id', column: 'id', role: 'identity', type: 'dict' },
+        { name: 'total_tests', column: 'total_tests', role: 'measure', type: 'f32' },
+        { name: 'dominant_operator', column: 'dominant_operator', role: 'dimension', type: 'dict' },
+      ],
+    },
+    measures: [
+      { name: 'total_tests', expr: 'sum(tests)' },
+      { name: 'dominant_operator', expr: 'argmax(operator, sum(tests))' },
+    ],
+    encoding: { color: { channel: 'dominant_operator', type: 'categorical' } },
+    inspect: { title: 'dominant_operator', channels: ['dominant_operator', 'total_tests'] },
+  };
+
+  it('decodes the mark id, numeric measure, and argmax dict measure with the right types', () => {
+    const t = roundTrip({
+      x: xs,
+      y: ys,
+      id: utf8Vec(['p:1.0:1.0', 'p:2.0:2.0', 'p:3.0:3.0']),
+      total_tests: makeVector(new Float32Array([18, 8, 5])),
+      dominant_operator: utf8Vec(['apex', 'zenith', 'apex']),
+    });
+    const d = decodeTile(groupDecodeView, t);
+
+    expect([0, 1, 2].map((i) => columnValue(d.values.id, i))).toEqual(['p:1.0:1.0', 'p:2.0:2.0', 'p:3.0:3.0']);
+    expect(d.values.total_tests).toBeInstanceOf(Float32Array);
+    expect([...(d.values.total_tests as Float32Array)]).toEqual([18, 8, 5]);
+    const op = d.values.dominant_operator as DictColumn;
+    expect(op.kind).toBe('dict');
+    expect([0, 1, 2].map((i) => columnValue(op, i))).toEqual(['apex', 'zenith', 'apex']);
+  });
+});
+
+describe('decodeCompanion', () => {
+  const manifest = {
+    version: 'v',
+    view: {
+      id: 'g',
+      viewport: 'geo',
+      mark: 'polygon',
+      source: {
+        adapter: 'test',
+        query: '',
+        geometry: { kind: 'quadkey' },
+        channels: [
+          { name: 'operator', column: 'operator', role: 'dimension', type: 'dict' },
+          { name: 'quarter', column: 'quarter', role: 'temporal', type: 'date' },
+          { name: 'tests', column: 'tests', role: 'measure', type: 'f32' },
+        ],
+      },
+      measures: [{ name: 'total_tests', expr: 'sum(tests)' }],
+    },
+    grainChannels: ['operator', 'quarter'],
+  } as unknown as Manifest;
+
+  it('splits mk, grain dims, grain temporal, and partial columns', () => {
+    const table = roundTrip({
+      mk: utf8Vec(['p:1', 'p:1', 'p:2']),
+      operator: utf8Vec(['apex', 'zenith', 'apex']),
+      quarter: utf8Vec(['2025-01-01', '2025-01-01', '2025-04-01']),
+      sum__tests: makeVector(new Float32Array([10, 3, 20])),
+    });
+    const c = decodeCompanion(table, manifest);
+
+    expect(c.rowCount).toBe(3);
+    expect(c.mk).toEqual(['p:1', 'p:1', 'p:2']);
+    expect(c.dim.operator).toEqual(['apex', 'zenith', 'apex']);
+    expect(c.temporal.quarter).toEqual(['2025-01-01', '2025-01-01', '2025-04-01']);
+    expect([...c.partial.sum__tests]).toEqual([10, 3, 20]);
   });
 });

@@ -1,8 +1,9 @@
 import { Type, type Table, type Vector } from 'apache-arrow';
-import type { ViewConfig } from './manifest';
-import { tileUrl } from './manifest';
+import type { Manifest, ViewConfig } from './manifest';
+import { factsUrl, tileUrl } from './manifest';
 import { fetchArrowTable } from './arrow';
-import { measureChannels, NUMERIC_TYPES } from './channels';
+import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
+import type { CompanionData } from './measures';
 import { buildFilterValues, canonicalCodeLut, dayNumber, MISSING_CODE, type FilterSlots } from './gpuFilter';
 import { TileColumns } from './schema';
 
@@ -79,6 +80,52 @@ export async function loadTile(
   const [z, x, y] = key.split('/').map(Number);
   const { table, buffer } = await fetchArrowTable(tileUrl(view.id, version, z, x, y), signal);
   return decodeTile(view, table, slots, tileFormat, buffer);
+}
+
+/** Decode a fact companion (.facts.arrow) into the per-row shape the fold reads: the mark key `mk`, each
+ *  grain dict value as a string, grain temporal as YYYY-MM-DD, and every partial column as a Float32Array.
+ *  Companions are small (grain cells, not marks), so a per-row decode is fine. */
+export function decodeCompanion(table: Table, manifest: Manifest): CompanionData {
+  const n = table.numRows;
+  const byName = new Map(manifest.view.source.channels.map((c) => [c.name, c] as const));
+  const grain = manifest.grainChannels ?? [];
+
+  const mkCol = table.getChild('mk');
+  const mk = new Array<string>(n);
+  for (let i = 0; i < n; i++) mk[i] = String(mkCol?.get(i));
+
+  const dim: Record<string, string[]> = {};
+  const temporal: Record<string, string[]> = {};
+  for (const g of grain) {
+    const col = table.getChild(g);
+    if (!col) continue;
+    const isTemporal = byName.get(g)?.role === 'temporal' || byName.get(g)?.type === 'date';
+    const norm = isTemporal ? isoDate : plainString;
+    const out = new Array<string>(n);
+    for (let i = 0; i < n; i++) out[i] = norm(col.get(i));
+    (isTemporal ? temporal : dim)[g] = out;
+  }
+
+  const skip = new Set<string>([...grain, 'mk']);
+  const partial: Record<string, Float32Array> = {};
+  for (const field of table.schema.fields) {
+    if (skip.has(field.name)) continue;
+    const col = table.getChild(field.name);
+    if (col) partial[field.name] = numericColumn(col);
+  }
+  return { rowCount: n, mk, dim, temporal, partial };
+}
+
+/** Fetch + decode a tile's fact companion. */
+export async function loadCompanion(
+  manifest: Manifest,
+  version: string,
+  key: string,
+  signal?: AbortSignal,
+): Promise<CompanionData> {
+  const [z, x, y] = key.split('/').map(Number);
+  const { table } = await fetchArrowTable(factsUrl(manifest.view.id, version, z, x, y), signal);
+  return decodeCompanion(table, manifest);
 }
 
 /** Arrow table → TileData. Pure (no fetch) so the decode is unit-testable. The whole tile is decoded
@@ -239,6 +286,8 @@ function fieldSelection(view: ViewConfig) {
   if (view.encoding?.color?.channel) names.add(view.encoding.color.channel);
   for (const name of view.inspect?.channels ?? []) names.add(name);
   if (view.inspect?.title) names.add(view.inspect.title);
+  // Group regime: the mark id aligns each mark to its fact companion during the fold.
+  if (isGroupRegime(view)) names.add(TileColumns.id);
   return { specByName, names };
 }
 

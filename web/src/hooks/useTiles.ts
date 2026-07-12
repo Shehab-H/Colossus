@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Manifest } from '../lib/manifest';
+import { renderDecodeView } from '../lib/channels';
 import type { FilterSlots } from '../lib/gpuFilter';
 import { TileCache } from '../lib/tileCache';
 import type { TileData } from '../lib/tileData';
@@ -33,6 +34,10 @@ export function useTiles(
   const snapshot = useSyncExternalStore(cache.subscribe, cache.getSnapshot);
   const [selKeys, setSelKeys] = useState<string[]>([]);
 
+  // The tile decoder sees the effective render channels in the group regime (measures + id), not the
+  // authored perFact channels. Stable per manifest, so it is not a fetch trigger.
+  const decodeView = useMemo(() => (manifest ? renderDecodeView(manifest) : null), [manifest]);
+
   useEffect(() => {
     if (!manifest || !camera) return;
     const vp = viewportFor(manifest, camera, size);
@@ -53,10 +58,10 @@ export function useTiles(
     cache.abortStale(new Set(keys.map(ck)));
     const tileFormat = manifest.tileFormat ?? 1;
     for (const key of keys) {
-      cache.ensure(ck(key), () => tileLoader.load(manifest.view, manifest.version, key, slots, tileFormat), keepActive);
+      cache.ensure(ck(key), () => tileLoader.load(decodeView!, manifest.version, key, slots, tileFormat), keepActive);
     }
     // `snapshot` is a dep so a resolved/failed load re-runs selection (and any retry) against fresh data.
-  }, [manifest, camera, size, slots, snapshot, cache]);
+  }, [manifest, decodeView, camera, size, slots, snapshot, cache]);
 
   // Draw the cover, not the raw selection, with each tile's loaded data attached.
   const rendered = useMemo<RenderedTile[]>(() => {
