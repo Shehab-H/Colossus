@@ -3,7 +3,7 @@ using Colossus.Domain.Model;
 
 namespace Colossus.Domain.Reduction;
 
-/// <summary>What a group-regime reduction needs to also emit fact companions (GROUP-MEASURES §4): the
+/// <summary>What a group-regime reduction needs to also emit fact companions: the
 /// raw facts, the grain channels they group by (perFact dict + temporal), and the partial columns the
 /// declared measures fold from. Null in the row regime.</summary>
 public sealed record CompanionSpec
@@ -25,7 +25,7 @@ public sealed record ReductionContext
     public required int MaxZoom { get; init; }
     public required ViewConfig View { get; init; }
 
-    /// <summary>Group regime (GROUP-MEASURES): <see cref="View"/> is the effective marks view and the
+    /// <summary>Group regime: <see cref="View"/> is the effective marks view and the
     /// staging is the grouped marks table, so tiles also carry the mark <c>id</c> and each dict channel
     /// (merged sub-pixel cells take the grid key and the mode). Default false — the row regime is
     /// byte-for-byte unchanged.</summary>
@@ -42,7 +42,9 @@ public sealed record ReductionContext
     public IReadOnlyDictionary<string, IReadOnlyList<string>>? CanonicalDictionaryOrders { get; init; }
 }
 
-public sealed record ReductionResult(IReadOnlyList<TileMeta> Tiles, long LeafPointCount);
+/// <summary><paramref name="CompanionPack"/> is set when the reduction packed its leaf companions into
+/// one archive (group regime); the bake writes it into the manifest, which gates the client's layout.</summary>
+public sealed record ReductionResult(IReadOnlyList<TileMeta> Tiles, long LeafPointCount, CompanionPack? CompanionPack = null);
 
 /// <summary>Turns a sorted staging table into tiles. One implementation per <see cref="ReductionKind"/>;
 /// a strategy chooses which real rows land in which tile — never the schema, never the mark.</summary>

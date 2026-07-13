@@ -9,6 +9,7 @@ using Colossus.Infrastructure;
 using Colossus.Infrastructure.Baking;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Reduction;
+using Colossus.Infrastructure.Tiles;
 using Xunit;
 
 namespace Colossus.Tests;
@@ -48,7 +49,7 @@ public class GroupBakeTests : IDisposable
         },
     };
 
-    private string GroupBake(string factsSql)
+    private (string OutDir, ReductionResult Result) GroupBake(string factsSql)
     {
         string factsPath = Path.Combine(_dir.FullName, "facts.parquet");
         string marksPath = Path.Combine(_dir.FullName, "marks.parquet");
@@ -62,7 +63,7 @@ public class GroupBakeTests : IDisposable
             .Where(c => perFact.Contains(c.Name) && (c.Type == ChannelType.Dict || c.Type == ChannelType.Date))
             .ToList();
 
-        new AggregateReducer().Reduce(new ReductionContext
+        var result = new AggregateReducer().Reduce(new ReductionContext
         {
             StagingParquetPath = marksPath,
             OutputDirectory = outDir,
@@ -78,13 +79,13 @@ public class GroupBakeTests : IDisposable
                 Partials = MeasurePartials.For(Authored.Measures!.Select(m => MeasureParser.Parse(m.Expr))),
             },
         });
-        return outDir;
+        return (outDir, result);
     }
 
     [Fact]
     public void RealMarks_CompanionPartialsAtGrain_KeyedToTileIds()
     {
-        string outDir = GroupBake($"""
+        var (outDir, result) = GroupBake($"""
             SELECT * FROM (VALUES
               (1::FLOAT,1::FLOAT, {Ring(1, 1)}, [0,5]::INTEGER[], 'apex',   DATE '2025-01-01', 10::FLOAT, 50::FLOAT),
               (1::FLOAT,1::FLOAT, {Ring(1, 1)}, [0,5]::INTEGER[], 'apex',   DATE '2025-04-01',  5::FLOAT, 40::FLOAT),
@@ -97,7 +98,10 @@ public class GroupBakeTests : IDisposable
         var tileIds = Ids(tile, TileSchema.Id);
         Assert.Equal(new HashSet<string> { "p:1.0:1.0", "p:3.0:3.0" }, tileIds.ToHashSet());
 
-        var comp = ReadArrow(Path.Combine(outDir, "0/0/0.facts.arrow"));
+        // 0/0/0 is a leaf here, so its companion lives as a gzip block in the pack (R2) — the per-file
+        // form must be gone and the manifest-bound directory is how the client finds the block.
+        Assert.False(File.Exists(Path.Combine(outDir, "0/0/0.facts.arrow")));
+        var comp = ReadPacked(outDir, result, "0/0/0");
         Assert.Equal(4, comp.Length); // one row per (mark, operator, quarter)
         var mki = Mki(comp);
         Assert.All(mki, i => Assert.InRange(i, 0, tile.Length - 1)); // every row keys a real tile mark
@@ -114,7 +118,7 @@ public class GroupBakeTests : IDisposable
     {
         // Two marks, each with an apex + a zenith fact (so operator is perFact), tiny enough to merge
         // into one ~1px cell at z0. The companion folds both marks' facts into that cell's grain.
-        string outDir = GroupBake($"""
+        var (outDir, result) = GroupBake($"""
             SELECT * FROM (VALUES
               (1.0000::FLOAT,1.0000::FLOAT, {Tiny(1.0000)}, [0,5]::INTEGER[], 'apex',   DATE '2025-01-01', 10::FLOAT, 50::FLOAT),
               (1.0000::FLOAT,1.0000::FLOAT, {Tiny(1.0000)}, [0,5]::INTEGER[], 'zenith', DATE '2025-01-01',  3::FLOAT, 90::FLOAT),
@@ -127,6 +131,9 @@ public class GroupBakeTests : IDisposable
         var tileIds = Ids(tile, TileSchema.Id);
         Assert.All(tileIds, id => Assert.StartsWith("g:", id)); // both marks merged into grid cells
 
+        // 0/0/0 is internal (the marks subdivide further), so its companion stays a per-tile file —
+        // only leaf companions move into the pack, and the pack never indexes an internal tile.
+        Assert.False(result.CompanionPack!.Entries.ContainsKey("0/0/0"));
         var comp = ReadArrow(Path.Combine(outDir, "0/0/0.facts.arrow"));
         Assert.Equal(2, comp.Length); // grain (grid-cell mki, operator)
         Assert.All(Mki(comp), i => Assert.InRange(i, 0, tile.Length - 1));
@@ -142,6 +149,17 @@ public class GroupBakeTests : IDisposable
     private static RecordBatch ReadArrow(string path)
     {
         using var stream = File.OpenRead(path);
+        using var reader = new ArrowStreamReader(stream);
+        return reader.ReadNextRecordBatch()!;
+    }
+
+    /// <summary>One leaf companion out of the pack — the directory lookup + bounded gunzip the client mirrors.</summary>
+    private static RecordBatch ReadPacked(string outDir, ReductionResult result, string key)
+    {
+        var pack = result.CompanionPack!;
+        Assert.Equal(CompanionPackWriter.Codec, pack.Codec);
+        Assert.True(pack.Entries.TryGetValue(key, out var e), $"pack has no entry for {key}");
+        using var stream = CompanionPackWriter.ReadBlock(Path.Combine(outDir, pack.File), e![0], e[1]);
         using var reader = new ArrowStreamReader(stream);
         return reader.ReadNextRecordBatch()!;
     }

@@ -94,7 +94,14 @@ export function tileDeckData(
     byKey = new Map();
     cache.set(d, byKey);
   }
-  const key = contextKey ? `${channel}\u0000${contextKey}` : channel;
+  // The context key applies only when the folded override rides along: a tile whose fold hasn't
+  // landed yet falls back to the plain channel entry (baked colours) instead of caching baked values
+  // under the context key — the fold's arrival changes the key, which is what hands deck the new buffer.
+  // The categories ride in the key because they shape the buffer's VALUES (codes vs raw numbers): a
+  // channel rendered once through a mismatched LUT kind (the domain-fetch gap on a colour switch) must
+  // not pin its miss-codes under the channel name for the session.
+  const catSig = categories ? `c:${categories.join('\u0001')}` : 'n';
+  const key = `${override && contextKey ? `${channel}\u0000${contextKey}` : channel}\u0000${catSig}`;
   let data = byKey.get(key);
   if (!data) {
     // A context scrub mints one entry per context visited — cap per tile, oldest first, so a long

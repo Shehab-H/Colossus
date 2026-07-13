@@ -37,6 +37,20 @@ builder.Services.AddOpenApi(o => o.AddDocumentTransformer((doc, _, _) =>
 var app = builder.Build();
 app.UseCors();
 
+// A relative TilesRoot (e.g. "tiles" from appsettings) resolves under the app's content root, so a
+// published deploy needs no absolute path. When tiles are served from a CDN (client TILES_BASE points
+// elsewhere) this local handler simply serves whatever is present locally — often nothing.
+if (!Path.IsPathRooted(server.TilesRoot))
+    server.TilesRoot = Path.Combine(app.Environment.ContentRootPath, server.TilesRoot);
+
+// /api/views (the dataset picker) reads view configs from a "views" folder. A published deploy has no
+// repo marker for RepoPaths to find, so point it at a "views" folder shipped next to the app when one is
+// present. Dev keeps RepoPaths' repo-root resolution (no such folder beside the project). The map itself
+// never needs this — every view's config is embedded in its manifest.
+var deployedViews = Path.Combine(app.Environment.ContentRootPath, "views");
+if (Environment.GetEnvironmentVariable("COLOSSUS_VIEWS_DIR") is null && Directory.Exists(deployedViews))
+    Environment.SetEnvironmentVariable("COLOSSUS_VIEWS_DIR", deployedViews);
+
 app.MapOpenApi();
 app.UseSwaggerUI(o =>
 {
@@ -48,6 +62,9 @@ app.UseSwaggerUI(o =>
 Directory.CreateDirectory(server.TilesRoot);
 var contentTypes = new FileExtensionContentTypeProvider();
 contentTypes.Mappings[".arrow"] = "application/vnd.apache.arrow.stream";
+// Companion pack (R2): gzip blocks range-read per tile. Static files honor Range natively; the
+// compression lives inside the archive, so no Content-Encoding here.
+contentTypes.Mappings[".pack"] = "application/octet-stream";
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(server.TilesRoot),
@@ -64,7 +81,21 @@ app.UseStaticFiles(new StaticFileOptions
     },
 });
 
+// Serve the built web app from wwwroot (SPA) and the showcase from wwwroot/showcase. A backend-only
+// deploy has no wwwroot/index.html, so these are inert there and the "/" banner below answers instead.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+// Explicit routing AFTER the static handlers: WebApplication otherwise auto-inserts routing at the very
+// start, which pre-matches the catch-all fallback (and "/") and makes StaticFileMiddleware skip real
+// files. With routing here, actual wwwroot files win and only unmatched paths reach the endpoints.
+app.UseRouting();
+
 app.MapControllers();
+
+// SPA deep-links (/?view=…) are query-based, but a hard fallback keeps any path route resolving to the
+// app shell. Only fires when wwwroot/index.html exists; API routes above always win.
+app.MapFallbackToFile("index.html");
 
 app.MapGet("/", () => Results.Text(
     "Colossus server.\n" +

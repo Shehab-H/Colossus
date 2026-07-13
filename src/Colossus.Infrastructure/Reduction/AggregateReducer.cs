@@ -33,7 +33,10 @@ public sealed class AggregateReducer : IReductionStrategy
         if (ctx.Companion is { } companion)
             LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root);
         BuildPyramid(db, ctx, tiles, ref leafTotal);
-        return new ReductionResult(tiles, leafTotal);
+        // Leaf companions collectively hold every fact exactly once — pack them into one ranged archive
+        // (companion-scale R2) instead of paying per-file overhead at the level that dominates.
+        var pack = ctx.Companion is null ? null : CompanionPackWriter.Pack(ctx.OutputDirectory, tiles);
+        return new ReductionResult(tiles, leafTotal, pack);
     }
 
     private static string[] Measures(ViewConfig view) => view.Source.Channels

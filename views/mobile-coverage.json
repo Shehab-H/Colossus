@@ -17,9 +17,15 @@
       { "name": "latency_ms", "column": "latency_ms", "role": "measure", "type": "f32" }
     ]
   },
-  "encoding": { "color": { "channel": "download_mbps", "scheme": "viridis" } },
+  "measures": [
+    { "name": "total_tests", "expr": "sum(tests)" },
+    { "name": "avg_download", "expr": "wavg(download_mbps, tests)" },
+    { "name": "avg_upload", "expr": "wavg(upload_mbps, tests)" },
+    { "name": "avg_latency", "expr": "wavg(latency_ms, tests)" },
+    { "name": "avg_share", "expr": "avg(sample_share)" }
+  ],
+  "encoding": { "color": { "channel": "avg_download", "scheme": "viridis" } },
   "inspect": {
-    "title": "operator",
-    "channels": ["operator", "tests", "sample_share", "download_mbps", "upload_mbps", "latency_ms"]
+    "channels": ["avg_download", "avg_upload", "avg_latency", "total_tests", "avg_share"]
   }
 }

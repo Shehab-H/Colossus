@@ -43,15 +43,15 @@ The manifest records the classification; the client obeys it. Authors cannot get
 **Filter semantics (normative).** Every active filter applies to the whole view, in the way its
 classification dictates:
 
-- A filter on a **perMark** channel is a *predicate*: marks are in or out. (Executed GPU-side —
-  see `docs/gpu-residency/PHASE-1-gpu-filtering.md`.)
+- A filter on a **perMark** channel is a *predicate*: marks are in or out. (Executed GPU-side.)
 - A filter on a **perFact** channel is *context*: it selects which facts contribute to **every**
   measure of **every** mark. If a filter reduces a mark's surviving facts, all of that mark's
   measures — including the one driving color — recompute over the survivors and the mark recolors.
   There are no exceptions and no per-measure opt-outs: measures are always evaluated over the
   intersection of all active filters (plus the measure's own `where`, § 4).
-- A mark whose surviving fact set is empty renders as the color scale's `unknown` color; it is not
-  removed (its geometry is still real — removal is a predicate's job, not context's).
+- A mark whose surviving fact set is empty is not drawn while the context filter is active — it
+  disappears exactly like a predicate-filtered mark. Its geometry is still baked; it returns the
+  moment a filter change lets facts survive again.
 
 **Execution is engine-internal and never touches the source database.** Measures are folded
 client-side over baked partial aggregates (worker or GPU executor), with a planner-selected
@@ -194,7 +194,7 @@ appear in the bake log.
 | `source` | ✅ | ✓ | § 6. |
 | `bakeFilters` | | ✓ | SQL predicates AND-ed into the extract `WHERE`. Fixed at bake. |
 | `measures` | | ◦ | § 4. Presence = group regime. |
-| `filters` | | ◦ | § 7. Absent = every dimension/temporal channel auto-gets a control (✓ current behavior). Predicate filters execute GPU-side (✓ live, PHASE-1). |
+| `filters` | | ◦ | § 7. Absent = every dimension/temporal channel auto-gets a control (✓ current behavior). Predicate filters execute GPU-side (✓ live). |
 | `storage` | | ◦ | Parquet queryable-store layout (RULES R4/S4). Unchanged from prior spec; § 9. |
 | `encoding` | | ✓ | § 8. `color` ✓ (full scale system) · `size` ◦. |
 | `inspect` | | ✓ | § 10. Omit → marks not pickable. |
@@ -216,7 +216,7 @@ owns only bake-time shaping.
 ## 7. `filters[]` (◦ specified; auto-derived controls are ✓ live)
 
 When absent, every `dimension`/`temporal` channel gets a default control — exactly today's HUD.
-Predicate (perMark) filters execute GPU-side via `DataFilterExtension` (✓ live, PHASE-1): a filter
+Predicate (perMark) filters execute GPU-side via `DataFilterExtension` (✓ live): a filter
 change updates only uniforms, touching no tile bytes; the tile identity never includes the filter.
 When present, it curates which channels get controls and how:
 
@@ -242,7 +242,8 @@ diverging: `blueRed` (default) `redBlue` `blueOrange` `purpleGreen` `spectral`; 
 Group-regime notes: `argmax` measures color as categorical over the dimension's baked domain;
 numeric measures derive their domain from the *default context* at bake (the whole fact set), so
 the scale stays stable while filters change values — a filtered value outside the baked domain
-clamps. `unknown` renders marks whose surviving fact set is empty (§ 1).
+clamps. `unknown` renders null/out-of-domain values at the default context; a mark whose surviving
+fact set is empty under an active filter is discarded instead (§ 1).
 
 ## 9. `storage` (◦ specified, unchanged)
 

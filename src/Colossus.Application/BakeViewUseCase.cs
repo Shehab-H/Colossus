@@ -99,6 +99,7 @@ public sealed class BakeViewUseCase(
             FactChannels = group?.FactChannels,
             CompanionTiles = group is not null,
             GrainChannels = group?.GrainChannels,
+            CompanionPack = result.CompanionPack,
         }, ct);
         store.PublishLatest(view.Id, version);
 

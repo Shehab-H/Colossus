@@ -140,6 +140,20 @@ export interface Manifest {
   companionTiles?: boolean;
   /** The companion grain columns (perFact dict + temporal), the dimensions the fact partials key by. */
   grainChannels?: string[];
+  /** Leaf companion packaging (companion-scale R2): leaf companions live as independently compressed
+   *  blocks in one per-version archive, range-read per tile. Internal levels stay per-tile files.
+   *  Absent selects the per-file layout for every level (older bakes). */
+  companionPack?: CompanionPack;
+}
+
+/** The leaf companion archive and its directory: `file` is relative to the version directory, `codec`
+ *  is a browser-native DecompressionStream format (compression lives inside the archive — a
+ *  Content-Encoding wouldn't compose with range requests), and `entries` maps a tile key `z/x/y` to
+ *  its `[offset, length]` byte range. */
+export interface CompanionPack {
+  file: string;
+  codec: CompressionFormat;
+  entries: Record<string, [number, number]>;
 }
 
 const TILES_BASE = import.meta.env.VITE_TILES_BASE ?? 'http://localhost:5174/tiles';
@@ -149,9 +163,15 @@ export function tileUrl(viewId: string, version: string, z: number, x: number, y
   return `${TILES_BASE}/${viewId}/${version}/${z}/${x}/${y}.arrow`;
 }
 
-/** The fact companion beside a group-regime render tile (GROUP-MEASURES §4). */
+/** The fact companion beside a group-regime render tile. */
 export function factsUrl(viewId: string, version: string, z: number, x: number, y: number): string {
   return `${TILES_BASE}/${viewId}/${version}/${z}/${x}/${y}.facts.arrow`;
+}
+
+/** The companion pack archive, tagged with the tile whose block a range request is after. Static
+ *  servers ignore the query; it makes the URL — and so the service worker's cache key — per-tile. */
+export function packBlockUrl(viewId: string, version: string, file: string, key: string): string {
+  return `${TILES_BASE}/${viewId}/${version}/${file}?tile=${key}`;
 }
 
 /** Resolve latest.json → manifest.json for a view. */

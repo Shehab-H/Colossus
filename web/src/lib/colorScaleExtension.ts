@@ -9,7 +9,7 @@ import type { ColorLut } from './colorLut';
 // the value→t transform mirrors colorScale.ts (baked by colorLut.ts), so the GPU can't disagree with the
 // legend.
 
-type ColorScaleProps = { scaleLut?: ColorLut | null };
+type ColorScaleProps = { scaleLut?: ColorLut | null; scaleDiscardUnknown?: boolean };
 
 const uniformBlock = /* glsl */ `\
 layout(std140) uniform colorScaleUniforms {
@@ -18,6 +18,7 @@ layout(std140) uniform colorScaleUniforms {
   float kind;
   vec3 unknownColor;
   float lutWidth;
+  float discardUnknown;
 } colorScale;
 `;
 
@@ -26,18 +27,24 @@ layout(std140) uniform colorScaleUniforms {
 const vsDecls = /* glsl */ `
 uniform sampler2D colorScaleLut;
 in float scaleValue;
+out float colorScale_vDiscard;
+`;
+
+const fsDecls = /* glsl */ `
+in float colorScale_vDiscard;
 `;
 
 const colorScaleModule = {
   name: 'colorScale',
   vs: uniformBlock + vsDecls,
-  fs: uniformBlock,
+  fs: uniformBlock + fsDecls,
   uniformTypes: {
     domain: 'vec2<f32>',
     transform: 'f32',
     kind: 'f32',
     unknownColor: 'vec3<f32>',
     lutWidth: 'f32',
+    discardUnknown: 'f32',
   },
   inject: {
     // Runs where the layer sets its per-vertex color. Every vertex of a mark carries the same
@@ -51,10 +58,20 @@ const colorScaleModule = {
         if (colorScale.transform > 0.5) colorScale_v = log(colorScale_v);
         colorScale_t = clamp((colorScale_v - colorScale.domain.x) / (colorScale.domain.y - colorScale.domain.x), 0.0, 1.0);
       }
+      // An unknown mark: raw NaN (an emptied numeric measure / missing value), or the trailing
+      // unknown texel of a categorical LUT (code == lutWidth-1, where argmax parks emptied marks).
+      // isnan(), not v != v — the latter is constant-folded to false by some GLSL optimizers.
+      bool colorScale_unknown = isnan(scaleValue)
+        || (colorScale.kind > 0.5 && scaleValue > colorScale.lutWidth - 1.5);
+      colorScale_vDiscard = (colorScale.discardUnknown > 0.5 && colorScale_unknown) ? 1.0 : 0.0;
       vec3 colorScale_rgb = (colorScale_v != colorScale_v)
         ? colorScale.unknownColor
         : texture(colorScaleLut, vec2(colorScale_t, 0.5)).rgb;
       color.rgb = colorScale_rgb;
+    `,
+    // Fragment discard (not alpha 0) so a filtered-out mark neither draws nor answers picking.
+    'fs:DECKGL_FILTER_COLOR': /* glsl */ `
+      if (colorScale_vDiscard > 0.5) discard;
     `,
   },
 };
@@ -75,6 +92,7 @@ export default class ColorScaleExtension extends LayerExtension {
   static defaultProps = {
     getScaleValue: { type: 'accessor', value: 0 }, // supplied binary via data.attributes; default unused
     scaleLut: null,
+    scaleDiscardUnknown: false,
   };
 
   getShaders(this: Layer<ColorScaleProps>) {
@@ -108,6 +126,7 @@ export default class ColorScaleExtension extends LayerExtension {
         kind: lut.kind === 'categorical' ? 1 : 0,
         unknownColor: [ur / 255, ug / 255, ub / 255],
         lutWidth: lut.width,
+        discardUnknown: this.props.scaleDiscardUnknown ? 1 : 0,
         colorScaleLut: texture,
       },
     });

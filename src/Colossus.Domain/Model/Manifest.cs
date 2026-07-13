@@ -39,7 +39,7 @@ public sealed record Manifest
     /// the client falls back to its tile scan.</summary>
     public IReadOnlyDictionary<string, ChannelDomain>? ChannelDomains { get; init; }
 
-    /// <summary>Group regime only (GROUP-MEASURES): the derived perMark/perFact split so the client can
+    /// <summary>Group regime only: the derived perMark/perFact split so the client can
     /// route a filter as a GPU predicate (perMark) or a fold context (perFact). Null in the row regime.</summary>
     public FactChannels? FactChannels { get; init; }
 
@@ -49,6 +49,22 @@ public sealed record Manifest
     /// <summary>The companion grain columns (perFact dict + temporal channels), so the client knows what
     /// dimensions its fact partials are keyed by. Null in the row regime.</summary>
     public IReadOnlyList<string>? GrainChannels { get; init; }
+
+    /// <summary>Leaf companion packaging (companion-scale R2): every leaf tile's companion lives as one
+    /// independently compressed block in a single per-version archive, fetched by HTTP range. Internal
+    /// levels stay per-tile files. Null selects the per-file layout for every level (older bakes).</summary>
+    public CompanionPack? CompanionPack { get; init; }
+}
+
+/// <summary>The leaf companion archive and its directory. <see cref="File"/> is relative to the version
+/// directory; <see cref="Codec"/> is an encoding the browser-native <c>DecompressionStream</c> accepts;
+/// <see cref="Entries"/> maps a tile key (<c>z/x/y</c>) to its <c>[offset, length]</c> byte range —
+/// compression lives inside the archive because <c>Content-Encoding</c> doesn't compose with ranges.</summary>
+public sealed record CompanionPack
+{
+    public required string File { get; init; }
+    public required string Codec { get; init; }
+    public required IReadOnlyDictionary<string, long[]> Entries { get; init; }
 }
 
 /// <summary>The derived channel split of a group-regime view.</summary>

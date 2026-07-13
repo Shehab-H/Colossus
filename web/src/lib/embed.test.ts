@@ -26,6 +26,11 @@ describe('readEmbedParams', () => {
     expect(readEmbedParams('?f_operator=Vodafone&f_band=5').filters).toEqual({ operator: 'Vodafone', band: '5' });
   });
 
+  it('shows showcase controls by default and locks them with controls=0', () => {
+    expect(readEmbedParams('?embed=1').controls).toBe(true);
+    expect(readEmbedParams('?embed=1&controls=0').controls).toBe(false);
+  });
+
   it('builds a color scale override from scale knobs', () => {
     const p = readEmbedParams('?color=v&scale=quantize&bins=6&reverse=1');
     expect(p.colorSpec).toEqual({ channel: 'v', type: 'quantize', bins: 6, reverse: true });

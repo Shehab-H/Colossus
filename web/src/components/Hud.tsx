@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { ChannelSpec, Manifest } from '../lib/manifest';
-import { ALL, makeDateRange, parseDateRange } from '../lib/channels';
 import type { ViewSummary } from '../lib/views';
+import Controls from './Controls';
+import { btn, panel } from './controlStyles';
 
 export interface HudProps {
   views: ViewSummary[];
@@ -28,7 +29,7 @@ export default function Hud(p: HudProps) {
   const [embed, setEmbed] = useState<{ url: string; snippet: string } | null>(null);
   const [copied, setCopied] = useState(false);
   return (
-    <div style={hud}>
+    <div style={panel}>
       <div style={{ fontWeight: 700, marginBottom: 6 }}>Colossus</div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
         {viewIds.map((id) => (
@@ -40,49 +41,15 @@ export default function Hud(p: HudProps) {
 
       {p.error && <div style={{ color: 'var(--error)', marginBottom: 8, maxWidth: 220 }}>{p.error}</div>}
 
-      {p.colorChannels.length > 0 && (
-        <div style={{ marginBottom: 6 }}>
-          <label style={{ opacity: 0.7, display: 'block', fontSize: 11 }}>color by</label>
-          <select value={p.colorChannel} onChange={(e) => p.onColorChannelChange(e.target.value)} style={select}>
-            {p.colorChannels.map((c) => (
-              <option key={c.name} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {p.channels.map((ch) => {
-        const opts = p.options[ch.name] ?? [];
-        return (
-          <div key={ch.name} style={{ marginBottom: 6 }}>
-            <label style={{ opacity: 0.7, display: 'block', fontSize: 11 }}>{ch.name}</label>
-            {ch.role === 'temporal' ? (
-              <DateRange
-                name={ch.name}
-                value={p.filters[ch.name]}
-                min={opts[0]}
-                max={opts[opts.length - 1]}
-                onChange={p.onFilterChange}
-              />
-            ) : (
-              <select
-                value={p.filters[ch.name] ?? ALL}
-                onChange={(e) => p.onFilterChange(ch.name, e.target.value)}
-                style={select}
-              >
-                <option value={ALL}>{ALL}</option>
-                {opts.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        );
-      })}
+      <Controls
+        colorChannels={p.colorChannels}
+        colorChannel={p.colorChannel}
+        onColorChannelChange={p.onColorChannelChange}
+        channels={p.channels}
+        options={p.options}
+        filters={p.filters}
+        onFilterChange={p.onFilterChange}
+      />
 
       {p.manifest && (
         <div style={{ opacity: 0.85, lineHeight: 1.6, marginTop: 8 }}>
@@ -137,76 +104,7 @@ export default function Hud(p: HudProps) {
   );
 }
 
-/** A from/to date range for a temporal channel. The selection is stored as one `from..to` string (see
- *  makeDateRange), so the rest of the filter plumbing treats it like any other channel value. Each picker
- *  clamps to the data extent and to the other bound, so from can't exceed to. */
-function DateRange(p: {
-  name: string;
-  value: string | undefined;
-  min?: string;
-  max?: string;
-  onChange: (name: string, value: string) => void;
-}) {
-  const { from, to } = parseDateRange(p.value) ?? { from: '', to: '' };
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 6px', alignItems: 'center' }}>
-      <span style={sub}>from</span>
-      <input
-        type="date"
-        aria-label={`${p.name} from`}
-        value={from}
-        min={p.min}
-        max={to || p.max}
-        onChange={(e) => p.onChange(p.name, makeDateRange(e.target.value, to))}
-        style={select}
-      />
-      <span style={sub}>to</span>
-      <input
-        type="date"
-        aria-label={`${p.name} to`}
-        value={to}
-        min={from || p.min}
-        max={p.max}
-        onChange={(e) => p.onChange(p.name, makeDateRange(from, e.target.value))}
-        style={select}
-      />
-    </div>
-  );
-}
-
-const hud: React.CSSProperties = {
-  position: 'absolute',
-  zIndex: 2, // above the deck canvas — MapboxOverlay mounts inside a MapLibre ctrl corner at z-index 2
-  top: 12,
-  left: 12,
-  padding: '10px 12px',
-  background: 'var(--card-bg)',
-  color: 'var(--card-fg)',
-  font: '12px system-ui, sans-serif',
-  borderRadius: 8,
-  border: '1px solid var(--card-border)',
-  boxShadow: 'var(--card-shadow)',
-  userSelect: 'none',
-  minWidth: 160,
-};
-const btn: React.CSSProperties = {
-  padding: '4px 8px',
-  background: 'var(--btn-bg)',
-  color: 'var(--btn-fg)',
-  border: '1px solid var(--btn-border)',
-  borderRadius: 6,
-  cursor: 'pointer',
-};
 const btnOn: React.CSSProperties = { ...btn, background: 'var(--btn-on-bg)', color: 'var(--btn-on-fg)', border: '1px solid var(--btn-on-bg)', fontWeight: 700 };
-const select: React.CSSProperties = {
-  width: '100%',
-  padding: '3px 4px',
-  background: 'var(--input-bg)',
-  color: 'var(--input-fg)',
-  border: '1px solid var(--input-border)',
-  borderRadius: 4,
-};
-const sub: React.CSSProperties = { opacity: 0.6, fontSize: 11 };
 const code: React.CSSProperties = {
   width: '100%',
   height: 64,

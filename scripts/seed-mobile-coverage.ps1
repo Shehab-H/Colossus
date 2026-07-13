@@ -16,8 +16,8 @@ $user = $env:COLOSSUS_CH_USER; if (-not $user) { $user = 'colossus' }
 $pass = $env:COLOSSUS_CH_PASSWORD; if (-not $pass) { $pass = 'colossus' }
 $headers = @{ 'X-ClickHouse-User' = $user; 'X-ClickHouse-Key' = $pass }
 
-# lon 0..45E, lat 0..66.5N (Europe east of Greenwich + MENA). z14 keeps tiles ~2.4km.
-$prefixes = @('120', '122')
+# Global: every populated Ookla tile worldwide (data only exists where tests were run, so coverage
+# follows population — no rectangular clip). z14 keeps tiles ~2.4km.
 $zoom = 14
 $quarters = @(
   @{ y = 2024; q = 1; d = '2024-01-01' }, @{ y = 2024; q = 2; d = '2024-04-01' },
@@ -42,8 +42,6 @@ CREATE TABLE IF NOT EXISTS colossus.mobile_coverage (
   latency_ms    Float32
 ) ENGINE = MergeTree ORDER BY (quadkey, quarter, operator)
 "@ | Out-Null
-
-$prefixCond = ($prefixes | ForEach-Object { "startsWith(quadkey, '$_')" }) -join ' OR '
 
 for ($t = 0; $t -lt $quarters.Count; $t++) {
   $qt = $quarters[$t]
@@ -82,7 +80,7 @@ FROM (
     sum(assumeNotNull(avg_u_kbps) * assumeNotNull(tests)) / sum(assumeNotNull(tests)) / 1000.0 AS u_mbps,
     sum(assumeNotNull(avg_lat_ms) * assumeNotNull(tests)) / sum(assumeNotNull(tests)) AS lat_ms
   FROM s3('$url', 'NOSIGN', 'Parquet')
-  WHERE quadkey IS NOT NULL AND tests > 0 AND ($prefixCond)
+  WHERE quadkey IS NOT NULL AND tests > 0
   GROUP BY qk
 )
 ARRAY JOIN arrayZip(ops, shares, quality) AS op

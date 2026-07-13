@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Colossus — Interactive maps at billion-cell scale</title>
+  <meta name="description" content="A showcase of Colossus: instant, GPU-resident interactive maps over tens of millions of geospatial cells." />
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --bg-elev: #ffffff;
+      --ink: #10151c;
+      --ink-soft: #55606e;
+      --ink-faint: #8a95a3;
+      --line: #e6e9ee;
+      --brand: #1f7a5a;
+      --brand-ink: #10583e;
+      --accent: #d98a2b;
+      --hero-bg: #0d1520;
+      --hero-ink: #eef2f7;
+      --hero-soft: #9fb0c3;
+      --shadow: 0 1px 2px rgba(16, 21, 28, .04), 0 12px 32px -12px rgba(16, 21, 28, .18);
+      --radius: 14px;
+      --maxw: 1180px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1017;
+        --bg-elev: #121a24;
+        --ink: #eef2f7;
+        --ink-soft: #a9b6c6;
+        --ink-faint: #6f7d8f;
+        --line: #1f2a37;
+        --brand: #4cc79a;
+        --brand-ink: #7fe0bd;
+        --accent: #e6a24a;
+        --hero-bg: #060a10;
+        --hero-ink: #eef2f7;
+        --hero-soft: #9fb0c3;
+        --shadow: 0 1px 2px rgba(0,0,0,.4), 0 16px 40px -14px rgba(0,0,0,.6);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--brand-ink); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+    /* ---- Hero ---- */
+    header.hero {
+      background: radial-gradient(1200px 500px at 70% -10%, #16324a 0%, transparent 60%), var(--hero-bg);
+      color: var(--hero-ink);
+      padding: 84px 0 72px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+      color: var(--hero-soft); border: 1px solid rgba(255,255,255,.14);
+      padding: 6px 12px; border-radius: 999px; margin-bottom: 26px;
+    }
+    .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 4px rgba(76,199,154,.18); }
+    h1 {
+      font-size: clamp(34px, 5.2vw, 60px); line-height: 1.04; letter-spacing: -.02em;
+      margin: 0 0 18px; font-weight: 780;
+    }
+    h1 .accent { color: var(--brand); }
+    .lede { font-size: clamp(17px, 2.1vw, 21px); color: var(--hero-soft); max-width: 640px; margin: 0 0 34px; }
+    .stats { display: flex; flex-wrap: wrap; gap: 40px; margin-top: 8px; }
+    .stat .n { font-size: 30px; font-weight: 740; letter-spacing: -.01em; }
+    .stat .l { font-size: 13px; color: var(--hero-soft); letter-spacing: .02em; }
+
+    /* ---- Sections ---- */
+    section { padding: 64px 0; }
+    .eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--brand-ink); font-weight: 700; margin: 0 0 10px; }
+    h2 { font-size: clamp(24px, 3vw, 34px); letter-spacing: -.015em; margin: 0 0 12px; }
+    .section-lede { color: var(--ink-soft); max-width: 640px; margin: 0 0 32px; }
+
+    /* ---- Map card ---- */
+    .featured { display: grid; gap: 0; }
+    .frame {
+      position: relative; background: var(--bg-elev); border: 1px solid var(--line);
+      border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
+    }
+    .frame iframe { display: block; width: 100%; border: 0; background: var(--bg-elev); }
+    .frame.tall iframe { height: 560px; }
+    .frame.card-map iframe { height: 300px; }
+
+    .caption { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 16px 2px 0; flex-wrap: wrap; }
+    .caption h3 { margin: 0; font-size: 18px; letter-spacing: -.01em; }
+    .caption .meta { color: var(--ink-faint); font-size: 13px; }
+    .caption p { margin: 6px 0 0; color: var(--ink-soft); font-size: 14.5px; flex-basis: 100%; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 32px; }
+    .card { display: flex; flex-direction: column; }
+    .card .frame { flex: 0 0 auto; }
+    .card .body { padding: 14px 4px 0; }
+    .card h3 { margin: 0 0 4px; font-size: 17px; letter-spacing: -.01em; }
+    .card .tag { display: inline-block; font-size: 11.5px; letter-spacing: .04em; color: var(--brand-ink); background: color-mix(in srgb, var(--brand) 12%, transparent); padding: 3px 9px; border-radius: 999px; margin-bottom: 10px; }
+    .card p { margin: 6px 0 0; color: var(--ink-soft); font-size: 14px; }
+    .card .open { margin-top: 12px; font-size: 13.5px; font-weight: 600; }
+    .card .open::after { content: " →"; }
+
+    /* ---- Config notice ---- */
+    .notice {
+      background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+      border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+      color: var(--ink); border-radius: 12px; padding: 14px 16px; margin: 28px 0 0; font-size: 14px;
+    }
+    .notice code { background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 6px; border-radius: 5px; font-size: 13px; }
+
+    footer { border-top: 1px solid var(--line); padding: 40px 0 64px; color: var(--ink-faint); font-size: 13.5px; }
+    footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+    @media (max-width: 640px) {
+      .frame.tall iframe { height: 420px; }
+      .stats { gap: 26px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <span class="badge"><span class="dot"></span> Colossus · Geospatial engine</span>
+      <h1>Every cell on the map,<br><span class="accent">instantly.</span></h1>
+      <p class="lede">
+        Colossus bakes tens of millions of geospatial cells into GPU-resident tiles that pan, zoom,
+        recolor, and re-filter in real time — no server round-trips on the hot path. Below are live,
+        interactive maps straight from the engine.
+      </p>
+      <div class="stats">
+        <div class="stat"><div class="n" id="stat-cells">46M+</div><div class="l">cells across datasets</div></div>
+        <div class="stat"><div class="n">4</div><div class="l">live datasets</div></div>
+        <div class="stat"><div class="n">0</div><div class="l">decode on the main thread</div></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section id="featured">
+      <p class="eyebrow">Flagship</p>
+      <h2>Dominant operator, computed on the fly</h2>
+      <p class="section-lede">
+        Non-unique geometry: each tile carries a full set of facts per quarter and operator. Change the
+        color measure or the date range and every tile recomputes and recolors on the GPU — a
+        filter-dependent map, not a pre-rendered picture. Try the controls.
+      </p>
+      <div class="featured">
+        <div class="frame tall">
+          <iframe data-view="mobile-dominance" data-color="dominant_operator" loading="lazy" title="Dominant operator by tile"></iframe>
+        </div>
+        <div class="caption">
+          <h3>Mobile dominance</h3>
+          <span class="meta">polygon · group regime · filter-dependent color</span>
+          <p>Color by <em>dominant_operator</em>, <em>total_tests</em>, <em>avg_download</em>, or <em>apex_share</em>; narrow the quarter range to watch dominance flip.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="gallery">
+      <p class="eyebrow">The collection</p>
+      <h2>More from the engine</h2>
+      <p class="section-lede">Each map is a single declarative view definition — no bespoke code — baked once and served as immutable tiles.</p>
+      <div class="grid" id="grid"><!-- cards injected --></div>
+      <div class="notice" id="config-notice" hidden></div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Colossus — interactive geospatial visualization.</span>
+      <span id="foot-base"></span>
+    </div>
+  </footer>
+
+  <script>
+    // The origin where the Colossus web app is deployed (the React app that renders /?view=…&embed=1).
+    // Override at runtime with ?base=https://maps.example.com — handy for staging vs prod without a rebuild.
+    var DEFAULT_BASE = 'https://colossus.shehabhassan.space';
+    var params = new URLSearchParams(location.search);
+    var BASE = (params.get('base') || DEFAULT_BASE).replace(/\/+$/, '');
+    // The headline stat reads latest.json/manifest.json straight from the tiles CDN (bucket-root
+    // layout, same origin the app fetches tiles from). Override with ?tilesBase= for staging.
+    var TILES_BASE = (params.get('tilesBase') || 'https://tiles.shehabhassan.space').replace(/\/+$/, '');
+
+    // Match the embedded maps to the visitor's light/dark preference so they blend into the page.
+    var THEME = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+
+    // The showcase collection. `controls` → interactive filter/color panel; otherwise a locked snapshot.
+    var VIEWS = [
+      { id: 'geonames', title: 'GeoNames', tag: 'Global gazetteer', color: 'feature_class',
+        blurb: '~13M named places and features worldwide, every point resident and pickable.' },
+      { id: 'mobile-coverage', title: 'Mobile coverage', tag: 'Operator share over time', color: 'download_mbps',
+        blurb: 'Ookla-derived mobile performance, colored by measured download speed across quarters.' },
+      { id: 'ookla-fixed', title: 'Fixed broadband', tag: 'Ookla · 2024 Q1', color: 'download_mbps',
+        blurb: 'Fixed-line broadband tiles — the same engine, a different declarative view.' },
+    ];
+
+    function mapUrl(v, opts) {
+      var q = new URLSearchParams({ view: v.id, embed: '1', theme: THEME });
+      if (opts && opts.controls === false) q.set('controls', '0');
+      if (v.color) q.set('color', v.color);
+      return BASE + '/?' + q.toString();
+    }
+
+    // Featured map: interactive controls on.
+    document.querySelectorAll('iframe[data-view]').forEach(function (f) {
+      var v = { id: f.dataset.view, color: f.dataset.color };
+      f.src = mapUrl(v, { controls: true });
+    });
+
+    // Gallery cards: locked snapshots (controls=0) so they read as a clean grid; each links out to the
+    // full interactive map in a new tab.
+    var grid = document.getElementById('grid');
+    VIEWS.forEach(function (v) {
+      var card = document.createElement('article');
+      card.className = 'card';
+      var snapshot = mapUrl(v, { controls: false });
+      var interactive = mapUrl(v, { controls: true });
+      card.innerHTML =
+        '<div class="frame card-map"><iframe loading="lazy" title="' + v.title + '"></iframe></div>' +
+        '<div class="body">' +
+          '<span class="tag">' + v.tag + '</span>' +
+          '<h3>' + v.title + '</h3>' +
+          '<p>' + v.blurb + '</p>' +
+          '<a class="open" href="' + interactive + '" target="_blank" rel="noreferrer">Open interactive map</a>' +
+        '</div>';
+      card.querySelector('iframe').src = snapshot;
+      grid.appendChild(card);
+    });
+
+    document.getElementById('foot-base').textContent = 'maps: ' + BASE;
+
+    // If left on the localhost default (i.e. not configured for a deploy), tell the viewer how to point it.
+    if (BASE === DEFAULT_BASE) {
+      var n = document.getElementById('config-notice');
+      n.hidden = false;
+      n.innerHTML = 'These maps load from <code>' + DEFAULT_BASE + '</code>. Point the gallery at your ' +
+        'deployed Colossus app by editing <code>DEFAULT_BASE</code> in this file, or append ' +
+        '<code>?base=https://your-host</code> to the URL.';
+    }
+
+    // Progressive enhancement: refine the headline stat from live manifests when the tiles origin is
+    // reachable. The HTML ships a correct static fallback (28M+), so this never regresses to a blank.
+    (function () {
+      var ids = ['geonames', 'mobile-coverage', 'mobile-dominance', 'ookla-fixed'];
+      var tilesBase = TILES_BASE;
+      Promise.all(ids.map(function (id) {
+        return fetch(tilesBase + '/' + id + '/latest.json')
+          .then(function (r) { return r.json(); })
+          .then(function (l) { return fetch(tilesBase + '/' + id + '/' + l.version + '/manifest.json'); })
+          .then(function (r) { return r.json(); })
+          .then(function (m) { return m.totalPoints || 0; })
+          .catch(function () { return 0; });
+      })).then(function (counts) {
+        var total = counts.reduce(function (a, b) { return a + b; }, 0);
+        if (total > 0) document.getElementById('stat-cells').textContent =
+          total >= 1e6 ? (total / 1e6).toFixed(1) + 'M' : total.toLocaleString();
+      });
+    })();
+  </script>
+</body>
+</html>

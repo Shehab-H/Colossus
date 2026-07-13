@@ -5,8 +5,7 @@ import { MAX_SAFE_F32, NULL_DAY, dayNumber, dayNumberOfIso } from './dates';
 // GPU filtering: every filter is a numeric range on one float slot of a DataFilterExtension. A filter
 // change is then a uniform update (filterRange/filterEnabled layer props) — no fetch, decode, or
 // re-upload. Slot values are built once per tile at decode; ranges are built per filter change on the
-// main thread. This module is pure (no deck import) so all of it is unit-tested. See
-// docs/gpu-residency/PHASE-1-gpu-filtering.md §1.
+// main thread. This module is pure (no deck import) so all of it is unit-tested.
 
 // Day/sentinel helpers live in dates.ts (measures.ts shares them); re-exported for existing importers.
 export { MAX_SAFE_F32, NULL_DAY, dayNumber, dayNumberOfIso };

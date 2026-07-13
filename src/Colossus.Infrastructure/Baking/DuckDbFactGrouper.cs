@@ -11,8 +11,8 @@ namespace Colossus.Infrastructure.Baking;
 /// <summary>Groups a group-regime view's facts into a marks table with one GROUP BY over the geometry
 /// key (the representative point). Emits <c>id</c>, geometry, perMark channels via <c>first()</c>, and
 /// every measure at the default context — flat aggregates in the main grouping, argmax/argmin via a
-/// per-dimension sub-grouping joined back. The measure SQL is rendered straight from the parsed AST
-/// (GROUP-MEASURES §2); the client fold mirrors the same finalization over baked partials.</summary>
+/// per-dimension sub-grouping joined back. The measure SQL is rendered straight from the parsed AST;
+/// the client fold mirrors the same finalization over baked partials.</summary>
 public sealed class DuckDbFactGrouper : IFactGrouper
 {
     public FactGrouping GroupToMarks(string factsParquetPath, string marksParquetPath, ViewConfig view)

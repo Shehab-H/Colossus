@@ -65,6 +65,18 @@ describe('tileDeckData — caching and filter attribute', () => {
     expect(tileDeckData(d, 'n', null)).not.toBe(a); // different channel → different object
   });
 
+  it('a channel rendered through a mismatched categorical LUT never poisons its numeric entry', () => {
+    // The domain-fetch gap on a colour switch: the new channel's numeric values render one frame
+    // against the previous channel's categories. That buffer (all miss-codes) must not be served
+    // once the numeric domain lands — the all-yellow apex_share regression.
+    const d = pointTile({ m: new Float32Array([0.5, 1]) }, 2);
+    const cat = tileDeckData(d, 'm', ['a', 'b']) as Attrs;
+    const num = tileDeckData(d, 'm', null) as Attrs;
+    expect(num).not.toBe(cat);
+    expect([...cat.attributes.getScaleValue.value]).toEqual([2, 2]); // every value misses the category list
+    expect([...num.attributes.getScaleValue.value]).toEqual([0.5, 1]); // raw numeric column, unpoisoned
+  });
+
   it('carries the Phase-1 filter attribute when filterSize is given', () => {
     const d: TileData = { ...pointTile({ m: new Float32Array([1, 2]) }, 2), filterValues: new Float32Array([5, 6]) };
     const { attributes } = tileDeckData(d, 'm', null, 1) as Attrs;
@@ -87,6 +99,15 @@ describe('tileDeckData — folded measure override (group regime)', () => {
     const override = new Uint16Array([1, 0xffff]); // canonical code 1, then an emptied mark
     const { attributes } = tileDeckData(d, 'dominant_operator', ['apex', 'zenith'], undefined, override, 'ctx') as Attrs;
     expect([...attributes.getScaleValue.value]).toEqual([1, 2]); // 2 == categories.length (unknown texel)
+  });
+
+  it('a tile rendered before its fold lands reuses the plain channel entry — it never poisons the context key', () => {
+    const d = pointTile({ m: new Float32Array([1, 2]) }, 2);
+    const bare = tileDeckData(d, 'm', null);
+    expect(tileDeckData(d, 'm', null, undefined, undefined, 'ctx')).toBe(bare); // fold pending → baked entry
+    const folded = tileDeckData(d, 'm', null, undefined, new Float32Array([5, 6]), 'ctx') as Attrs;
+    expect(folded).not.toBe(bare); // fold arrival changes the key → fresh buffer with the folded values
+    expect([...folded.attributes.getScaleValue.value]).toEqual([5, 6]);
   });
 
   it('the context key separates cached buffers (scrub back reuses without a rebuild)', () => {

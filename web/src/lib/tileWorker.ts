@@ -3,7 +3,7 @@
 // and every column is (or rides in) a typed array, so results transfer back zero-copy — the main thread
 // never deserializes row-wise strings. A cancel message aborts the fetch; a tile already past fetch is
 // decoded and kept (the bytes are paid for, and it may be wanted again on zoom-back).
-import { type CompanionGrain, loadCompanion, loadTile, type TileData } from './tileData';
+import { type CompanionGrain, loadCompanion, loadTile, type PackBlock, type TileData } from './tileData';
 import type { CompanionData } from './measures';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
@@ -17,11 +17,12 @@ interface LoadRequest {
   tileFormat: number;
 }
 
-/** Fetch + decode a .facts.arrow companion off the main thread — a low-zoom companion runs to millions
- *  of rows, and its typed columns transfer back zero-copy. */
+/** Fetch + decode a fact companion off the main thread — a low-zoom companion runs to millions of
+ *  rows, and its typed columns transfer back zero-copy. `pack` (a packed leaf's block) routes the
+ *  fetch to a range read of the archive; null keeps the per-file .facts.arrow fetch. */
 interface CompanionRequest {
   id: number;
-  companion: { viewId: string; version: string; key: string; grain: CompanionGrain[] };
+  companion: { viewId: string; version: string; key: string; grain: CompanionGrain[]; pack: PackBlock | null };
 }
 
 interface CancelRequest {
@@ -82,8 +83,8 @@ ctx.onmessage = async (e) => {
   inflight.set(id, ac);
   try {
     if ('companion' in e.data) {
-      const { viewId, version, key, grain } = e.data.companion;
-      const companion = await loadCompanion(viewId, version, key, grain, ac.signal);
+      const { viewId, version, key, grain, pack } = e.data.companion;
+      const companion = await loadCompanion(viewId, version, key, grain, pack, ac.signal);
       ctx.postMessage({ id, companion }, companionTransferable(companion));
     } else {
       const { view, version, key, slots, tileFormat } = e.data;

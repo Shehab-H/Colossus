@@ -9,7 +9,7 @@ namespace Colossus.Application;
 /// <summary>Everything a group-regime bake needs beyond the authored view: the effective render view,
 /// the assembled channel domains (measures + perMark from the marks staging; perFact filter options and
 /// argmax color domains from the facts), the companion spec, and the canonical dict orders that keep an
-/// argmax measure's tile codes and its dimension's companion codes identical (GROUP-MEASURES §3–5).</summary>
+/// argmax measure's tile codes and its dimension's companion codes identical.</summary>
 public sealed record GroupArtifacts(
     ViewConfig RenderView,
     IReadOnlyDictionary<string, ChannelDomain> ChannelDomains,

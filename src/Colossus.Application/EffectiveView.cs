@@ -5,7 +5,7 @@ using Colossus.Domain.Tiling;
 
 namespace Colossus.Application;
 
-/// <summary>The internal render view for a group-regime bake (GROUP-MEASURES §3): the marks table's
+/// <summary>The internal render view for a group-regime bake: the marks table's
 /// columns as ordinary channels — the mark <c>id</c>, each perMark channel (authored role/type kept),
 /// and every measure materialized (numeric → an f32 measure; argmax/argmin → a categorical dict
 /// dimension). perFact channels are gone (they live only in companions). The reducer and domain scanner

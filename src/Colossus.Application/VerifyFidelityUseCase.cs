@@ -72,8 +72,8 @@ public sealed class VerifyFidelityUseCase(
             return $"staged extract has {staged:N0} rows, source reported {source:N0} — the extract lost rows";
 
         // Group regime: a leaf holds distinct *marks*, not source rows, so the leaf sum witnesses against
-        // the grouped marks staging; the source rows are witnessed by the fact companions instead
-        // (GROUP-MEASURES §9). Row regime is unchanged: the leaf sum is the source rows.
+        // the grouped marks staging; the source rows are witnessed by the fact companions instead.
+        // Row regime is unchanged: the leaf sum is the source rows.
         return manifest.CompanionTiles
             ? DiagnoseGroup(viewId, version, manifest, leafRows, stagingPath, stagedRows, overBudget)
             : DiagnoseRow(leafRows, stagedRows, manifest.SourceRows, overBudget);
@@ -104,15 +104,20 @@ public sealed class VerifyFidelityUseCase(
             return $"leaf marks {leafRows:N0} != distinct marks {marks:N0} (marks staging) — grouping lost or split a mark";
 
         // Σ leaf-companion rows == source rows: every fact lands in exactly one leaf's companion, and the
-        // reference source is already at the companion grain, so the two agree.
+        // reference source is already at the companion grain, so the two agree. A packed bake (R2) reads
+        // each leaf's block out of the archive; per-file leaves are the pre-pack layout.
         long? source = stagedRows ?? manifest.SourceRows;
         if (source is { } src)
         {
+            var pack = manifest.CompanionPack;
+            string packPath = pack is null ? "" : Path.Combine(store.VersionDirectory(viewId, version), pack.File);
             long companionRows = 0;
             foreach (var tile in manifest.Tiles.Where(t => t.IsLeaf))
             {
-                string facts = CompanionPath(store.TilePath(viewId, version, tile.Id));
-                if (tiles.Exists(facts)) companionRows += tiles.RowCount(facts);
+                if (pack is not null && pack.Entries.TryGetValue($"{tile.Z}/{tile.X}/{tile.Y}", out var e))
+                    companionRows += tiles.PackedRowCount(packPath, e[0], e[1], pack.Codec);
+                else if (CompanionPath(store.TilePath(viewId, version, tile.Id)) is var facts && tiles.Exists(facts))
+                    companionRows += tiles.RowCount(facts);
             }
             if (companionRows != src)
                 return $"companion facts {companionRows:N0} != source {src:N0} — a fact reached no leaf companion (or was double-counted)";

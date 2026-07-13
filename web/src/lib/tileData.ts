@@ -1,7 +1,7 @@
 import { Type, type Table, type Vector } from 'apache-arrow';
-import type { Manifest, ViewConfig } from './manifest';
-import { factsUrl, tileUrl } from './manifest';
-import { fetchArrowTable } from './arrow';
+import type { CompanionPack, Manifest, ViewConfig } from './manifest';
+import { factsUrl, packBlockUrl, tileUrl } from './manifest';
+import { fetchArrowBlock, fetchArrowTable } from './arrow';
 import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
 import type { CompanionData, CompanionDim } from './measures';
 import { buildFilterValues, canonicalCodeLut, dayNumber, MISSING_CODE, type FilterSlots } from './gpuFilter';
@@ -95,6 +95,28 @@ export const companionGrain = (manifest: Manifest): CompanionGrain[] =>
     return { name: g, temporal: ch?.role === 'temporal' || ch?.type === 'date' };
   });
 
+/** One leaf tile's block in the companion pack — where to range-read it and how to decompress it.
+ *  Resolved on the main thread (the manifest lives there) and shipped to the worker per request. */
+export interface PackBlock {
+  url: string;
+  offset: number;
+  length: number;
+  codec: CompressionFormat;
+}
+
+/** The pack block for a tile, or null when this tile isn't packed (internal level, older bake, or a
+ *  leaf that baked no companion) — null routes to the per-file companion fetch. */
+export function packBlock(
+  pack: CompanionPack | undefined,
+  viewId: string,
+  version: string,
+  key: string,
+): PackBlock | null {
+  const entry = pack?.entries[key];
+  if (!pack || !entry) return null;
+  return { url: packBlockUrl(viewId, version, pack.file, key), offset: entry[0], length: entry[1], codec: pack.codec };
+}
+
 /** Decode a fact companion (.facts.arrow) into the typed shape the fold reads: `mki` (each row's mark
  *  index in the render tile, written by the bake), grain dimensions as dict codes (canonical order),
  *  grain temporal values as day numbers, and every partial column as f32. No per-row strings — a
@@ -126,16 +148,20 @@ export function decodeCompanion(table: Table, grain: CompanionGrain[]): Companio
   return { rowCount: n, mki, dim, temporalDays, partial };
 }
 
-/** Fetch + decode a tile's fact companion. */
+/** Fetch + decode a tile's fact companion: a packed leaf ranges its block out of the archive (R2);
+ *  everything else — internal levels, older bakes — fetches the per-tile file. */
 export async function loadCompanion(
   viewId: string,
   version: string,
   key: string,
   grain: CompanionGrain[],
+  pack?: PackBlock | null,
   signal?: AbortSignal,
 ): Promise<CompanionData> {
   const [z, x, y] = key.split('/').map(Number);
-  const { table } = await fetchArrowTable(factsUrl(viewId, version, z, x, y), signal);
+  const { table } = pack
+    ? await fetchArrowBlock(pack.url, pack.offset, pack.length, pack.codec, signal)
+    : await fetchArrowTable(factsUrl(viewId, version, z, x, y), signal);
   return decodeCompanion(table, grain);
 }
 

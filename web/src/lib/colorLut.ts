@@ -5,7 +5,7 @@ import { buildColorScale, scaleShape, type ColorDomain } from './colorScale';
 // the single authority: every texel is `colorOf` evaluated at a real value, so the GPU can't disagree
 // with the CPU legend. A recolor swaps this texture + a few uniforms — no per-mark data is touched.
 
-const NUMERIC_WIDTH = 1024; // band-edge error ≤ domainSpan/1024, accepted tolerance (see PHASE-2 §1.1)
+const NUMERIC_WIDTH = 1024; // band-edge error ≤ domainSpan/1024, accepted tolerance
 const LOG_MIN = 1e-9; // mirrors colorScale.normalize('log') clamping
 
 export interface ColorLut {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeckGL from '@deck.gl/react';
 import { COORDINATE_SYSTEM, OrthographicView, type PickingInfo } from '@deck.gl/core';
 import { ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers';
@@ -8,12 +8,14 @@ import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox';
 import { Map as BaseMap, useControl } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import Hud from './components/Hud';
+import Controls from './components/Controls';
+import { panel } from './components/controlStyles';
 import InspectPanel, { type Selection } from './components/InspectPanel';
 import LegendBox from './components/Legend';
 import ThemeToggle from './components/ThemeToggle';
-import { useTiles } from './hooks/useTiles';
+import { useTiles, type RenderedTile } from './hooks/useTiles';
 import { useViewData } from './hooks/useViewData';
-import { useMeasureFold } from './hooks/useMeasureFold';
+import { foldActive, useMeasureFold } from './hooks/useMeasureFold';
 import { basemapStyle } from './lib/basemap';
 import { useTheme } from './lib/theme';
 import { buildEmbedUrl, embedSnippet, readEmbedParams } from './lib/embed';
@@ -23,6 +25,7 @@ import { columnValue, type TileData } from './lib/tileData';
 import { carriedFilterableChannels, colorableChannels, splitFilters } from './lib/channels';
 import { filterSlots, filterRanges, anyActive } from './lib/gpuFilter';
 import { colorScaleExtension } from './lib/colorScaleExtension';
+import { coverTiles } from './lib/tiling';
 import { initialViewState, type CameraState } from './lib/viewport';
 import { listViews, setUrlViewId, urlViewId, type ViewSummary } from './lib/views';
 
@@ -88,7 +91,7 @@ export default function App() {
   };
 
   const initial = useMemo(() => ({ color: embed.color, colorSpec: embed.colorSpec, filters: embed.filters }), [embed]);
-  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, colorLut, legend, activeFilters } =
+  const { manifest, error, options, filters, setFilters, colorChannel, setColorChannel, renderChannel, colorLut, legend, activeFilters } =
     useViewData(viewId, initial);
   const [selection, setSelection] = useState<Selection | null>(null);
 
@@ -98,7 +101,7 @@ export default function App() {
   const [prevManifest, setPrevManifest] = useState<Manifest | null>(null);
   if (manifest !== prevManifest) {
     setPrevManifest(manifest);
-    const base = manifest ? initialViewState(manifest) : null;
+    const base = manifest ? initialViewState(manifest, size) : null;
     setCamera(base && embed.camera && manifest!.view.viewport === 'geo' ? { ...base, ...embed.camera } : base);
     setSelection(null);
   }
@@ -108,7 +111,7 @@ export default function App() {
   // or its options change, so it stays a stable object across filter changes.
   const slots = useMemo(() => (manifest ? filterSlots(manifest, options) : null), [manifest, options]);
 
-  const { selKeys, rendered, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, slots);
+  const { selKeys, rendered: loaded, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, slots);
 
   // A filter is a GPU predicate (perMark → tile decode/uniforms, exactly as the row regime) or a fold
   // context (perFact → recompute measures over the surviving facts). Row-regime views split all-predicate.
@@ -117,12 +120,43 @@ export default function App() {
     [manifest, activeFilters],
   );
 
+  // The tile set drawn last frame, read during render and committed after (effect below): under an
+  // active context a tile already on screen keeps drawing until its replacement is drawable, so neither
+  // a zoom nor a filter change ever blanks covered ground.
+  const drawnRef = useRef<RenderedTile[]>([]);
+
+  // Fold input: every loaded tile that may draw — the load cover plus any still-drawn stand-ins. A
+  // retained parent stays folded (and keeps its fold-cache residency) until it actually leaves the
+  // screen; once it does, the next pass lets its caches go.
+  const foldInput = useMemo(() => {
+    const seen = new Set(loaded.map((t) => t.key));
+    return [...loaded, ...drawnRef.current.filter((t) => !seen.has(t.key))];
+  }, [loaded]);
+
   // Per-tile folded measure columns under the active context, or null when there is no context (colour
   // straight from the baked default-context columns). Derived buffers are keyed by the context that
   // PRODUCED the fold (folded.contextSig), never the live selection — an in-flight fold would otherwise
   // cache the previous context's colours under the new key and serve them forever.
-  const folded = useMeasureFold(manifest, rendered, contextFilters);
+  const folded = useMeasureFold(manifest, foldInput, contextFilters);
   const contextKey = folded?.contextSig;
+  const contextActive = foldActive(manifest, contextFilters);
+
+  // What actually draws. No context: the load cover as-is. Active context: re-cover the selection with
+  // fold-aware readiness — a tile draws once its fold has landed (or its companion is known missing,
+  // the baked fallback), and a tile drawn last frame stays drawable, so the old cover holds the screen
+  // until the new one is ready instead of flashing default-context colours or a gap.
+  const drawn = useMemo<RenderedTile[]>(() => {
+    if (!contextActive) return loaded;
+    const byKey = new Map(foldInput.map((t) => [t.key, t]));
+    const prev = new Set(drawnRef.current.map((t) => t.key));
+    const ready = (k: string) =>
+      byKey.has(k) && (folded ? folded.byTile.has(k) || folded.missing.has(k) : prev.has(k));
+    return coverTiles(selKeys, ready).map((k) => byKey.get(k)!);
+  }, [contextActive, loaded, foldInput, folded, selKeys]);
+
+  useEffect(() => {
+    drawnRef.current = drawn;
+  });
 
   // GPU state that rides on the layers, never on tile identity: the color LUT (Phase 2) and the filter
   // uniforms (Phase 1). A measure/scale/theme change or a filter change makes new layer instances with the
@@ -143,9 +177,13 @@ export default function App() {
       extensions.push(colorScaleExtension);
       props.getFillColor = WHITE; // constant; the color extension overwrites rgb from the LUT per mark
       props.scaleLut = colorLut;
+      // Under an active fold context a mark with no surviving facts (folded NaN / ARGMAX_UNKNOWN)
+      // is discarded on the GPU — it disappears like a predicate-filtered mark, instead of painting
+      // the unknown colour over ground the filter excluded.
+      props.scaleDiscardUnknown = contextActive;
     }
     return { ...props, extensions };
-  }, [slots, predicateFilters, colorLut]);
+  }, [slots, predicateFilters, colorLut, contextActive]);
 
   // Categorical color channels feed canonical codes into the value attribute (numeric → null). Stable
   // per channel, so a scale/theme change never rebuilds the tile `data`.
@@ -159,9 +197,9 @@ export default function App() {
   // the mark index, not the row, for binary layers) and its folded measures under the active context.
   const dataByLayerId = useMemo(() => {
     const m = new Map<string, { data: TileData; key: string }>();
-    if (manifest) for (const { key, data } of rendered) m.set(layerId(viewId, manifest.version, key), { data, key });
+    if (manifest) for (const { key, data } of drawn) m.set(layerId(viewId, manifest.version, key), { data, key });
     return m;
-  }, [rendered, viewId, manifest]);
+  }, [drawn, viewId, manifest]);
 
   const onPick = useCallback(
     (info: PickingInfo) => {
@@ -214,7 +252,7 @@ export default function App() {
     if (!manifest) return [];
     const coordinateSystem = isGeo ? COORDINATE_SYSTEM.LNGLAT : COORDINATE_SYSTEM.CARTESIAN;
     const pickable = !!inspect; // marks answer clicks only when the view opts into inspection
-    return rendered.map(({ key, data }) => {
+    return drawn.map(({ key, data }) => {
       // Key by tile ONLY — never by measure/filter. A stable id lets deck match the existing layer
       // and swap attribute buffers in place; folding measure into the id destroyed and rebuilt every
       // on-screen layer per picker switch, re-running geometry setup for ~1M cells in one frame.
@@ -225,7 +263,7 @@ export default function App() {
           // Binary layout: flat vertices + per-polygon start offsets. No object accessors, so nothing
           // runs per-cell on the main thread — it uploads straight to the GPU. The GPU color value
           // (getScaleValue) and filter (getFilterValue) attributes ride in data.attributes (per-vertex).
-          data: tileDeckData(data, colorChannel, colorCategories, slots?.size, folded?.byTile.get(key)?.[colorChannel], contextKey) as never,
+          data: tileDeckData(data, renderChannel, colorCategories, slots?.size, folded?.byTile.get(key)?.[renderChannel], contextKey) as never,
           _normalize: false, // rings are already simple + consistent from the bake
           positionFormat: 'XY',
           coordinateSystem,
@@ -240,7 +278,7 @@ export default function App() {
       }
       return new ScatterplotLayer({
         id,
-        data: tileDeckData(data, colorChannel, colorCategories, slots?.size) as never,
+        data: tileDeckData(data, renderChannel, colorCategories, slots?.size) as never,
         coordinateSystem,
         radiusUnits: 'pixels',
         getRadius: 1.6,
@@ -253,7 +291,7 @@ export default function App() {
         autoHighlight: false, // see the polygon layer above — per-pointermove picking is the pan stall
       });
     });
-  }, [rendered, viewId, manifest, isGeo, isPolygon, colorChannel, colorCategories, inspect, slots, gpuProps, folded, contextKey]);
+  }, [drawn, viewId, manifest, isGeo, isPolygon, renderChannel, colorCategories, inspect, slots, gpuProps, folded, contextKey]);
 
   return (
     <div style={{ position: 'absolute', inset: 0, background: 'var(--app-bg)' }}>
@@ -301,6 +339,23 @@ export default function App() {
           atFullFidelity={atFullFidelity}
           getEmbed={manifest ? getEmbed : undefined}
         />
+      )}
+
+      {/* Showcase embed: a slim controls panel (color-by + filters) with no dataset tabs, branding, or
+          stats — so an iframed map stays interactive for viewers without exposing the rest of the app.
+          `controls=0` drops even this, locking the map to a static snapshot. */}
+      {embed.embed && embed.controls && manifest && (
+        <div style={panel}>
+          <Controls
+            colorChannels={colorableChannels(manifest)}
+            colorChannel={colorChannel}
+            onColorChannelChange={setColorChannel}
+            channels={carriedFilterableChannels(manifest)}
+            options={options}
+            filters={filters}
+            onFilterChange={(name, value) => setFilters((f) => ({ ...f, [name]: value }))}
+          />
+        </div>
       )}
 
       {selection && <InspectPanel selection={selection} onClose={() => setSelection(null)} />}

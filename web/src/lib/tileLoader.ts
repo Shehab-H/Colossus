@@ -1,4 +1,4 @@
-import { type CompanionGrain, loadCompanion, loadTile, type TileData } from './tileData';
+import { type CompanionGrain, loadCompanion, loadTile, type PackBlock, type TileData } from './tileData';
 import type { CompanionData } from './measures';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
@@ -88,15 +88,22 @@ class TileLoader {
   }
 
   /** Fetch + decode a tile's fact companion on the worker pool (main-thread fallback when workers are
-   *  unavailable). The typed columns transfer back — the main thread never parses companion Arrow. */
-  loadCompanion(viewId: string, version: string, key: string, grain: CompanionGrain[]): Promise<CompanionData> {
+   *  unavailable). The typed columns transfer back — the main thread never parses companion Arrow.
+   *  `pack` is the tile's block in the leaf companion archive, null for the per-file layout. */
+  loadCompanion(
+    viewId: string,
+    version: string,
+    key: string,
+    grain: CompanionGrain[],
+    pack: PackBlock | null,
+  ): Promise<CompanionData> {
     this.ensure();
-    if (!this.workers.length) return loadCompanion(viewId, version, key, grain);
+    if (!this.workers.length) return loadCompanion(viewId, version, key, grain, pack);
     const id = this.nextId++;
     const worker = this.workers[this.rr++ % this.workers.length];
     return new Promise<LoadResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, companion: { viewId, version, key, grain } });
+      worker.postMessage({ id, companion: { viewId, version, key, grain, pack } });
     }).then((r) => r.companion as CompanionData);
   }
 }

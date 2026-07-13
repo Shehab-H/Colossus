@@ -13,6 +13,9 @@ export interface EmbedCamera {
 
 export interface EmbedParams {
   embed: boolean;
+  /** Showcase-embed controls: color-by + filter panel (no dataset tabs/chrome). `controls=0` locks the
+   *  map to a static snapshot. Only meaningful when `embed` is set. */
+  controls: boolean;
   view: string | null;
   color: string | null;
   colorSpec: Partial<ColorSpec> | null;
@@ -59,6 +62,7 @@ export function readEmbedParams(search = window.location.search): EmbedParams {
   for (const [k, v] of q) if (k.startsWith('f_')) filters[k.slice(2)] = v;
   return {
     embed: q.get('embed') === '1',
+    controls: q.get('controls') !== '0', // controls show by default in an embed; controls=0 locks it
     view: q.get('view'),
     color,
     colorSpec: readColorSpec(q, color),

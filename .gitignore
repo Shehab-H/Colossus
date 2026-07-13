@@ -18,3 +18,14 @@ web/dist/
 # Env / local
 *.local
 .DS_Store
+
+# Built frontend copied into the server for single-origin deploy
+/src/Colossus.Server/wwwroot/
+
+# Publish output + deploy zips (assembled per DEPLOY.md, never source)
+/publish/
+/publish-x86/
+/*.zip
+
+# Temporary perf harness (stutter measurements; loaded manually)
+/web/public/__perf-harness.js
