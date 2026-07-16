@@ -65,7 +65,9 @@ export function decodeSlab(planeBlocks: Record<string, ArrayBuffer>, slab: Compa
   let offsets: Int32Array | undefined;
   let cellIds: CellIds | undefined;
   let bytes = 0;
-  if (slab.layout === 'sparse') {
+  // `@idx` is absent when this is an incremental plane-split fetch (the structure was decoded on an
+  // earlier fetch of the same tile and cached under its key); the caller merges these planes into it.
+  if (slab.layout === 'sparse' && planeBlocks['@idx']) {
     const idx = tableFromIPC(new Uint8Array(planeBlocks['@idx']));
     offsets = listChild(idx, 'offsets') as Int32Array;
     cellIds = listChild(idx, 'cellIds') as CellIds;
@@ -80,7 +82,7 @@ export function decodeSlab(planeBlocks: Record<string, ArrayBuffer>, slab: Compa
     bytes += planes[p.name].byteLength;
   }
   const first = Object.values(planes)[0];
-  const markCount = slab.layout === 'sparse' ? (offsets!.length - 1) : first ? first.length / slab.cells : 0;
+  const markCount = offsets ? offsets.length - 1 : slab.layout === 'dense' && first ? first.length / slab.cells : 0;
   return { layout: slab.layout, markCount, cells: slab.cells, axes: slab.axes, strides, offsets, cellIds, planes, decodedBytes: bytes };
 }
 

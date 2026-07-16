@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Manifest } from '../lib/manifest';
 import { packBlockUrl } from '../lib/manifest';
 import { isGroupRegime } from '../lib/channels';
@@ -22,25 +22,43 @@ export interface FoldResult {
   contextSig: string;
 }
 
+/** The map fold plus an imperative per-tile inspect fold (foldInspect): the map colours from just the
+ *  active measure's planes (R1/R5 plane split), so a tooltip — which shows every inspect channel — fetches
+ *  the remaining planes for the one clicked tile on demand. */
+export interface MeasureFold {
+  folded: FoldResult | null;
+  foldInspect: (key: string) => Promise<FoldedColumns | null>;
+}
+
 /** Whether a perFact context drives a fold for this manifest — the render gate shares it, so "hold a
  *  tile until its fold lands" can never disagree with whether a fold is coming at all. */
 export const foldActive = (manifest: Manifest | null, context: Record<string, string>): boolean =>
   !!manifest && isGroupRegime(manifest.view) && !!manifest.companionTiles && Object.keys(context).length > 0;
 
-// Companions cached per (version, tile); fold results per (version, tile, context). Bounded below.
+// Companions cached per (version, tile); fold results per (version, tile, active measures, context). Bounded.
 const FOLD_CACHE_CAP = 256;
 type CompanionEntry = Companion | 'missing';
 
+/** Planes already decoded for a cached slab tile: its structure block (`@idx`, sparse) plus each partial
+ *  plane fetched so far. A plane-split fetch adds only the ones not yet resident (SLAB-FORMAT §5). */
+function residentPlanes(comp: CompanionEntry | undefined): Set<string> {
+  const set = new Set<string>();
+  if (!comp || comp === 'missing' || comp.kind !== 'slab') return set;
+  if (comp.data.offsets || comp.data.cellIds) set.add('@idx');
+  for (const k of Object.keys(comp.data.planes)) set.add(k);
+  return set;
+}
+
 /** Per-tile folded measure columns under the active perFact context, or null when there is no context
- *  (render the baked default-context values — zero extra work). Companions are fetched and decoded on
- *  the worker pool (typed columns, transferred), cached per tile, and folded once per (tile, context) —
- *  a pan or zoom re-uses every fold it has already done; only new tiles (or a new context) fold, and the
- *  fold itself is typed-array arithmetic joined by the bake-written `mki`. */
+ *  (render the baked default-context values — zero extra work). A slab tile fetches and folds only the
+ *  planes the active colour measure needs; switching measure fetches just the delta plane, cached under
+ *  the tile key. Companions and folds are bounded caches; a pan or zoom re-uses every fold it has done. */
 export function useMeasureFold(
   manifest: Manifest | null,
   rendered: RenderedTile[],
   context: Record<string, string>,
-): FoldResult | null {
+  activeMeasures: string[],
+): MeasureFold {
   const [folded, setFolded] = useState<FoldResult | null>(null);
   const [retry, setRetry] = useState(0);
   const companions = useRef(new Map<string, CompanionEntry>());
@@ -64,9 +82,34 @@ export function useMeasureFold(
     return out;
   }, [measures, manifest]);
 
+  // A slab view folds only the active measure(s) for the map (its planes are the only ones fetched); a
+  // row-form bake, or a colour channel that is not a measure, folds every measure as before (no split).
+  const slab = !!manifest && isSlab(manifest);
+  const scoped = useMemo(() => measures.filter((m) => activeMeasures.includes(m.name)), [measures, activeMeasures]);
+  const foldMeasures = slab && scoped.length ? scoped : measures;
+  const foldNames = foldMeasures.map((m) => m.name);
+  const activeSig = foldNames.join(',');
+
+  // Inspect shows every inspect channel that is a measure; the others read the baked column.
+  const inspectNames = useMemo(() => {
+    if (!manifest) return [] as string[];
+    const measureSet = new Set(measures.map((m) => m.name));
+    const out = new Set<string>();
+    for (const n of manifest.view.inspect?.channels ?? []) if (measureSet.has(n)) out.add(n);
+    const t = manifest.view.inspect?.title;
+    if (t && measureSet.has(t)) out.add(t);
+    return [...out];
+  }, [manifest, measures]);
+
   const active = foldActive(manifest, context);
   const contextSig = JSON.stringify(context);
   const renderSig = rendered.map((t) => t.key).join(',');
+
+  // Latest context/manifest for the imperative inspect fold, which fires outside the effect (on a click).
+  const ctxRef = useRef(context);
+  ctxRef.current = context;
+  const manifestRef = useRef(manifest);
+  manifestRef.current = manifest;
 
   useEffect(() => {
     if (!manifest || !active) {
@@ -78,12 +121,9 @@ export function useMeasureFold(
     const version = manifest.version;
     const grain = companionGrain(manifest);
     const ckey = (key: string) => `${version}|${key}`;
-    // Slab bakes fetch each tile's active planes (all folded measures) out of the pack (R1/R5); row-form
-    // bakes range the tile's block or fetch the per-file companion.
-    const slabActive = isSlab(manifest);
-    const want = slabActive ? slabPlanesForMeasures(manifest, measures.map((m) => m.name)) : [];
-    const companionFetch = (key: string): CompanionFetch | null => {
-      if (slabActive) {
+    const needed = slab ? slabPlanesForMeasures(manifest, foldNames) : [];
+    const specFor = (key: string, want: string[]): CompanionFetch | null => {
+      if (slab) {
         const pack = manifest.companionPack;
         const dir = pack?.planeEntries?.[key];
         if (!pack || !dir || !manifest.companionSlab) return null;
@@ -93,30 +133,38 @@ export function useMeasureFold(
       return { kind: 'row', viewId: manifest.view.id, version, key, grain, pack };
     };
     (async () => {
-      // Fetch + decode the missing companions in parallel on the worker pool. Only a definitive miss
-      // (404, or a companion the fold can't use — older bake) is cached as 'missing': that tile keeps
-      // its baked colours and is never re-requested. A transient failure (network hiccup, server
-      // restart) stays un-entered and schedules a retry — caching it would pin the tile to baked or
-      // stale-context colours for the rest of the session.
+      // Fetch + decode the missing planes in parallel on the worker pool. A slab tile fetches only the
+      // active measure's planes not already resident; a row-form tile fetches its one block once. Only a
+      // definitive miss (404, or a companion the fold can't use) is cached 'missing' (baked fallback, never
+      // re-requested); a transient failure stays un-entered and schedules a retry.
       let transient = false;
       await Promise.all(
-        rendered
-          .filter((t) => !companions.current.has(ckey(t.key)))
-          .map(async (t) => {
-            const spec = companionFetch(t.key);
-            if (!spec) {
-              companions.current.set(ckey(t.key), 'missing');
-              return;
+        rendered.map(async (t) => {
+          const ck = ckey(t.key);
+          const cur = companions.current.get(ck);
+          if (cur === 'missing') return;
+          const want = slab ? needed.filter((p) => !residentPlanes(cur).has(p)) : [];
+          if (cur && (!slab || want.length === 0)) return; // row-form cached, or all needed planes resident
+          const spec = specFor(t.key, want);
+          if (!spec) {
+            companions.current.set(ck, 'missing');
+            return;
+          }
+          try {
+            const c = await tileLoader.loadCompanion(spec);
+            const prev = companions.current.get(ck);
+            if (slab && c.kind === 'slab' && prev && prev !== 'missing' && prev.kind === 'slab') {
+              Object.assign(prev.data.planes, c.data.planes); // merge planes under the tile key
+              prev.data.decodedBytes += c.data.decodedBytes;
+            } else {
+              companions.current.set(ck, c);
             }
-            try {
-              const c = await tileLoader.loadCompanion(spec);
-              companions.current.set(ckey(t.key), c);
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              if (/ 404 /.test(msg) || msg.includes('no mki column')) companions.current.set(ckey(t.key), 'missing');
-              else transient = true;
-            }
-          }),
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (/ 404 /.test(msg) || msg.includes('no mki column')) companions.current.set(ck, 'missing');
+            else transient = true;
+          }
+        }),
       );
       if (!alive) return;
       if (transient) setTimeout(() => alive && setRetry((r) => r + 1), 1500);
@@ -124,7 +172,7 @@ export function useMeasureFold(
       const byTile = new Map<string, FoldedColumns>();
       const missing = new Set<string>();
       for (const t of rendered) {
-        const fkey = `${version}|${t.key}|${contextSig}`;
+        const fkey = `${version}|${t.key}|${activeSig}|${contextSig}`;
         let cols = folds.current.get(fkey);
         if (!cols) {
           const comp = companions.current.get(ckey(t.key));
@@ -134,8 +182,8 @@ export function useMeasureFold(
           }
           cols =
             comp.kind === 'slab'
-              ? foldSlab(comp.data, measures, ctx, t.data.count, domains)
-              : foldTile(comp.data, measures, ctx, t.data.count, domains);
+              ? foldSlab(comp.data, foldMeasures, ctx, t.data.count, domains)
+              : foldTile(comp.data, foldMeasures, ctx, t.data.count, domains);
           folds.current.set(fkey, cols);
         }
         byTile.set(t.key, cols);
@@ -146,7 +194,10 @@ export function useMeasureFold(
       // cache so a long scrub can't hold every context it visited (oldest-first, insertion order).
       const live = new Set(rendered.map((t) => ckey(t.key)));
       for (const k of companions.current.keys()) if (!live.has(k)) companions.current.delete(k);
-      for (const k of folds.current.keys()) if (!live.has(k.slice(0, k.lastIndexOf('|')))) folds.current.delete(k);
+      for (const k of folds.current.keys()) {
+        const p = k.split('|');
+        if (!live.has(`${p[0]}|${p[1]}`)) folds.current.delete(k);
+      }
       let over = folds.current.size - FOLD_CACHE_CAP;
       if (over > 0) for (const k of folds.current.keys()) { folds.current.delete(k); if (--over <= 0) break; }
     })();
@@ -154,7 +205,43 @@ export function useMeasureFold(
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manifest, active, contextSig, renderSig, measures, domains, retry]);
+  }, [manifest, active, contextSig, renderSig, activeSig, slab, measures, domains, retry]);
 
-  return active ? folded : null;
+  // Inspect a clicked mark under the active context: ensure every inspect measure's planes are resident for
+  // the one tile (fetch the missing ones, merge under its key), then fold them. The map fold only carries
+  // the colour measure, so this is where the tooltip's other measures get their context-correct values.
+  const foldInspect = useCallback(
+    async (key: string): Promise<FoldedColumns | null> => {
+      const m = manifestRef.current;
+      if (!m || !isSlab(m)) return null;
+      const ctxObj = ctxRef.current;
+      if (!foldActive(m, ctxObj)) return null;
+      const inspectMeasures = measures.filter((mm) => inspectNames.includes(mm.name));
+      if (!inspectMeasures.length) return null;
+      const ck = `${m.version}|${key}`;
+      if (companions.current.get(ck) === 'missing') return null;
+      const need = slabPlanesForMeasures(m, inspectNames);
+      const want = need.filter((p) => !residentPlanes(companions.current.get(ck)).has(p));
+      if (want.length) {
+        const pack = m.companionPack;
+        const dir = pack?.planeEntries?.[key];
+        if (!pack || !dir || !m.companionSlab) return null;
+        const spec: CompanionFetch = { kind: 'slab', baseUrl: packBlockUrl(m.view.id, m.version, pack.file, key), codec: pack.codec, slab: m.companionSlab, dir, want };
+        try {
+          const c = await tileLoader.loadCompanion(spec);
+          const prev = companions.current.get(ck);
+          if (c.kind === 'slab' && prev && prev !== 'missing' && prev.kind === 'slab') Object.assign(prev.data.planes, c.data.planes);
+          else companions.current.set(ck, c);
+        } catch {
+          return null;
+        }
+      }
+      const comp = companions.current.get(ck);
+      if (!comp || comp === 'missing' || comp.kind !== 'slab') return null;
+      return foldSlab(comp.data, inspectMeasures, buildFoldContext(m.view, ctxObj), comp.data.markCount, domains);
+    },
+    [measures, inspectNames, domains],
+  );
+
+  return { folded: active ? folded : null, foldInspect };
 }

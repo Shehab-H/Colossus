@@ -133,3 +133,28 @@ run had a warm DB (up ~1 h) vs the baseline's cold start, so the −24 %/−26 %
 speedup, only recorded. The dense O(1) fold path is not measured on a real view (no registered view clears
 the 0.5 occupancy gate); its correctness is pinned by [slab-cases.json](../../tests/fixtures/slab-cases.json)
 across both C# and TS.
+
+### Plane-split realized in the live client (browser-measured)
+
+The plane-split rows above measure the *format's* capability; the running client now exercises it. The map
+folds only the active colour measure ([`useMeasureFold`](../../web/src/hooks/useMeasureFold.ts) is handed
+`mapMeasures = [renderChannel]`), so each on-screen tile fetches just that measure's planes — not the whole
+companion — with planes cached under the tile key (SLAB-FORMAT §5). Measured live against the running app
+(mobile-dominance, colour `dominant_operator` → planes `[sum__tests, @idx]`), per-tile scoped wire bytes vs
+the whole-tile region:
+
+| on-screen tile | scoped fetch | whole tile | Δ |
+|---|--:|--:|:--|
+| 1/0/0 | 185,155 | 730,711 | **3.95×** |
+| 1/1/0 | 222,967 | 807,435 | **3.62×** |
+| 1/0/1 | 421,400 | 1,565,465 | **3.72×** |
+| 1/1/1 | 1,034,808 | 3,678,518 | **3.55×** |
+
+Switching the colour measure fetches only the **delta** plane: dominant_operator → avg_download added just
+`[swp__download_mbps__tests]` (the resident `sum__tests` + `@idx` were not refetched). A measure that needs
+every partial (avg_download = `swp` + `sum`) fetches the whole tile — the win is per active measure, largest
+for the single-plane measures (dominant_operator / total_tests / apex_share) that are the common colouring.
+The tooltip still shows every inspect channel: it fetches the remaining inspect planes for the one clicked
+tile on demand (`foldInspect`), so nothing regresses. Row-form bakes and non-measure colour channels keep
+fetching every measure (no split). Correctness of folding over a plane subset (and of the incremental merge)
+is pinned by [slab.test.ts](../../web/src/lib/slab.test.ts).

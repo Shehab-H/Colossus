@@ -22,6 +22,7 @@ import { buildEmbedUrl, embedSnippet, readEmbedParams } from './lib/embed';
 import { tileDeckData } from './lib/deckData';
 import type { Manifest } from './lib/manifest';
 import { columnValue, type TileData } from './lib/tileData';
+import { isSlab } from './lib/slab';
 import { carriedFilterableChannels, colorableChannels, splitFilters } from './lib/channels';
 import { filterSlots, filterRanges, anyActive } from './lib/gpuFilter';
 import { colorScaleExtension } from './lib/colorScaleExtension';
@@ -137,7 +138,10 @@ export default function App() {
   // straight from the baked default-context columns). Derived buffers are keyed by the context that
   // PRODUCED the fold (folded.contextSig), never the live selection — an in-flight fold would otherwise
   // cache the previous context's colours under the new key and serve them forever.
-  const folded = useMeasureFold(manifest, foldInput, contextFilters);
+  // The map colours by one measure, so the slab fold fetches only that measure's planes (R1/R5 plane
+  // split); a non-measure colour channel passes nothing and the fold falls back to every measure.
+  const mapMeasures = useMemo(() => (renderChannel ? [renderChannel] : []), [renderChannel]);
+  const { folded, foldInspect } = useMeasureFold(manifest, foldInput, contextFilters, mapMeasures);
   const contextKey = folded?.contextSig;
   const contextActive = foldActive(manifest, contextFilters);
 
@@ -202,7 +206,7 @@ export default function App() {
   }, [drawn, viewId, manifest]);
 
   const onPick = useCallback(
-    (info: PickingInfo) => {
+    async (info: PickingInfo) => {
       if (!inspect) return;
       const hit = info.layer ? dataByLayerId.get(info.layer.id) : undefined;
       const i = info.index;
@@ -211,8 +215,11 @@ export default function App() {
         return;
       }
       // A measure under active context reads its folded value (numeric, or an argmax code decoded through
-      // its category domain); everything else, and the no-context case, reads the baked tile column.
-      const cols = folded?.byTile.get(hit.key);
+      // its category domain); everything else, and the no-context case, reads the baked tile column. The
+      // map fold only carries the colour measure, so a slab tooltip fetches the rest of its inspect planes
+      // on demand (foldInspect); older paths read the whole-tile fold as before.
+      const cols =
+        manifest && isSlab(manifest) && contextActive ? await foldInspect(hit.key) : folded?.byTile.get(hit.key);
       const valueAt = (name: string) => {
         const fc = cols?.[name];
         if (!fc) return inspectValue(columnValue(hit.data.values[name], i));
@@ -228,7 +235,7 @@ export default function App() {
         rows: inspect.channels.map((name) => ({ name, value: valueAt(name) })),
       });
     },
-    [inspect, dataByLayerId, folded, manifest],
+    [inspect, dataByLayerId, folded, manifest, contextActive, foldInspect],
   );
 
   const orthographicView = useMemo(

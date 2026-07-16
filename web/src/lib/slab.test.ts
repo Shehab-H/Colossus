@@ -130,4 +130,25 @@ describe('slab fold (shared fixture)', () => {
       assertFold(row, c.expect, `row ${JSON.stringify(c.context)}`);
     }
   });
+
+  // Plane split (R1/R5): the map fetches only the active measure's planes, so a fold over a plane-SUBSET
+  // slab must reproduce the same column the full fold produces — and merging the remaining planes in later
+  // (the inspect path) must fold identically. total_tests needs only sum__tests (+@idx).
+  test('folding a measure over its planes alone equals the full-slab fold, and merges losslessly', () => {
+    const only = [{ name: 'total_tests', ast: parseMeasure('sum(tests)') as MeasureExpr }];
+    const subset: SlabData = { ...sparseData, planes: { sum__tests: sparseData.planes.sum__tests } };
+    for (const c of fx.folds) {
+      const ctx = buildFoldContext(view, c.context);
+      const full = foldSlab(sparseData, only, ctx, fx.markCount, domains).total_tests as Float32Array;
+      const split = foldSlab(subset, only, ctx, fx.markCount, domains).total_tests as Float32Array;
+      expect([...split]).toEqual([...full]);
+    }
+    // Merge the rest of the planes onto the subset (as foldInspect does) → the full measure set folds identically.
+    const merged: SlabData = { ...subset, planes: { ...subset.planes } };
+    Object.assign(merged.planes, { cnt: sparseData.planes.cnt, swp__download_mbps__tests: sparseData.planes.swp__download_mbps__tests, max__tests: sparseData.planes.max__tests });
+    for (const c of fx.folds) {
+      const ctx = buildFoldContext(view, c.context);
+      assertFold(foldSlab(merged, measures, ctx, fx.markCount, domains), c.expect, `merged ${JSON.stringify(c.context)}`);
+    }
+  });
 });
