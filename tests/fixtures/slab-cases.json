@@ -1,0 +1,113 @@
+{
+  "_comment": "Shared slab-format fixture (docs/companion-scale/SLAB-FORMAT.md) — the fourth cross-language authority. C# SlabCompanionWriter tests (tests/Colossus.Tests/SlabFormatTests.cs) and web slab reader/fold tests (web/src/lib/slab.test.ts) both build the slab from `facts`+`axes` and assert: (1) the sparse CSR encoding (offsets, cellIds, per-partial planes) matches `sparse`; (2) the dense cumulative cell-major planes match `dense` (null = empty cell: 0 for additive, NaN for min/max); (3) folding each `folds[].context` reproduces `folds[].expect` (null = NaN / empty mark; 65535 = argmax unknown). Cell order: categorical (operator) outer, ordered (quarter) inner/fastest — cellId = opCode*T + qBin, T=3. Keep both sides in lockstep.",
+  "axes": {
+    "operator": { "kind": "categorical", "domain": ["apex", "zenith"] },
+    "quarter": { "kind": "ordered", "domain": ["2025-01-01", "2025-04-01", "2025-07-01"] }
+  },
+  "grainOrder": ["operator", "quarter"],
+  "partials": ["sum__tests", "cnt", "swp__download_mbps__tests", "max__tests"],
+  "cumulative": ["sum__tests", "cnt", "swp__download_mbps__tests"],
+  "cellCount": 6,
+  "markCount": 2,
+  "facts": [
+    { "mki": 0, "operator": "apex", "quarter": "2025-01-01", "tests": 10, "download_mbps": 50 },
+    { "mki": 0, "operator": "apex", "quarter": "2025-04-01", "tests": 5, "download_mbps": 40 },
+    { "mki": 0, "operator": "zenith", "quarter": "2025-01-01", "tests": 3, "download_mbps": 90 },
+    { "mki": 1, "operator": "zenith", "quarter": "2025-01-01", "tests": 8, "download_mbps": 20 },
+    { "mki": 1, "operator": "zenith", "quarter": "2025-07-01", "tests": 4, "download_mbps": 60 }
+  ],
+  "sparse": {
+    "offsets": [0, 3, 5],
+    "cellIds": [0, 1, 3, 3, 5],
+    "planes": {
+      "sum__tests": [10, 5, 3, 8, 4],
+      "cnt": [1, 1, 1, 1, 1],
+      "swp__download_mbps__tests": [500, 200, 270, 160, 240],
+      "max__tests": [10, 5, 3, 8, 4]
+    }
+  },
+  "dense": {
+    "planes": {
+      "sum__tests": [10, 0, 15, 0, 15, 0, 3, 8, 3, 8, 3, 12],
+      "cnt": [1, 0, 2, 0, 2, 0, 1, 1, 1, 1, 1, 2],
+      "swp__download_mbps__tests": [500, 0, 700, 0, 700, 0, 270, 160, 270, 160, 270, 400],
+      "max__tests": [10, null, 5, null, null, null, 3, 8, null, null, null, 4]
+    }
+  },
+  "measures": [
+    { "name": "total_tests", "expr": "sum(tests)" },
+    { "name": "avg_download", "expr": "wavg(download_mbps, tests)" },
+    { "name": "n", "expr": "count()" },
+    { "name": "max_tests", "expr": "max(tests)" },
+    { "name": "dominant_operator", "expr": "argmax(operator, sum(tests))" },
+    { "name": "apex_share", "expr": "share(sum(tests)) where operator = 'apex'" }
+  ],
+  "folds": [
+    {
+      "context": {},
+      "expect": {
+        "total_tests": [18, 12],
+        "avg_download": [53.888889, 33.333333],
+        "n": [3, 2],
+        "max_tests": [10, 8],
+        "dominant_operator": [0, 1],
+        "apex_share": [0.833333, 0]
+      }
+    },
+    {
+      "context": { "operator": "apex" },
+      "expect": {
+        "total_tests": [15, null],
+        "avg_download": [46.666667, null],
+        "n": [2, null],
+        "max_tests": [10, null],
+        "dominant_operator": [0, 65535],
+        "apex_share": [1, null]
+      }
+    },
+    {
+      "context": { "quarter": "2025-01-01..2025-01-01" },
+      "expect": {
+        "total_tests": [13, 8],
+        "avg_download": [59.230769, 20],
+        "n": [2, 1],
+        "max_tests": [10, 8],
+        "dominant_operator": [0, 1],
+        "apex_share": [0.769231, 0]
+      }
+    },
+    {
+      "context": { "quarter": "2025-04-01..2025-07-01" },
+      "expect": {
+        "total_tests": [5, 4],
+        "avg_download": [40, 60],
+        "n": [1, 1],
+        "max_tests": [5, 4],
+        "dominant_operator": [0, 1],
+        "apex_share": [1, 0]
+      }
+    },
+    {
+      "context": { "operator": "zenith", "quarter": "2025-01-01..2025-01-01" },
+      "expect": {
+        "total_tests": [3, 8],
+        "avg_download": [90, 20],
+        "n": [1, 1],
+        "max_tests": [3, 8],
+        "dominant_operator": [1, 1],
+        "apex_share": [0, 0]
+      }
+    },
+    {
+      "context": { "operator": "nimbus" },
+      "expect": {
+        "total_tests": [null, null],
+        "avg_download": [null, null],
+        "n": [null, null],
+        "max_tests": [null, null],
+        "dominant_operator": [65535, 65535],
+        "apex_share": [null, null]
+      }
+    }
+  ]
+}
