@@ -7,6 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The slab writer/plan are internal; the slab-format fixture test drives them directly. -->
+    <InternalsVisibleTo Include="Colossus.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Colossus.Domain\Colossus.Domain.csproj" />
     <!-- Infrastructure hosts the composition root (AddColossus), which wires the Application use
          cases to their adapters. Application depends only on Domain, so there is no cycle. -->

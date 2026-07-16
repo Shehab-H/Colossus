@@ -50,21 +50,35 @@ public sealed record Manifest
     /// dimensions its fact partials are keyed by. Null in the row regime.</summary>
     public IReadOnlyList<string>? GrainChannels { get; init; }
 
-    /// <summary>Leaf companion packaging (companion-scale R2): every leaf tile's companion lives as one
-    /// independently compressed block in a single per-version archive, fetched by HTTP range. Internal
-    /// levels stay per-tile files. Null selects the per-file layout for every level (older bakes).</summary>
+    /// <summary>Companion packaging (companion-scale R2, extended by R1/R5). Every companion tile's blocks
+    /// live in one per-version archive, fetched by HTTP range. Null selects the per-file layout (older
+    /// bakes). A slab bake sets <see cref="CompanionPack.Format"/> = "slab" and packs both leaf and internal
+    /// levels (internal compression, R5); a row-form R2 bake leaves it "row" with leaf-only entries.</summary>
     public CompanionPack? CompanionPack { get; init; }
+
+    /// <summary>Group-regime slab companion metadata (companion-scale R1). Null on row-form bakes — the
+    /// client keeps the row-form decode/fold. Present ⇒ the pack's blocks are slab planes.</summary>
+    public CompanionSlab? CompanionSlab { get; init; }
 }
 
-/// <summary>The leaf companion archive and its directory. <see cref="File"/> is relative to the version
+/// <summary>The companion archive and its directory. <see cref="File"/> is relative to the version
 /// directory; <see cref="Codec"/> is an encoding the browser-native <c>DecompressionStream</c> accepts;
-/// <see cref="Entries"/> maps a tile key (<c>z/x/y</c>) to its <c>[offset, length]</c> byte range —
-/// compression lives inside the archive because <c>Content-Encoding</c> doesn't compose with ranges.</summary>
+/// <see cref="Entries"/> maps a tile key (<c>z/x/y</c>) to the <c>[offset, length]</c> byte range of its
+/// whole region — compression lives inside the archive because <c>Content-Encoding</c> doesn't compose
+/// with ranges. A slab bake (<see cref="Format"/> = "slab") additionally fills <see cref="PlaneEntries"/>
+/// with per-plane ranges so a fold fetches only the planes its active measures need (R5 plane split).</summary>
 public sealed record CompanionPack
 {
     public required string File { get; init; }
     public required string Codec { get; init; }
     public required IReadOnlyDictionary<string, long[]> Entries { get; init; }
+
+    /// <summary>"row" (R2 leaf pack of row-form companions) or "slab" (R1). Absent ⇒ "row" (older bakes).</summary>
+    public string? Format { get; init; }
+
+    /// <summary>Slab only: <c>tileKey → (planeName → [offset, length])</c>. Plane <c>"@idx"</c> is the CSR
+    /// structure block (sparse layout); the rest are partial planes. Null ⇒ whole-tile fetch only.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, long[]>>? PlaneEntries { get; init; }
 }
 
 /// <summary>The derived channel split of a group-regime view.</summary>

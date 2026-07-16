@@ -28,15 +28,30 @@ public sealed class AggregateReducer : IReductionStrategy
         long leafTotal = 0;
         using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!);
         LoadTagged(db, "t", ctx.StagingParquetPath, ctx.Root);
-        // Facts share each mark's geometry, so a fact's zreal equals its mark's — the merge decision
-        // (real vs grid-cell) that the marks pyramid makes and the companion mirrors are the same.
-        if (ctx.Companion is { } companion)
-            LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root);
-        BuildPyramid(db, ctx, tiles, ref leafTotal);
-        // Leaf companions collectively hold every fact exactly once — pack them into one ranged archive
-        // (companion-scale R2) instead of paying per-file overhead at the level that dominates.
-        var pack = ctx.Companion is null ? null : CompanionPackWriter.Pack(ctx.OutputDirectory, tiles);
-        return new ReductionResult(tiles, leafTotal, pack);
+
+        // Group regime: facts share each mark's geometry, so a fact's zreal equals its mark's. The slab
+        // plan (layout from measured occupancy + axes) is decided once here, then every level's companion
+        // is streamed into one facts.pack (companion-scale R1); leaf and internal levels alike.
+        SlabPlan? plan = null;
+        using SlabCompanionWriter? slab = ctx.Companion is { } companion
+            ? BuildSlabWriter(db, ctx, companion, out plan)
+            : null;
+
+        BuildPyramid(db, ctx, tiles, ref leafTotal, slab, plan);
+
+        var pack = slab?.Finish();
+        return new ReductionResult(tiles, leafTotal, pack, plan?.ToManifest());
+    }
+
+    // Facts share each mark's geometry, so a fact's zreal equals its mark's — the merge decision the marks
+    // pyramid makes and the companion mirrors are the same. The slab plan (layout from measured occupancy +
+    // axes) is decided once here from the loaded facts/marks.
+    private static SlabCompanionWriter BuildSlabWriter(
+        DuckDbSession db, ReductionContext ctx, CompanionSpec companion, out SlabPlan plan)
+    {
+        LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root);
+        plan = SlabPlanner.Plan(db, companion, "facts", "t");
+        return new SlabCompanionWriter(ctx.OutputDirectory, plan);
     }
 
     private static string[] Measures(ViewConfig view) => view.Source.Channels
@@ -78,7 +93,7 @@ public sealed class AggregateReducer : IReductionStrategy
     }
 
     private static void BuildPyramid(DuckDbSession db, ReductionContext ctx,
-        List<TileMeta> tiles, ref long leafTotal)
+        List<TileMeta> tiles, ref long leafTotal, SlabCompanionWriter? slab, SlabPlan? plan)
     {
         if (db.Scalar("SELECT count(*) FROM t") == 0) return;
         int zMax = (int)db.Scalar("SELECT max(zreal) FROM t");
@@ -104,11 +119,11 @@ public sealed class AggregateReducer : IReductionStrategy
                 (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath);
 
             List<(long Tx, long Ty, long Rows)> written;
-            if (ctx.Companion is { } companion)
+            if (ctx.Companion is { } companion && slab is not null && plan is not null)
             {
                 // Materialize the level's content with each mark's row index within its tile, so the
-                // companion can carry `mki` — the client's O(1) join to the rendered mark (no string
-                // keys). The within-tile order (ORDER BY id) only has to match between the two writes.
+                // companion addresses marks by `mki` — the client's O(1) join to the rendered mark (no
+                // string keys). The within-tile order (ORDER BY id) only has to match between the writes.
                 db.Exec($"""
                     CREATE OR REPLACE TABLE content AS
                     SELECT *, (row_number() OVER (PARTITION BY tx, ty ORDER BY "{TileSchema.Id}") - 1)::INTEGER AS mki
@@ -118,12 +133,10 @@ public sealed class AggregateReducer : IReductionStrategy
                     "SELECT * EXCLUDE (mki) FROM content ORDER BY tx, ty, mki", tilePath,
                     ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
 
-                // Companions ride the same active tiles (facts share their marks' (tx,ty)), so each
-                // render tile gets a z/x/y.facts.arrow with its facts' partials at grain, keyed by mki.
-                ArrowTileWriter.WritePartitioned(db.Connection, CompanionSql(ctx.Root, z, companion),
-                    (wtx, wty) => Path.Combine(ctx.OutputDirectory, $"{z}/{wtx}/{wty}.facts.arrow"),
-                    companion.GrainChannels.Where(c => c.Type == ChannelType.Dict).Select(c => c.Name).ToHashSet(),
-                    companion.CanonicalDictionaryOrders);
+                // Companions ride the same active tiles (facts share their marks' (tx,ty)). Each tile's
+                // slab — CSR or dense cumulative planes at grain, keyed by mki — is appended to facts.pack.
+                var markCounts = written.ToDictionary(w => (w.Tx, w.Ty), w => w.Rows);
+                slab.AppendLevel(z, db.Connection, SlabCompanionSql(ctx.Root, z, companion, plan), markCounts);
             }
             else
             {
@@ -203,11 +216,12 @@ public sealed class AggregateReducer : IReductionStrategy
             """;
     }
 
-    // Fact partials at grain for this level, partitioned by (tx, ty). Each fact keys to its mark — the
-    // real geometry key while the mark is real (zreal ≤ z), else the grid-cell key it merged into —
-    // then joins the materialized content to carry `mki`, the mark's row index within its render tile.
-    // The client fold is then an integer gather (out[mki[row]] += partial[row]), never a string join.
-    private static string CompanionSql(Bbox root, int z, CompanionSpec c)
+    // Fact partials at grain for this level, partitioned by (tx, ty), projected to the slab's stream form
+    // (tx, ty, mki, cellId, partials…). Each fact keys to its mark — the real geometry key while the mark
+    // is real (zreal ≤ z), else the grid-cell key it merged into — then joins the materialized content to
+    // carry `mki`; the grain values fold into the canonical `cellId`. Ordered (tx, ty, mki, cellId) so the
+    // writer streams marks in order with ascending cellId per mark (the CSR / cell-major order).
+    private static string SlabCompanionSql(Bbox root, int z, CompanionSpec c, SlabPlan plan)
     {
         string tx = TileSql.TileIndex(root, z, Axis.X);
         string ty = TileSql.TileIndex(root, z, Axis.Y);
@@ -215,9 +229,10 @@ public sealed class AggregateReducer : IReductionStrategy
         string gy = TileSql.GridIndex(root, z, Axis.Y);
         string mk = $"CASE WHEN zreal <= {z} THEN {MarkKey.RealSql()} ELSE {MarkKey.MergedSql("gx", "gy")} END";
         string grain = string.Concat(c.GrainChannels.Select(ch => $", \"{ch.Name}\""));
-        string grainOut = string.Concat(c.GrainChannels.Select(ch => $", g.\"{ch.Name}\""));
-        string partials = string.Concat(c.Partials.Select(p => $", {PartialSql(p)} AS \"{p.Name}\""));
-        string partialsOut = string.Concat(c.Partials.Select(p => $", g.\"{p.Name}\""));
+        // The plan's partial set (which may add cnt for a dense witness) drives the columns, so the writer's
+        // plan.Partials and this projection stay in lockstep.
+        string partials = string.Concat(plan.Partials.Select(p => $", {PartialSql(p)} AS \"{p.Name}\""));
+        string partialsOut = string.Concat(plan.Partials.Select(p => $", g.\"{p.Name}\""));
 
         return $"""
             WITH vf AS (
@@ -229,9 +244,9 @@ public sealed class AggregateReducer : IReductionStrategy
               FROM vf
               GROUP BY ALL
             )
-            SELECT g.tx, g.ty, content.mki{grainOut}{partialsOut}
+            SELECT g.tx, g.ty, content.mki, ({plan.CellIdSql("g")}) AS cellId{partialsOut}
             FROM g JOIN content ON content.tx = g.tx AND content.ty = g.ty AND content."{TileSchema.Id}" = g.mk
-            ORDER BY g.tx, g.ty, content.mki
+            ORDER BY g.tx, g.ty, content.mki, cellId
             """;
     }
 

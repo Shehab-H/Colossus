@@ -42,9 +42,12 @@ public sealed record ReductionContext
     public IReadOnlyDictionary<string, IReadOnlyList<string>>? CanonicalDictionaryOrders { get; init; }
 }
 
-/// <summary><paramref name="CompanionPack"/> is set when the reduction packed its leaf companions into
-/// one archive (group regime); the bake writes it into the manifest, which gates the client's layout.</summary>
-public sealed record ReductionResult(IReadOnlyList<TileMeta> Tiles, long LeafPointCount, CompanionPack? CompanionPack = null);
+/// <summary><paramref name="CompanionPack"/> is set when the reduction packed its companions into one
+/// archive (group regime); <paramref name="CompanionSlab"/> carries the slab metadata (companion-scale R1)
+/// when the pack holds slab planes. The bake writes both into the manifest, which gates the client.</summary>
+public sealed record ReductionResult(
+    IReadOnlyList<TileMeta> Tiles, long LeafPointCount,
+    CompanionPack? CompanionPack = null, CompanionSlab? CompanionSlab = null);
 
 /// <summary>Turns a sorted staging table into tiles. One implementation per <see cref="ReductionKind"/>;
 /// a strategy chooses which real rows land in which tile — never the schema, never the mark.</summary>

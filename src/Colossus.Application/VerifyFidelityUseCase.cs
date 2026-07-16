@@ -103,9 +103,10 @@ public sealed class VerifyFidelityUseCase(
         if (staging.Exists(marksPath) && staging.RowCount(marksPath) is var marks && leafRows != marks)
             return $"leaf marks {leafRows:N0} != distinct marks {marks:N0} (marks staging) — grouping lost or split a mark";
 
-        // Σ leaf-companion rows == source rows: every fact lands in exactly one leaf's companion, and the
-        // reference source is already at the companion grain, so the two agree. A packed bake (R2) reads
-        // each leaf's block out of the archive; per-file leaves are the pre-pack layout.
+        // Σ leaf-companion facts == source rows: every fact lands in exactly one leaf's companion, and the
+        // reference source is already at the companion grain, so the two agree. Slab bakes witness via the
+        // cnt plane / sparse nnz (SLAB-FORMAT §7); a row-form R2 bake reads each leaf block's rows; per-file
+        // leaves are the pre-pack layout.
         long? source = stagedRows ?? manifest.SourceRows;
         if (source is { } src)
         {
@@ -114,12 +115,19 @@ public sealed class VerifyFidelityUseCase(
             long companionRows = 0;
             foreach (var tile in manifest.Tiles.Where(t => t.IsLeaf))
             {
-                if (pack is not null && pack.Entries.TryGetValue($"{tile.Z}/{tile.X}/{tile.Y}", out var e))
+                string key = $"{tile.Z}/{tile.X}/{tile.Y}";
+                if (manifest.CompanionSlab is { } slab && pack?.PlaneEntries is { } pe && pe.TryGetValue(key, out var planes))
+                {
+                    long f = tiles.SlabFacts(packPath, planes, slab);
+                    if (f < 0) { companionRows = -1; break; } // no independent slab witness
+                    companionRows += f;
+                }
+                else if (pack is not null && pack.Entries.TryGetValue(key, out var e))
                     companionRows += tiles.PackedRowCount(packPath, e[0], e[1], pack.Codec);
                 else if (CompanionPath(store.TilePath(viewId, version, tile.Id)) is var facts && tiles.Exists(facts))
                     companionRows += tiles.RowCount(facts);
             }
-            if (companionRows != src)
+            if (companionRows >= 0 && companionRows != src)
                 return $"companion facts {companionRows:N0} != source {src:N0} — a fact reached no leaf companion (or was double-counted)";
         }
 

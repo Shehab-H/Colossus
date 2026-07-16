@@ -15,9 +15,9 @@ using Xunit;
 namespace Colossus.Tests;
 
 /// <summary>End-to-end group-regime bake through DuckDB (no ClickHouse): facts → grouper → effective
-/// view + companion spec → AggregateReducer. Pins that each render tile gets a fact companion whose
-/// rows are the fact partials at grain, keyed by <c>mki</c> — the row index of the fact's mark within
-/// the render tile (real mark, or the grid cell it merged into), the client fold's O(1) join.</summary>
+/// view + companion spec → AggregateReducer, now emitting a slab companion (companion-scale R1). Pins that
+/// each render tile's slab reconstructs the right per-mark partials at grain and that the fact witness
+/// (Σ cnt / nnz) holds. The exact slab encoding is pinned separately by <see cref="SlabFormatTests"/>.</summary>
 public class GroupBakeTests : IDisposable
 {
     private readonly DirectoryInfo _dir = Directory.CreateTempSubdirectory("colossus-tests-");
@@ -83,7 +83,7 @@ public class GroupBakeTests : IDisposable
     }
 
     [Fact]
-    public void RealMarks_CompanionPartialsAtGrain_KeyedToTileIds()
+    public void RealMarks_SlabPartialsAtGrain_KeyedToTileMarks()
     {
         var (outDir, result) = GroupBake($"""
             SELECT * FROM (VALUES
@@ -98,26 +98,27 @@ public class GroupBakeTests : IDisposable
         var tileIds = Ids(tile, TileSchema.Id);
         Assert.Equal(new HashSet<string> { "p:1.0:1.0", "p:3.0:3.0" }, tileIds.ToHashSet());
 
-        // 0/0/0 is a leaf here, so its companion lives as a gzip block in the pack (R2) — the per-file
-        // form must be gone and the manifest-bound directory is how the client finds the block.
+        // The slab lives in facts.pack (no per-tile .facts.arrow file); the manifest-bound directory finds it.
         Assert.False(File.Exists(Path.Combine(outDir, "0/0/0.facts.arrow")));
-        var comp = ReadPacked(outDir, result, "0/0/0");
-        Assert.Equal(4, comp.Length); // one row per (mark, operator, quarter)
-        var mki = Mki(comp);
-        Assert.All(mki, i => Assert.InRange(i, 0, tile.Length - 1)); // every row keys a real tile mark
-        // Partials gather to the right mark through mki: p:1:1 has apex Q1 10 + apex Q2 5 + zenith Q1 3,
-        // p:3:3 has zenith Q1 8.
-        var perMark = SumByMark(comp, "sum__tests", mki, tileIds);
-        Assert.Equal(18f, perMark["p:1.0:1.0"], 3);
-        Assert.Equal(8f, perMark["p:3.0:3.0"], 3);
-        Assert.Equal(1130f, Sum(comp, "swp__download_mbps__tests"), 3); // 500+200+270+160
+        var slab = result.CompanionSlab!;
+        Assert.Equal("slab", result.CompanionPack!.Format);
+        var tileData = ReadSlab(outDir, result, "0/0/0");
+
+        // Σ cnt (or nnz) witnesses every fact reached the slab.
+        Assert.Equal(4, SlabCompanionReader.Facts(tileData, slab));
+
+        // Default-context sum(tests) gathers to the right mark: p:1:1 = 10+5+3, p:3:3 = 8.
+        var byMark = PerMarkTotals(tileData, slab, tile.Length, "sum__tests");
+        Assert.Equal(18f, byMark[System.Array.IndexOf(tileIds, "p:1.0:1.0")], 3);
+        Assert.Equal(8f, byMark[System.Array.IndexOf(tileIds, "p:3.0:3.0")], 3);
+        // Σ swp over the whole tile = 500+200+270+160.
+        Assert.Equal(1130f, PerMarkTotals(tileData, slab, tile.Length, "swp__download_mbps__tests").Sum(), 3);
     }
 
     [Fact]
-    public void MergedMarks_CompanionKeyedByGridCell_PartialsSummedAcrossMarks()
+    public void MergedMarks_SlabKeyedByGridCell_PartialsSummedAcrossMarks()
     {
-        // Two marks, each with an apex + a zenith fact (so operator is perFact), tiny enough to merge
-        // into one ~1px cell at z0. The companion folds both marks' facts into that cell's grain.
+        // Two marks, each with an apex + a zenith fact, tiny enough to merge into one ~1px cell at z0.
         var (outDir, result) = GroupBake($"""
             SELECT * FROM (VALUES
               (1.0000::FLOAT,1.0000::FLOAT, {Tiny(1.0000)}, [0,5]::INTEGER[], 'apex',   DATE '2025-01-01', 10::FLOAT, 50::FLOAT),
@@ -131,13 +132,43 @@ public class GroupBakeTests : IDisposable
         var tileIds = Ids(tile, TileSchema.Id);
         Assert.All(tileIds, id => Assert.StartsWith("g:", id)); // both marks merged into grid cells
 
-        // 0/0/0 is internal (the marks subdivide further), so its companion stays a per-tile file —
-        // only leaf companions move into the pack, and the pack never indexes an internal tile.
-        Assert.False(result.CompanionPack!.Entries.ContainsKey("0/0/0"));
-        var comp = ReadArrow(Path.Combine(outDir, "0/0/0.facts.arrow"));
-        Assert.Equal(2, comp.Length); // grain (grid-cell mki, operator)
-        Assert.All(Mki(comp), i => Assert.InRange(i, 0, tile.Length - 1));
-        Assert.Equal(41f, Sum(comp, "sum__tests"), 3); // apex 10+20, zenith 3+8, folded across both merged marks
+        // All levels (leaf and internal) are packed now — the internal 0/0/0 slab lives in facts.pack.
+        var slab = result.CompanionSlab!;
+        var tileData = ReadSlab(outDir, result, "0/0/0");
+        Assert.Equal(4, SlabCompanionReader.Facts(tileData, slab)); // apex 2 + zenith 2 facts merged
+        // sum(tests) folded across both merged marks: apex 10+20, zenith 3+8 → total 41.
+        Assert.Equal(41f, PerMarkTotals(tileData, slab, tile.Length, "sum__tests").Sum(), 3);
+    }
+
+    // Default-context (all cells) per-mark total of a subtractable partial, layout-aware: sparse sums a
+    // mark's entries; dense sums the cumulative last-bin of each categorical run (its run total).
+    private static float[] PerMarkTotals(SlabTile t, CompanionSlab slab, int markCount, string partial)
+    {
+        var plane = t.FloatPlanes[partial];
+        var res = new float[markCount];
+        if (!t.Dense)
+        {
+            for (int m = 0; m < markCount; m++)
+                for (int e = t.Offsets![m]; e < t.Offsets[m + 1]; e++) res[m] += plane[e];
+            return res;
+        }
+        int cells = slab.Cells;
+        int idx = -1;
+        for (int i = 0; i < slab.Axes.Count; i++) if (slab.Axes[i].Cumulative) idx = i;
+        int stride = 1;
+        for (int j = idx + 1; j < slab.Axes.Count; j++) stride *= slab.Axes[j].Cardinality;
+        int card = idx >= 0 ? slab.Axes[idx].Cardinality : 1;
+        for (int c = 0; c < cells; c++)
+            if (idx < 0 || c / stride % card == card - 1)
+                for (int m = 0; m < markCount; m++) res[m] += plane[c * markCount + m];
+        return res;
+    }
+
+    private static SlabTile ReadSlab(string outDir, ReductionResult result, string key)
+    {
+        var pack = result.CompanionPack!;
+        Assert.True(pack.PlaneEntries!.TryGetValue(key, out var planes), $"pack has no plane directory for {key}");
+        return SlabCompanionReader.Read(Path.Combine(outDir, pack.File), planes!, result.CompanionSlab!);
     }
 
     private static string Ring(double px, double py) =>
@@ -153,46 +184,9 @@ public class GroupBakeTests : IDisposable
         return reader.ReadNextRecordBatch()!;
     }
 
-    /// <summary>One leaf companion out of the pack — the directory lookup + bounded gunzip the client mirrors.</summary>
-    private static RecordBatch ReadPacked(string outDir, ReductionResult result, string key)
-    {
-        var pack = result.CompanionPack!;
-        Assert.Equal(CompanionPackWriter.Codec, pack.Codec);
-        Assert.True(pack.Entries.TryGetValue(key, out var e), $"pack has no entry for {key}");
-        using var stream = CompanionPackWriter.ReadBlock(Path.Combine(outDir, pack.File), e![0], e[1]);
-        using var reader = new ArrowStreamReader(stream);
-        return reader.ReadNextRecordBatch()!;
-    }
-
     private static string[] Ids(RecordBatch b, string col)
     {
         var a = (StringArray)b.Column(col);
         return [.. Enumerable.Range(0, a.Length).Select(i => a.GetString(i))];
-    }
-
-    private static int[] Mki(RecordBatch b)
-    {
-        var a = (Int32Array)b.Column("mki");
-        return [.. Enumerable.Range(0, a.Length).Select(i => a.GetValue(i)!.Value)];
-    }
-
-    private static Dictionary<string, float> SumByMark(RecordBatch b, string col, int[] mki, string[] tileIds)
-    {
-        var a = (FloatArray)b.Column(col);
-        var sums = new Dictionary<string, float>();
-        for (int i = 0; i < a.Length; i++)
-        {
-            string id = tileIds[mki[i]];
-            sums[id] = sums.GetValueOrDefault(id) + a.GetValue(i)!.Value;
-        }
-        return sums;
-    }
-
-    private static float Sum(RecordBatch b, string col)
-    {
-        var a = (FloatArray)b.Column(col);
-        float s = 0;
-        for (int i = 0; i < a.Length; i++) s += a.GetValue(i)!.Value;
-        return s;
     }
 }

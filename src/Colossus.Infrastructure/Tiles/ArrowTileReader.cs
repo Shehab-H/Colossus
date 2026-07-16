@@ -1,4 +1,5 @@
 using Colossus.Domain.Baking;
+using Colossus.Domain.Model;
 
 namespace Colossus.Infrastructure.Tiles;
 
@@ -13,4 +14,7 @@ public sealed class ArrowTileReader : ITileReader
             throw new NotSupportedException($"companion pack codec '{codec}' (this build reads '{CompanionPackWriter.Codec}')");
         return CompanionPackWriter.RowCount(packPath, offset, length);
     }
+
+    public long SlabFacts(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab) =>
+        SlabCompanionReader.Facts(SlabCompanionReader.Read(packPath, planes, slab), slab);
 }
