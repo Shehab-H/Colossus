@@ -16,6 +16,13 @@ server, right thing for object storage with a CDN (R2 = zero egress, 10 GB free 
 full config (measures + encoding) is embedded in its `manifest.json`, so **the map renders entirely
 from R2**; the SmarterASP.NET app only serves the frontend shell and the (optional) dataset picker.
 
+**Independent origins.** The SPA, the view API, and the tiles may each live on their own subdomain —
+nothing in the app assumes they share an origin. The client is pointed at each via `VITE_TILES_BASE`
+and `VITE_API_BASE` (absolute URLs; Phase 2). The server sends permissive CORS (`AllowAnyOrigin` +
+exposed `Content-Range`/`Accept-Ranges`/`Content-Length`, see `Program.cs`), so the browser may call the
+API from the SPA's origin. The tiles host sets its own CORS (Phase 1 step 4) — it must allow the SPA's
+origin and the `Range` header, since `facts.pack` reads are ranged and cross-origin.
+
 Two facts about this stack that drive the steps below:
 
 1. **Target is `net10.0`** — brand new; SmarterASP.NET's shared servers almost certainly don't have
@@ -89,15 +96,20 @@ append `/tiles` to `R2_BASE`.
 
 ---
 
-## Phase 2 — Build the frontend (tiles → R2, API → same origin)
+## Phase 2 — Build the frontend (point it at each origin)
 
 ```powershell
 cd web
 $env:VITE_TILES_BASE = "https://pub-xxxx.r2.dev"   # your R2_BASE (no trailing slash)
-$env:VITE_API_BASE   = "/api"                       # same-origin: the SmarterASP.NET app
+$env:VITE_API_BASE   = "/api"                       # same-origin app; or an absolute URL if the API
+                                                    #   is its own subdomain, e.g. https://api.yoursite.com
 npm run build                                       # -> web/dist
 cd ..
 ```
+
+`VITE_API_BASE` is only guessed from `VITE_TILES_BASE` when unset (it assumes the API sits beside the
+tiles) — always set it explicitly when the three roles are on separate origins. The server's CORS
+(above) already permits the cross-origin call; no API code change is needed.
 
 Point the showcase page at the same site it will be served from (edit `showcase/index.html`):
 

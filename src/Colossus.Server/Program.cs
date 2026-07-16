@@ -6,9 +6,11 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 
-// Dev stand-in for nginx: serves the baked tile tree as static immutable files and hosts the view
-// registry API (see Controllers/ViewsController). Prod swaps to nginx for the static tiles, identical
-// headers. All wiring is here; endpoints live in controllers.
+// Dev stand-in for the static tile host: serves the baked tile tree as static immutable files and hosts
+// the view registry API (see Controllers/ViewsController). In prod the SPA, this API, and the tiles each
+// run on their own origin — the tiles from object storage + CDN (Cloudflare R2, see docs/DEPLOY.md) — so
+// the browser fetches across subdomains; the CORS policy below is what permits that. All wiring is here;
+// endpoints live in controllers.
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,7 +24,12 @@ server.ApplyEnvOverrides();
 builder.WebHost.UseUrls(server.ServerUrl);
 builder.Services.AddColossus(builder.Configuration);
 builder.Services.AddControllers().AddJsonOptions(o => ColossusJson.Apply(o.JsonSerializerOptions));
-builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+// Tiles + the view API are public, immutable, read-only data fetched cross-origin from the SPA's own
+// subdomain. Any origin, and expose the range headers so a ranged facts.pack read (companion-scale R1/R5)
+// is fully inspectable cross-origin. No credentials, so AllowAnyOrigin is safe.
+builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
+    .AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()
+    .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length")));
 builder.Services.AddOpenApi(o => o.AddDocumentTransformer((doc, _, _) =>
 {
     doc.Info = new OpenApiInfo
