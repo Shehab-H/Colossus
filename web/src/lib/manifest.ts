@@ -140,10 +140,33 @@ export interface Manifest {
   companionTiles?: boolean;
   /** The companion grain columns (perFact dict + temporal), the dimensions the fact partials key by. */
   grainChannels?: string[];
-  /** Leaf companion packaging (companion-scale R2): leaf companions live as independently compressed
-   *  blocks in one per-version archive, range-read per tile. Internal levels stay per-tile files.
-   *  Absent selects the per-file layout for every level (older bakes). */
+  /** Companion packaging (companion-scale R2, extended by R1/R5): companion tiles live as independently
+   *  compressed blocks in one per-version archive, range-read per tile. Absent selects the per-file layout
+   *  (older bakes). A slab bake packs both leaf and internal levels and fills `planeEntries`. */
   companionPack?: CompanionPack;
+  /** Group-regime slab companion metadata (companion-scale R1). Present ⇒ the pack holds slab planes and
+   *  the client takes the slab decode/fold; absent ⇒ the row-form companion path (older bakes). */
+  companionSlab?: CompanionSlab;
+}
+
+/** One companion grain channel as a slab axis (SLAB-FORMAT §1–2). `domain` is the full ordered value list
+ *  (categorical: canonical dict order; ordered: the sorted bin list). Axes are in cell order (fastest last). */
+export interface SlabAxis {
+  name: string;
+  kind: 'categorical' | 'ordered';
+  cardinality: number;
+  cumulative: boolean;
+  domain: string[];
+}
+
+/** Group-regime slab companion metadata (SLAB-FORMAT). `layout` picks the decode/fold path; `partials`
+ *  names the planes and their element type. */
+export interface CompanionSlab {
+  layout: 'sparse' | 'dense';
+  cells: number;
+  occupancy: number;
+  axes: SlabAxis[];
+  partials: { name: string; type: 'f32' | 'i32' }[];
 }
 
 /** The leaf companion archive and its directory: `file` is relative to the version directory, `codec`
@@ -154,6 +177,11 @@ export interface CompanionPack {
   file: string;
   codec: CompressionFormat;
   entries: Record<string, [number, number]>;
+  /** "row" (R2 leaf pack) or "slab" (R1). Absent ⇒ "row" (older bakes). */
+  format?: 'row' | 'slab';
+  /** Slab only: `tileKey → (planeName → [offset, length])`. Plane `"@idx"` is the CSR structure block;
+   *  the rest are partial planes. Enables plane-split fetch (R5); absent ⇒ whole-tile fetch. */
+  planeEntries?: Record<string, Record<string, [number, number]>>;
 }
 
 const TILES_BASE = import.meta.env.VITE_TILES_BASE ?? 'http://localhost:5174/tiles';

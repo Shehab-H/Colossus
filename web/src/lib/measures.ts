@@ -179,8 +179,11 @@ export const ARGMAX_UNKNOWN = 0xffff;
 type Numeric = { kind: 'sum' | 'count' | 'avg' | 'wavg' | 'min' | 'max' };
 
 /** Accumulates one numeric inner-agg over a set of groups (a group is a mark, or a (mark, dim) pair for
- *  argmax, or restricted/unrestricted halves for share). Additive partials in, finalized value out. */
-class InnerAgg {
+ *  argmax, or restricted/unrestricted halves for share). Additive partials in, finalized value out.
+ *  Exported so the slab fold (lib/slab) reuses the identical accumulation + finalization — the fold math
+ *  is frozen (byte-for-byte), only the traversal differs. The constructor reads only `c.partial`/
+ *  `c.rowCount`, so the slab passes its planes as a minimal companion. */
+export class InnerAgg {
   private readonly a: Float64Array;
   private readonly b: Float64Array | null;
   private readonly seen: Uint8Array;
@@ -374,8 +377,8 @@ function makeFolder(
   };
 }
 
-const aggCh = (a: Agg): string | undefined => ('channel' in a ? a.channel : undefined);
-const aggW = (a: Agg): string | undefined => (a.kind === 'wavg' ? a.weight : undefined);
+export const aggCh = (a: Agg): string | undefined => ('channel' in a ? a.channel : undefined);
+export const aggW = (a: Agg): string | undefined => (a.kind === 'wavg' ? a.weight : undefined);
 
 /** The context compiled against one companion: per-row code equality tests + day-number range tests.
  *  `impossible` short-circuits the whole fold (a selection no fact can satisfy — every mark unknown). */
