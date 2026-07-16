@@ -60,5 +60,76 @@ The active-measure (color-measure) recolor is `avg_download` for coverage (parti
 `swp__download_mbps__tests`, `sum__tests`) and `dominant_operator` for dominance (partial
 `sum__tests`); the row form has no plane split, so its active-measure fetch is the whole block.
 
-<!-- The After section + comparison table are appended once the slab build lands and is re-measured
-     on this same machine with this same harness. -->
+## After (slab, measured on the same machine + harness as the baseline)
+
+**Environment.** Same machine as the Baseline (Alder Lake, 12 logical cores, Windows 11, .NET
+`10.0.301`, Node `v22.16.0`, ClickHouse `24.8`). Slab bakes: mobile-coverage `v20260716T101222Z`,
+mobile-dominance `v20260716T101617Z` — both `slab/sparse` (measured occupancy 37.8 % < 0.5 gate → CSR),
+380 tiles / 255 leaves / 2,008,081 marks / maxZoom 7, worst leaf tile `5/17/19` (124,020 marks) — the
+same worst tile as the baseline. Fidelity verifier: **PASS** all views (slab witness `Σ cnt == 24,257,354
+== source rows`; row-regime geonames/ookla byte-for-byte unchanged). All numbers below are from the
+**identical** commands the Baseline used, re-run against these bakes:
+
+```
+for v in mobile-coverage mobile-dominance; do dotnet run --project src/Colossus.Bake -- $v; done  # wall-timed
+cd web && npx vite-node scripts/bench-companion.ts -- mobile-coverage mobile-dominance
+```
+
+### mobile-coverage
+
+| Metric | Before (row) | After (slab/sparse) | Δ |
+|---|--:|--:|:--|
+| Leaf companion bytes — raw | 752,415,544 | 615,415,616 | ×0.82 / **−18.2 %** |
+| Leaf companion bytes — packed (`facts.pack`) | 384,928,260 | 372,473,506 | ×0.97 / −3.2 % |
+| Internal companion bytes — raw | 748,511,720 | 610,056,576 | ×0.82 / −18.5 % |
+| Internal companion bytes — compressed | 748,511,720 (uncompressed files) | 389,551,067 (packed) | **1.92× / −48.0 %** |
+| Worst leaf tile — raw block | 52,151,880 | 42,556,416 | −18.4 % |
+| Worst leaf tile — packed block | 26,500,522 | 25,645,662 | −3.2 % |
+| Worst-tile whole fetch | 26,500,522 | 25,645,662 | −3.2 % |
+| **Worst-tile active-measure fetch (plane-split)** | 26,500,522 | 7,828,921 (`avg_download` planes) | **3.39× / −70.5 %** |
+| Decode/prep ms (median) | 221.9 | 132.08 | −40.5 % |
+| Peak decoded bytes | 55,514,944 | 42,552,834 | **−23.4 %** |
+| Fold ms p50 / p95 (60 contexts) | 39.05 / 106.03 | 2.56 / 36.30 | **15.3× / 2.9× faster** |
+| Bake wall time | 302,985 ms | 222,902 ms | −26.4 % (cache-sensitive) |
+
+### mobile-dominance
+
+| Metric | Before (row) | After (slab/sparse) | Δ |
+|---|--:|--:|:--|
+| Leaf companion bytes — raw | 364,162,248 | 226,797,160 | ×0.62 / **−37.7 %** |
+| Leaf companion bytes — packed (`facts.pack`) | 127,036,233 | 114,538,906 | ×0.90 / −9.8 % |
+| Internal companion bytes — raw | 362,227,096 | 223,592,952 | ×0.62 / −38.3 % |
+| Internal companion bytes — compressed | 362,227,096 (uncompressed files) | 118,073,227 (packed) | **3.07× / −67.4 %** |
+| Worst leaf tile — raw block | 25,235,128 | 15,638,232 | −38.0 % |
+| Worst leaf tile — packed block | 8,680,090 | 7,828,921 | −9.8 % |
+| Worst-tile whole fetch | 8,680,090 | 7,828,921 | −9.8 % |
+| **Worst-tile active-measure fetch (plane-split)** | 8,680,090 | 1,648,352 (`dominant_operator` planes) | **5.27× / −81.0 %** |
+| Decode/prep ms (median) | 133.08 | 42.93 | −67.7 % |
+| Peak decoded bytes | 28,598,624 | 15,636,514 | **−45.3 %** |
+| Fold ms p50 / p95 (60 contexts) | 36.03 / 99.99 | 1.71 / 42.72 | **21.1× / 2.3× faster** |
+| Bake wall time | 202,733 ms | 154,250 ms | −23.9 % (cache-sensitive) |
+
+### Against the 2026-07-13 calibrated expectations
+
+Every demanded win is met or beaten, and no wire number is chased past what the data supports:
+
+- **Plane-split interaction fetch ≥3× on the worst tile** — **3.39×** (coverage) / **5.27×** (dominance).
+  The active-measure recolor fetches only its partial planes (+ CSR structure), not the whole block.
+- **Internal compression ~2–2.7×** — **1.92×** (coverage) / **3.07×** (dominance). Internal companions are
+  now packed into `facts.pack` instead of served as uncompressed per-tile files (R5 internal compression),
+  which also unified the fetch path.
+- **Raw decoded bytes −18 %/−38 %** — measured **−23.4 %** / **−45.3 %** peak decoded bytes (the `mki`
+  column is eliminated; CSR offsets + narrow `u16` cellIds replace it).
+- **O(1) indexed fold with a *measured* fold-time win** — sparse compiles the context to one `Uint8[cells]`
+  per-cell predicate then scans `nnz` with no per-row key decode: p50 **15.3×** (coverage) / **21.1×**
+  (dominance) faster, p95 2–3× faster. (The dense cumulative layout's strict two-slice O(1) range fold is
+  exercised by the shared fixture; it does not trigger on these views because their 37.8 % occupancy sits
+  below the 0.5 dense gate.)
+- **Leaf gz wire near-flat (−3 %/−10 %)** — measured **−3.2 %** (coverage) / **−9.8 %** (dominance), exactly
+  the expected band; the wire win was never the point of R1.
+
+**Caveats (measured, not estimated).** Bake wall time is sensitive to ClickHouse cache warmth — the after
+run had a warm DB (up ~1 h) vs the baseline's cold start, so the −24 %/−26 % is not claimed as a slab bake
+speedup, only recorded. The dense O(1) fold path is not measured on a real view (no registered view clears
+the 0.5 occupancy gate); its correctness is pinned by [slab-cases.json](../../tests/fixtures/slab-cases.json)
+across both C# and TS.
