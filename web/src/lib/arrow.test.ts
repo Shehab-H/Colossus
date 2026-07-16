@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gzipSync } from 'node:zlib';
 import { Table, makeVector, tableToIPC } from 'apache-arrow';
-import { fetchArrowBlock, inflateBlock } from './arrow';
+import { fetchArrowBlock, fetchSlabPlanes, inflateBlock } from './arrow';
 import { packBlock } from './tileData';
 import type { CompanionPack } from './manifest';
 
@@ -59,6 +59,64 @@ describe('fetchArrowBlock', () => {
   it('keeps the per-file error shape on a missing archive (fold marks the tile, no retry loop)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 404 })));
     await expect(fetchArrowBlock('http://x/facts.pack?tile=3/1/1', 0, 10, 'gzip')).rejects.toThrow(/^tile 404 /);
+  });
+});
+
+describe('fetchSlabPlanes cache key', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Three contiguous gzip members (@idx, sum, swp) laid out like a slab tile in facts.pack.
+  const slab = () => {
+    const idx = gzipSync(new Uint8Array([1, 1, 1]));
+    const sum = gzipSync(new Uint8Array([2, 2, 2, 2, 2]));
+    const swp = gzipSync(new Uint8Array([3, 3, 3, 3, 3, 3, 3]));
+    const archive = new Uint8Array(idx.length + sum.length + swp.length);
+    archive.set(idx, 0);
+    archive.set(sum, idx.length);
+    archive.set(swp, idx.length + sum.length);
+    const dir: Record<string, [number, number]> = {
+      '@idx': [0, idx.length],
+      sum: [idx.length, sum.length],
+      swp: [idx.length + sum.length, swp.length],
+    };
+    return { archive, dir };
+  };
+
+  const captureFetch = (archive: Uint8Array) => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown, init?: RequestInit) => {
+        urls.push(String(url));
+        const m = /^bytes=(\d+)-(\d+)$/.exec(new Headers(init?.headers).get('Range') ?? '');
+        if (!m) throw new Error('expected a Range header');
+        return new Response(slice(archive, Number(m[1]), Number(m[2]) - Number(m[1]) + 1), { status: 206 });
+      }),
+    );
+    return urls;
+  };
+
+  it('keys each run by offset AND length, so a subset and a superset run at the same offset never alias', async () => {
+    const { archive, dir } = slab();
+    const base = 'http://x/view/v1/facts.pack?tile=3/1/1';
+
+    // The colour measure: @idx + sum coalesce into one run at offset 0.
+    const subUrls = captureFetch(archive);
+    const sub = await fetchSlabPlanes(base, 'gzip', dir, ['@idx', 'sum']);
+    expect(Object.keys(sub).sort()).toEqual(['@idx', 'sum']);
+    const subLen = dir['@idx'][1] + dir['sum'][1];
+    expect(subUrls).toEqual([`${base}&r=0-${subLen}`]);
+    vi.unstubAllGlobals();
+
+    // Inspect on the same tile with no resident planes: @idx + sum + swp — one run, same offset 0, longer.
+    const allUrls = captureFetch(archive);
+    const all = await fetchSlabPlanes(base, 'gzip', dir, ['@idx', 'sum', 'swp']);
+    expect(Object.keys(all).sort()).toEqual(['@idx', 'sum', 'swp']);
+    const allLen = subLen + dir['swp'][1];
+    expect(allUrls).toEqual([`${base}&r=0-${allLen}`]);
+
+    // Same start offset, different length ⇒ different cache keys (the correctness property).
+    expect(subUrls[0]).not.toEqual(allUrls[0]);
   });
 });
 

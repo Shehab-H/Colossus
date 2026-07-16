@@ -1,7 +1,7 @@
 // Colossus tile cache — serves immutable, versioned tiles cache-first from the Cache API, so reloads and
 // returning sessions render without the network even after the HTTP cache evicts. Only versioned tile
-// paths (`.../<viewId>/<version>/….arrow`) and companion pack blocks (`…/facts.pack?tile=z/x/y`, ranged)
-// are cached; latest.json, manifests, and the API pass through.
+// paths (`.../<viewId>/<version>/….arrow`) and companion pack blocks (`…/facts.pack?tile=z/x/y&r=<off>-<len>`,
+// ranged) are cached; latest.json, manifests, and the API pass through.
 // Version rotation is the GC: on manifest activation the client posts {viewId, version}, and caches for
 // the view's other versions are dropped. Registered for production builds only (see swClient.ts). Plain
 // JS, no bundler, no dependencies — keep it small.
@@ -28,8 +28,9 @@ self.addEventListener('message', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
-  // A leaf companion block ranged out of the pack archive: the ?tile= query makes the URL — and so
-  // the cache key — the tile, never the byte range.
+  // A companion plane run ranged out of the pack archive. The cache key is the full URL: `?tile=z/x/y`
+  // scopes it to the tile and `&r=<off>-<len>` (see fetchSlabPlanes) to the exact byte range, so each
+  // plane run — the whole tile, one measure's planes, or a delta on a measure switch — is its own entry.
   const pm = url.pathname.match(PACK_RE);
   if (pm && url.searchParams.has('tile') && e.request.headers.has('range')) {
     e.respondWith(cachedBlock(cacheName(pm[1], pm[2]), e.request));

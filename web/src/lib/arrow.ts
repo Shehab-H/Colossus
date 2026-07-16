@@ -54,8 +54,10 @@ const inflate = (block: ArrayBuffer, codec: CompressionFormat): Promise<ArrayBuf
 /** Fetch a slab tile's requested planes out of the pack (companion-scale R1/R5 plane split). The wanted
  *  plane ranges are coalesced into contiguous runs — a fold that needs only some planes ranges only those
  *  bytes; a fold that needs them all ranges the whole tile region in one request. Each run is one HTTP
- *  Range (the `&r=` query makes it a distinct service-worker cache key); each gzip block within it inflates
- *  independently. Returns `planeName → decompressed Arrow IPC bytes`. */
+ *  Range keyed by `&r=<off>-<len>`: that offset+length pair is the distinct service-worker cache entry, and
+ *  it must carry the length — a subset run and a superset run can start at the same offset (a tile first
+ *  fetched under different colour measures), so offset alone would alias them to one cached body. Each gzip
+ *  block within a run inflates independently. Returns `planeName → decompressed Arrow IPC bytes`. */
 export async function fetchSlabPlanes(
   baseUrl: string,
   codec: CompressionFormat,
@@ -80,7 +82,7 @@ export async function fetchSlabPlanes(
   const out: Record<string, ArrayBuffer> = {};
   await Promise.all(
     runs.map(async (run) => {
-      const url = `${baseUrl}&r=${run.off}`;
+      const url = `${baseUrl}&r=${run.off}-${run.len}`;
       const res = await fetch(url, { signal, headers: { Range: `bytes=${run.off}-${run.off + run.len - 1}` } });
       if (!res.ok) throw new Error(`companion ${res.status} ${url}`);
       const body = await res.arrayBuffer();
