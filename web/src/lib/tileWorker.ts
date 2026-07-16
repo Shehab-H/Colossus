@@ -3,8 +3,7 @@
 // and every column is (or rides in) a typed array, so results transfer back zero-copy — the main thread
 // never deserializes row-wise strings. A cancel message aborts the fetch; a tile already past fetch is
 // decoded and kept (the bytes are paid for, and it may be wanted again on zoom-back).
-import { type CompanionGrain, loadCompanion, loadTile, type PackBlock, type TileData } from './tileData';
-import type { CompanionData } from './measures';
+import { type Companion, type CompanionFetch, loadCompanion, loadTile, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
 
@@ -17,12 +16,12 @@ interface LoadRequest {
   tileFormat: number;
 }
 
-/** Fetch + decode a fact companion off the main thread — a low-zoom companion runs to millions of
- *  rows, and its typed columns transfer back zero-copy. `pack` (a packed leaf's block) routes the
- *  fetch to a range read of the archive; null keeps the per-file .facts.arrow fetch. */
+/** Fetch + decode a fact companion off the main thread — a low-zoom companion runs to millions of rows,
+ *  and its typed columns/planes transfer back zero-copy. The fetch spec routes a slab tile to its plane
+ *  ranges (R1/R5) or a row-form tile to its block/per-file companion. */
 interface CompanionRequest {
   id: number;
-  companion: { viewId: string; version: string; key: string; grain: CompanionGrain[]; pack: PackBlock | null };
+  companion: CompanionFetch;
 }
 
 interface CancelRequest {
@@ -61,13 +60,22 @@ function transferable(tile: TileData): Transferable[] {
   return [...buffers];
 }
 
-// The companion's typed columns, deduplicated to their backing buffers.
-function companionTransferable(c: CompanionData): Transferable[] {
+// The companion's typed columns/planes, deduplicated to their backing buffers (slab planes decoded from
+// one Arrow block share a buffer; the Set collapses them so each transfers once).
+function companionTransferable(c: Companion): Transferable[] {
   const buffers = new Set<ArrayBuffer>();
-  buffers.add(c.mki.buffer as ArrayBuffer);
-  for (const d of Object.values(c.dim)) buffers.add(d.codes.buffer as ArrayBuffer);
-  for (const t of Object.values(c.temporalDays)) buffers.add(t.buffer as ArrayBuffer);
-  for (const p of Object.values(c.partial)) buffers.add(p.buffer as ArrayBuffer);
+  if (c.kind === 'row') {
+    const d = c.data;
+    buffers.add(d.mki.buffer as ArrayBuffer);
+    for (const dim of Object.values(d.dim)) buffers.add(dim.codes.buffer as ArrayBuffer);
+    for (const t of Object.values(d.temporalDays)) buffers.add(t.buffer as ArrayBuffer);
+    for (const p of Object.values(d.partial)) buffers.add(p.buffer as ArrayBuffer);
+  } else {
+    const d = c.data;
+    if (d.offsets) buffers.add(d.offsets.buffer as ArrayBuffer);
+    if (d.cellIds) buffers.add(d.cellIds.buffer as ArrayBuffer);
+    for (const p of Object.values(d.planes)) buffers.add(p.buffer as ArrayBuffer);
+  }
   return [...buffers];
 }
 
@@ -83,8 +91,7 @@ ctx.onmessage = async (e) => {
   inflight.set(id, ac);
   try {
     if ('companion' in e.data) {
-      const { viewId, version, key, grain, pack } = e.data.companion;
-      const companion = await loadCompanion(viewId, version, key, grain, pack, ac.signal);
+      const companion = await loadCompanion(e.data.companion, ac.signal);
       ctx.postMessage({ id, companion }, companionTransferable(companion));
     } else {
       const { view, version, key, slots, tileFormat } = e.data;

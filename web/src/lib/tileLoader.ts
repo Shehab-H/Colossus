@@ -1,12 +1,11 @@
-import { type CompanionGrain, loadCompanion, loadTile, type PackBlock, type TileData } from './tileData';
-import type { CompanionData } from './measures';
+import { type Companion, type CompanionFetch, loadCompanion, loadTile, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
 
 interface LoadResponse {
   id: number;
   tile?: TileData;
-  companion?: CompanionData;
+  companion?: Companion;
   error?: string;
   aborted?: boolean;
 }
@@ -88,23 +87,17 @@ class TileLoader {
   }
 
   /** Fetch + decode a tile's fact companion on the worker pool (main-thread fallback when workers are
-   *  unavailable). The typed columns transfer back — the main thread never parses companion Arrow.
-   *  `pack` is the tile's block in the leaf companion archive, null for the per-file layout. */
-  loadCompanion(
-    viewId: string,
-    version: string,
-    key: string,
-    grain: CompanionGrain[],
-    pack: PackBlock | null,
-  ): Promise<CompanionData> {
+   *  unavailable). The typed columns/planes transfer back — the main thread never parses companion Arrow.
+   *  `spec` routes a slab tile to its plane ranges (R1/R5) or a row-form tile to its block/per-file file. */
+  loadCompanion(spec: CompanionFetch): Promise<Companion> {
     this.ensure();
-    if (!this.workers.length) return loadCompanion(viewId, version, key, grain, pack);
+    if (!this.workers.length) return loadCompanion(spec);
     const id = this.nextId++;
     const worker = this.workers[this.rr++ % this.workers.length];
     return new Promise<LoadResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, companion: { viewId, version, key, grain, pack } });
-    }).then((r) => r.companion as CompanionData);
+      worker.postMessage({ id, companion: spec });
+    }).then((r) => r.companion as Companion);
   }
 }
 

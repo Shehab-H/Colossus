@@ -18,14 +18,14 @@ import { buildFoldContext, type CompanionData, foldTile, type MeasureExpr, parse
 
 const TILES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tiles');
 
-interface Leaf {
+interface Tile {
   key: string;
   offset: number;
   length: number;
+  isLeaf: boolean;
 }
 
-// Present iff the leaf pack carries per-plane byte ranges (R1 slab + R5 plane split).
-const isSlab = (m: Manifest): boolean => (m.companionPack as { format?: string } | undefined)?.format === 'slab';
+const isSlab = (m: Manifest): boolean => !!m.companionSlab;
 
 function loadManifest(viewId: string): { manifest: Manifest; version: string; dir: string } {
   const latest = JSON.parse(readFileSync(join(TILES, viewId, 'latest.json'), 'utf8')) as { version: string };
@@ -34,17 +34,25 @@ function loadManifest(viewId: string): { manifest: Manifest; version: string; di
   return { manifest, version: latest.version, dir };
 }
 
-const leaves = (m: Manifest): Leaf[] => {
+const tilesOf = (m: Manifest): Tile[] => {
   const e = m.companionPack?.entries ?? {};
-  return Object.entries(e).map(([key, [offset, length]]) => ({ key, offset, length }));
+  const leaf = new Set(m.tiles.filter((t) => t.isLeaf).map((t) => `${t.z}/${t.x}/${t.y}`));
+  return Object.entries(e).map(([key, [offset, length]]) => ({ key, offset, length, isLeaf: leaf.has(key) }));
 };
 
-/** Sum of decompressed (raw Arrow) bytes across every leaf block — bytes at rest before pack gzip. */
-function rawLeafBytes(pack: Buffer, ls: Leaf[]): number {
-  let raw = 0;
-  for (const l of ls) raw += gunzipSync(pack.subarray(l.offset, l.offset + l.length)).byteLength;
-  return raw;
+/** Decompressed (raw Arrow) bytes of one tile's companion: a slab tile sums its plane blocks (each an
+ *  independent gzip member), a row-form tile inflates its single block. */
+function rawBytes(pack: Buffer, m: Manifest, t: Tile): number {
+  const dir = m.companionPack?.planeEntries?.[t.key];
+  if (dir) {
+    let raw = 0;
+    for (const [off, len] of Object.values(dir)) raw += gunzipSync(pack.subarray(off, off + len)).byteLength;
+    return raw;
+  }
+  return gunzipSync(pack.subarray(t.offset, t.offset + t.length)).byteLength;
 }
+
+const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
 
 /** Decoded (in-memory) byte footprint of a row-form companion — the typed arrays the fold reads. */
 function decodedBytes(c: CompanionData): number {
@@ -113,7 +121,9 @@ function colorMeasureName(m: Manifest): string | undefined {
 async function bench(viewId: string) {
   const { manifest, version, dir } = loadManifest(viewId);
   const pack = readFileSync(join(dir, manifest.companionPack!.file));
-  const ls = leaves(manifest);
+  const tiles = tilesOf(manifest);
+  const ls = tiles.filter((t) => t.isLeaf);
+  const internal = tiles.filter((t) => !t.isLeaf);
   const grain = companionGrain(manifest);
   const measures = measuresOf(manifest);
   const domains = argmaxDomains(manifest);
@@ -121,19 +131,28 @@ async function bench(viewId: string) {
   const slab = isSlab(manifest);
   const slabLib = slab ? await import('../src/lib/slab') : null;
 
-  const packedTotal = ls.reduce((a, l) => a + l.length, 0);
-  const rawTotal = rawLeafBytes(pack, ls);
+  const leafPackedTotal = sum(ls.map((l) => l.length));
+  const leafRawTotal = sum(ls.map((l) => rawBytes(pack, manifest, l)));
+  const internalPackedTotal = sum(internal.map((l) => l.length));
+  const internalRawTotal = sum(internal.map((l) => rawBytes(pack, manifest, l)));
   const worst = ls.reduce((a, b) => (b.length > a.length ? b : a));
-  const worstRaw = gunzipSync(pack.subarray(worst.offset, worst.offset + worst.length)).byteLength;
+  const worstRaw = rawBytes(pack, manifest, worst);
 
   // decode: gunzip + Arrow parse + decode into typed arrays. Returns the decoded companion (row or slab)
-  // and its in-memory byte footprint.
+  // and its in-memory byte footprint. The slab decodes every plane (apples-to-apples with the row form
+  // decoding every column).
   const decodeOne = (): { c: unknown; decoded: number } => {
-    const raw = gunzipSync(pack.subarray(worst.offset, worst.offset + worst.length));
     if (slabLib) {
-      const s = slabLib.decodeSlab(raw, manifest);
+      const planeDir = manifest.companionPack!.planeEntries![worst.key];
+      const blocks: Record<string, ArrayBuffer> = {};
+      for (const [name, [off, len]] of Object.entries(planeDir)) {
+        const g = gunzipSync(pack.subarray(off, off + len));
+        blocks[name] = g.buffer.slice(g.byteOffset, g.byteOffset + g.byteLength);
+      }
+      const s = slabLib.decodeSlab(blocks, manifest.companionSlab!);
       return { c: s, decoded: s.decodedBytes };
     }
+    const raw = gunzipSync(pack.subarray(worst.offset, worst.offset + worst.length));
     const c = decodeCompanion(tableFromIPC(raw), grain);
     return { c, decoded: decodedBytes(c) };
   };
@@ -175,10 +194,13 @@ async function bench(viewId: string) {
   return {
     view: viewId,
     version,
-    format: slab ? 'slab' : 'row',
+    format: slab ? `slab/${manifest.companionSlab!.layout}` : 'row',
     leaves: ls.length,
-    leafPackedTotal: packedTotal,
-    leafRawTotal: rawTotal,
+    internalTiles: internal.length,
+    leafPackedTotal,
+    leafRawTotal,
+    internalPackedTotal,
+    internalRawTotal,
     worstTile: worst.key,
     worstPacked: worst.length,
     worstRaw,

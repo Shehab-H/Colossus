@@ -1,9 +1,10 @@
 import { Type, type Table, type Vector } from 'apache-arrow';
-import type { CompanionPack, Manifest, ViewConfig } from './manifest';
+import type { CompanionPack, CompanionSlab, Manifest, ViewConfig } from './manifest';
 import { factsUrl, packBlockUrl, tileUrl } from './manifest';
-import { fetchArrowBlock, fetchArrowTable } from './arrow';
+import { fetchArrowBlock, fetchArrowTable, fetchSlabPlanes } from './arrow';
 import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
 import type { CompanionData, CompanionDim } from './measures';
+import { decodeSlab, type SlabData } from './slab';
 import { buildFilterValues, canonicalCodeLut, dayNumber, MISSING_CODE, type FilterSlots } from './gpuFilter';
 import { TileColumns } from './schema';
 
@@ -148,21 +149,27 @@ export function decodeCompanion(table: Table, grain: CompanionGrain[]): Companio
   return { rowCount: n, mki, dim, temporalDays, partial };
 }
 
-/** Fetch + decode a tile's fact companion: a packed leaf ranges its block out of the archive (R2);
- *  everything else — internal levels, older bakes — fetches the per-tile file. */
-export async function loadCompanion(
-  viewId: string,
-  version: string,
-  key: string,
-  grain: CompanionGrain[],
-  pack?: PackBlock | null,
-  signal?: AbortSignal,
-): Promise<CompanionData> {
-  const [z, x, y] = key.split('/').map(Number);
-  const { table } = pack
-    ? await fetchArrowBlock(pack.url, pack.offset, pack.length, pack.codec, signal)
-    : await fetchArrowTable(factsUrl(viewId, version, z, x, y), signal);
-  return decodeCompanion(table, grain);
+/** How to fetch one tile's companion, resolved on the main thread and shipped to the worker: a slab tile
+ *  ranges its active planes out of the pack (R1/R5); a row-form tile ranges its block (R2) or fetches the
+ *  per-file companion (internal levels, older bakes). */
+export type CompanionFetch =
+  | { kind: 'row'; viewId: string; version: string; key: string; grain: CompanionGrain[]; pack: PackBlock | null }
+  | { kind: 'slab'; baseUrl: string; codec: CompressionFormat; slab: CompanionSlab; dir: Record<string, [number, number]>; want: string[] };
+
+/** A decoded companion, tagged by format so the fold picks foldTile (row) or foldSlab (slab). */
+export type Companion = { kind: 'row'; data: CompanionData } | { kind: 'slab'; data: SlabData };
+
+/** Fetch + decode a tile's fact companion into the shape its fold reads. */
+export async function loadCompanion(spec: CompanionFetch, signal?: AbortSignal): Promise<Companion> {
+  if (spec.kind === 'slab') {
+    const blocks = await fetchSlabPlanes(spec.baseUrl, spec.codec, spec.dir, spec.want, signal);
+    return { kind: 'slab', data: decodeSlab(blocks, spec.slab) };
+  }
+  const [z, x, y] = spec.key.split('/').map(Number);
+  const { table } = spec.pack
+    ? await fetchArrowBlock(spec.pack.url, spec.pack.offset, spec.pack.length, spec.pack.codec, signal)
+    : await fetchArrowTable(factsUrl(spec.viewId, spec.version, z, x, y), signal);
+  return { kind: 'row', data: decodeCompanion(table, spec.grain) };
 }
 
 /** Single-chunk non-null Int32 column viewed in place, else copied. */

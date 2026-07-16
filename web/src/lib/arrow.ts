@@ -47,3 +47,51 @@ export async function inflateBlock(
   const inflated = new Response(block).body!.pipeThrough(new DecompressionStream(codec));
   return new Response(inflated).arrayBuffer();
 }
+
+const inflate = (block: ArrayBuffer, codec: CompressionFormat): Promise<ArrayBuffer> =>
+  new Response(new Response(block).body!.pipeThrough(new DecompressionStream(codec))).arrayBuffer();
+
+/** Fetch a slab tile's requested planes out of the pack (companion-scale R1/R5 plane split). The wanted
+ *  plane ranges are coalesced into contiguous runs — a fold that needs only some planes ranges only those
+ *  bytes; a fold that needs them all ranges the whole tile region in one request. Each run is one HTTP
+ *  Range (the `&r=` query makes it a distinct service-worker cache key); each gzip block within it inflates
+ *  independently. Returns `planeName → decompressed Arrow IPC bytes`. */
+export async function fetchSlabPlanes(
+  baseUrl: string,
+  codec: CompressionFormat,
+  dir: Record<string, [number, number]>,
+  want: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, ArrayBuffer>> {
+  const members = want
+    .filter((p) => dir[p])
+    .map((p) => ({ p, off: dir[p][0], len: dir[p][1] }))
+    .sort((a, b) => a.off - b.off);
+
+  const runs: { off: number; len: number; members: typeof members }[] = [];
+  for (const m of members) {
+    const last = runs.at(-1);
+    if (last && m.off === last.off + last.len) {
+      last.len += m.len;
+      last.members.push(m);
+    } else runs.push({ off: m.off, len: m.len, members: [m] });
+  }
+
+  const out: Record<string, ArrayBuffer> = {};
+  await Promise.all(
+    runs.map(async (run) => {
+      const url = `${baseUrl}&r=${run.off}`;
+      const res = await fetch(url, { signal, headers: { Range: `bytes=${run.off}-${run.off + run.len - 1}` } });
+      if (!res.ok) throw new Error(`companion ${res.status} ${url}`);
+      const body = await res.arrayBuffer();
+      const whole = body.byteLength !== run.len; // server ignored Range → whole archive
+      await Promise.all(
+        run.members.map(async (m) => {
+          const start = whole ? m.off : m.off - run.off;
+          out[m.p] = await inflate(body.slice(start, start + m.len), codec);
+        }),
+      );
+    }),
+  );
+  return out;
+}

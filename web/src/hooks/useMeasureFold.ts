@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Manifest } from '../lib/manifest';
+import { packBlockUrl } from '../lib/manifest';
 import { isGroupRegime } from '../lib/channels';
-import { buildFoldContext, type CompanionData, foldTile, type MeasureExpr, parseMeasure } from '../lib/measures';
-import { companionGrain, packBlock } from '../lib/tileData';
+import { buildFoldContext, foldTile, type MeasureExpr, parseMeasure } from '../lib/measures';
+import { companionGrain, type Companion, type CompanionFetch, packBlock } from '../lib/tileData';
+import { foldSlab, isSlab, slabPlanesForMeasures } from '../lib/slab';
 import { tileLoader } from '../lib/tileLoader';
 import type { RenderedTile } from './useTiles';
 
@@ -27,7 +29,7 @@ export const foldActive = (manifest: Manifest | null, context: Record<string, st
 
 // Companions cached per (version, tile); fold results per (version, tile, context). Bounded below.
 const FOLD_CACHE_CAP = 256;
-type CompanionEntry = CompanionData | 'missing';
+type CompanionEntry = Companion | 'missing';
 
 /** Per-tile folded measure columns under the active perFact context, or null when there is no context
  *  (render the baked default-context values — zero extra work). Companions are fetched and decoded on
@@ -76,6 +78,20 @@ export function useMeasureFold(
     const version = manifest.version;
     const grain = companionGrain(manifest);
     const ckey = (key: string) => `${version}|${key}`;
+    // Slab bakes fetch each tile's active planes (all folded measures) out of the pack (R1/R5); row-form
+    // bakes range the tile's block or fetch the per-file companion.
+    const slabActive = isSlab(manifest);
+    const want = slabActive ? slabPlanesForMeasures(manifest, measures.map((m) => m.name)) : [];
+    const companionFetch = (key: string): CompanionFetch | null => {
+      if (slabActive) {
+        const pack = manifest.companionPack;
+        const dir = pack?.planeEntries?.[key];
+        if (!pack || !dir || !manifest.companionSlab) return null;
+        return { kind: 'slab', baseUrl: packBlockUrl(manifest.view.id, version, pack.file, key), codec: pack.codec, slab: manifest.companionSlab, dir, want };
+      }
+      const pack = packBlock(manifest.companionPack, manifest.view.id, version, key);
+      return { kind: 'row', viewId: manifest.view.id, version, key, grain, pack };
+    };
     (async () => {
       // Fetch + decode the missing companions in parallel on the worker pool. Only a definitive miss
       // (404, or a companion the fold can't use — older bake) is cached as 'missing': that tile keeps
@@ -87,14 +103,17 @@ export function useMeasureFold(
         rendered
           .filter((t) => !companions.current.has(ckey(t.key)))
           .map(async (t) => {
+            const spec = companionFetch(t.key);
+            if (!spec) {
+              companions.current.set(ckey(t.key), 'missing');
+              return;
+            }
             try {
-              // Packed leaf → range-read its block from the archive; otherwise the per-file fetch.
-              const pack = packBlock(manifest.companionPack, manifest.view.id, version, t.key);
-              const c = await tileLoader.loadCompanion(manifest.view.id, version, t.key, grain, pack);
+              const c = await tileLoader.loadCompanion(spec);
               companions.current.set(ckey(t.key), c);
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              if (/^tile 404 /.test(msg) || msg.includes('no mki column')) companions.current.set(ckey(t.key), 'missing');
+              if (/ 404 /.test(msg) || msg.includes('no mki column')) companions.current.set(ckey(t.key), 'missing');
               else transient = true;
             }
           }),
@@ -113,7 +132,10 @@ export function useMeasureFold(
             if (comp === 'missing') missing.add(t.key);
             continue;
           }
-          cols = foldTile(comp, measures, ctx, t.data.count, domains);
+          cols =
+            comp.kind === 'slab'
+              ? foldSlab(comp.data, measures, ctx, t.data.count, domains)
+              : foldTile(comp.data, measures, ctx, t.data.count, domains);
           folds.current.set(fkey, cols);
         }
         byTile.set(t.key, cols);
