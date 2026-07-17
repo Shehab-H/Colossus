@@ -196,14 +196,23 @@ export function tileLayoutOf(slab: CompanionSlab, tileKey: string): 'sparse' | '
   return slab.tileLayouts?.[tileKey] ?? slab.layout;
 }
 
-/** The leaf companion archive and its directory: `file` is relative to the version directory, `codec`
- *  is a browser-native DecompressionStream format (compression lives inside the archive — a
- *  Content-Encoding wouldn't compose with range requests), and `entries` maps a tile key `z/x/y` to
- *  its `[offset, length]` byte range. */
+/** Companion pack block codec. "gzip" decodes with the browser-native `DecompressionStream`; "zstd" (a slab
+ *  bake, Work Item C) with a WASM decoder + the pack's trained dictionary (compression lives inside the
+ *  archive — a `Content-Encoding` wouldn't compose with range requests). */
+export type PackCodec = 'gzip' | 'zstd';
+
+/** The leaf companion archive and its directory: `file` is relative to the version directory, and `entries`
+ *  maps a tile key `z/x/y` to its `[offset, length]` byte range. */
 export interface CompanionPack {
   file: string;
-  codec: CompressionFormat;
+  codec: PackCodec;
   entries: Record<string, [number, number]>;
+  /** Trained shared dictionary path (relative to the version dir), for the "zstd" codec: fetched once per
+   *  (view, version) and loaded into the client's zstd decoder. Absent for gzip, or a bake too small to train
+   *  one (then zstd blocks decode dictionary-free). */
+  dict?: string;
+  /** SHA-256 (hex) of the dictionary file. */
+  dictHash?: string;
   /** "row" (R2 leaf pack) or "slab" (R1). Absent ⇒ "row" (older bakes). */
   format?: 'row' | 'slab';
   /** Slab only: `tileKey → (planeName → [offset, length])`. Plane `"@idx"` is the CSR structure block;
@@ -234,6 +243,12 @@ export function factsUrl(viewId: string, version: string, z: number, x: number, 
  *  servers ignore the query; it makes the URL — and so the service worker's cache key — per-tile. */
 export function packBlockUrl(viewId: string, version: string, file: string, key: string): string {
   return `${TILES_BASE}/${viewId}/${version}/${file}?tile=${key}`;
+}
+
+/** The trained zstd dictionary URL for a (view, version) pack, or undefined when the bake trained none
+ *  (gzip, or too few blocks). The client fetches it once and loads it into the worker's zstd decoder. */
+export function packDictUrl(viewId: string, version: string, pack: CompanionPack | undefined): string | undefined {
+  return pack?.dict ? `${TILES_BASE}/${viewId}/${version}/${pack.dict}` : undefined;
 }
 
 /** Resolve latest.json → manifest.json for a view. */

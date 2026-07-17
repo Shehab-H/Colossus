@@ -1,5 +1,5 @@
 import { Type, type Table, type Vector } from 'apache-arrow';
-import type { CompanionPack, CompanionSlab, Manifest, ViewConfig } from './manifest';
+import type { CompanionPack, CompanionSlab, Manifest, PackCodec, ViewConfig } from './manifest';
 import { factsUrl, packBlockUrl, tileUrl } from './manifest';
 import { fetchArrowBlock, fetchArrowTable, fetchSlabCellRows, fetchSlabPlanes } from './arrow';
 import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
@@ -103,7 +103,7 @@ export interface PackBlock {
   url: string;
   offset: number;
   length: number;
-  codec: CompressionFormat;
+  codec: PackCodec;
 }
 
 /** The pack block for a tile, or null when this tile isn't packed (internal level, older bake, or a
@@ -158,7 +158,9 @@ export type CompanionFetch =
   | {
       kind: 'slab';
       baseUrl: string;
-      codec: CompressionFormat;
+      codec: PackCodec;
+      /** The pack's trained zstd dictionary URL (Work Item C), or undefined (gzip / no dict). */
+      dictUrl?: string;
       slab: CompanionSlab;
       /** The tile's resolved layout (SLAB-FORMAT §3) — decode branches on this, not the view default. */
       layout: 'sparse' | 'dense';
@@ -178,11 +180,11 @@ export async function loadCompanion(spec: CompanionFetch, signal?: AbortSignal):
   if (spec.kind === 'slab') {
     if (spec.slice) {
       // Dense cell-run slice (R5): fetch only the cell rows the context reads, assemble into a partial plane.
-      const fetched = await fetchSlabCellRows(spec.baseUrl, spec.codec, spec.dir, spec.slice.sliceDir, spec.slice.cells, signal);
+      const fetched = await fetchSlabCellRows(spec.baseUrl, spec.codec, spec.dir, spec.slice.sliceDir, spec.slice.cells, signal, spec.dictUrl);
       const data = timedSync('decode.companion', () => assembleDenseSlab(fetched, spec.slab, spec.markCount), (d) => ({ n: d.markCount, bytes: d.decodedBytes }));
       return { kind: 'slab', data };
     }
-    const blocks = await fetchSlabPlanes(spec.baseUrl, spec.codec, spec.dir, spec.want, signal);
+    const blocks = await fetchSlabPlanes(spec.baseUrl, spec.codec, spec.dir, spec.want, signal, spec.dictUrl);
     const data = timedSync('decode.companion', () => decodeSlab(blocks, spec.slab, spec.layout), (d) => ({ n: d.markCount, bytes: d.decodedBytes }));
     return { kind: 'slab', data };
   }

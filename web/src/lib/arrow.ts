@@ -1,5 +1,7 @@
 import { tableFromIPC, type Table } from 'apache-arrow';
+import type { PackCodec } from './manifest';
 import { netMeasure, record, SW_CACHE_HEADER, timedSync } from './perf';
+import { zstdDecompress } from './zstdCodec';
 
 /** A parsed tile plus the one ArrayBuffer it was parsed from. Under tile format 2 the table's column
  *  buffers are typed-array views into `buffer`, so retaining it lets decode take views instead of
@@ -34,8 +36,9 @@ export async function fetchArrowBlock(
   url: string,
   offset: number,
   length: number,
-  codec: CompressionFormat,
+  codec: PackCodec,
   signal?: AbortSignal,
+  dictUrl?: string,
 ): Promise<FetchedArrow> {
   const t0 = performance.now();
   const res = await fetch(url, { signal, headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
@@ -48,7 +51,7 @@ export async function fetchArrowBlock(
     bytes: body.byteLength,
     ...netMeasure(url, body.byteLength, res.headers.get(SW_CACHE_HEADER)),
   });
-  const buffer = await inflateBlock(body, offset, length, codec);
+  const buffer = await inflateBlock(body, offset, length, codec, dictUrl);
   const table = timedSync('decode.ipc', () => tableFromIPC(new Uint8Array(buffer)), (tb) => ({ n: tb.numRows, bytes: buffer.byteLength }));
   return { table, buffer };
 }
@@ -61,17 +64,21 @@ export async function inflateBlock(
   body: ArrayBuffer,
   offset: number,
   length: number,
-  codec: CompressionFormat,
+  codec: PackCodec,
+  dictUrl?: string,
 ): Promise<ArrayBuffer> {
   const block = body.byteLength === length ? body : body.slice(offset, offset + length);
-  return inflate(block, codec);
+  return inflate(block, codec, dictUrl);
 }
 
-const inflate = async (block: ArrayBuffer, codec: CompressionFormat): Promise<ArrayBuffer> => {
+const inflate = async (block: ArrayBuffer, codec: PackCodec, dictUrl?: string): Promise<ArrayBuffer> => {
   const t0 = performance.now();
-  const out = await new Response(
-    new Response(block).body!.pipeThrough(new DecompressionStream(codec)),
-  ).arrayBuffer();
+  // zstd (slab bake, Work Item C) has no browser-native DecompressionStream — decode via the WASM decoder
+  // and the (view, version) dictionary. gzip stays on the native stream (older bakes, row-form packs).
+  const out =
+    codec === 'zstd'
+      ? await zstdDecompress(block, dictUrl)
+      : await new Response(new Response(block).body!.pipeThrough(new DecompressionStream(codec))).arrayBuffer();
   // `bytes` is what the block expands to; the compressed size it came from is net.facts' own `bytes`.
   // No `wire` here — nothing in this stage touches the network, and the field means exactly that.
   record({ stage: 'inflate', ms: performance.now() - t0, t: performance.now(), bytes: out.byteLength });
@@ -87,10 +94,11 @@ const inflate = async (block: ArrayBuffer, codec: CompressionFormat): Promise<Ar
  *  block within a run inflates independently. Returns `planeName → decompressed Arrow IPC bytes`. */
 export async function fetchSlabPlanes(
   baseUrl: string,
-  codec: CompressionFormat,
+  codec: PackCodec,
   dir: Record<string, [number, number]>,
   want: string[],
   signal?: AbortSignal,
+  dictUrl?: string,
 ): Promise<Record<string, ArrayBuffer>> {
   const members = want
     .filter((p) => dir[p])
@@ -129,7 +137,7 @@ export async function fetchSlabPlanes(
       await Promise.all(
         run.members.map(async (m) => {
           const start = whole ? m.off : m.off - run.off;
-          out[m.p] = await inflate(body.slice(start, start + m.len), codec);
+          out[m.p] = await inflate(body.slice(start, start + m.len), codec, dictUrl);
         }),
       );
     }),
@@ -147,11 +155,12 @@ export async function fetchSlabPlanes(
  *  plane, empty when a context needs none of its cells). */
 export async function fetchSlabCellRows(
   baseUrl: string,
-  codec: CompressionFormat,
+  codec: PackCodec,
   dir: Record<string, [number, number]>,
   sliceDir: Record<string, number[]>,
   needs: Record<string, number[]>,
   signal?: AbortSignal,
+  dictUrl?: string,
 ): Promise<Record<string, { cell: number; buf: ArrayBuffer }[]>> {
   const out: Record<string, { cell: number; buf: ArrayBuffer }[]> = {};
   const members: { p: string; cell: number; off: number; len: number }[] = [];
@@ -189,7 +198,7 @@ export async function fetchSlabCellRows(
       await Promise.all(
         run.members.map(async (m) => {
           const start = whole ? m.off : m.off - run.off;
-          out[m.p].push({ cell: m.cell, buf: await inflate(body.slice(start, start + m.len), codec) });
+          out[m.p].push({ cell: m.cell, buf: await inflate(body.slice(start, start + m.len), codec, dictUrl) });
         }),
       );
     }),

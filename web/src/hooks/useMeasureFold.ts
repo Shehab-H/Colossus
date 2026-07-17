@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Manifest } from '../lib/manifest';
-import { packBlockUrl, tileLayoutOf } from '../lib/manifest';
+import { packBlockUrl, packDictUrl, tileLayoutOf } from '../lib/manifest';
 import { isGroupRegime } from '../lib/channels';
 import { buildFoldContext, foldTile, type MeasureExpr, parseMeasure } from '../lib/measures';
 import { companionGrain, type Companion, type CompanionFetch, packBlock } from '../lib/tileData';
@@ -189,6 +189,7 @@ export function useMeasureFold(
       if (!pack || !dir || !manifest.companionSlab) return null;
       const layout = tileLayoutOf(manifest.companionSlab, key);
       const baseUrl = packBlockUrl(manifest.view.id, version, pack.file, key);
+      const dictUrl = packDictUrl(manifest.view.id, version, pack);
       const active = slabPlanesForMeasures(manifest, foldNames, layout);
       const sliceDir = layout === 'dense' ? pack.sliceEntries?.[key] : undefined;
       if (layout === 'dense' && sliceDir) {
@@ -203,13 +204,13 @@ export function useMeasureFold(
           if (missing.length) any = true;
         }
         if (cur && cur !== 'missing' && !any) return 'cached';
-        return { kind: 'slab', baseUrl, codec: pack.codec, slab: manifest.companionSlab, layout, markCount, dir, want: [], slice: { sliceDir, cells: delta } };
+        return { kind: 'slab', baseUrl, codec: pack.codec, dictUrl, slab: manifest.companionSlab, layout, markCount, dir, want: [], slice: { sliceDir, cells: delta } };
       }
       // Sparse (or a dense tile without a slice directory — an older bake): whole-plane split.
       const have = residentPlanes(cur);
       const want = active.filter((p) => !have.has(p));
       if (cur && cur !== 'missing' && want.length === 0) return 'cached';
-      return { kind: 'slab', baseUrl, codec: pack.codec, slab: manifest.companionSlab, layout, markCount, dir, want };
+      return { kind: 'slab', baseUrl, codec: pack.codec, dictUrl, slab: manifest.companionSlab, layout, markCount, dir, want };
     };
     (async () => {
       // Fetch + decode the missing planes/cell-rows in parallel on the worker pool. A dense slab tile fetches
@@ -314,6 +315,7 @@ export function useMeasureFold(
       if (!pack || !dir) return null;
       const layout = tileLayoutOf(m.companionSlab, key);
       const baseUrl = packBlockUrl(m.view.id, m.version, pack.file, key);
+      const dictUrl = packDictUrl(m.view.id, m.version, pack);
       const ctxF = buildFoldContext(m.view, ctxObj);
       const active = slabPlanesForMeasures(m, inspectNames, layout);
       const markCount = cur && cur.kind === 'slab' ? cur.data.markCount : 0;
@@ -333,10 +335,10 @@ export function useMeasureFold(
           delta[p] = missing;
           if (missing.length) any = true;
         }
-        if (any) spec = { kind: 'slab', baseUrl, codec: pack.codec, slab: m.companionSlab, layout, markCount, dir, want: [], slice: { sliceDir, cells: delta } };
+        if (any) spec = { kind: 'slab', baseUrl, codec: pack.codec, dictUrl, slab: m.companionSlab, layout, markCount, dir, want: [], slice: { sliceDir, cells: delta } };
       } else {
         const want = active.filter((p) => !residentPlanes(cur).has(p));
-        if (want.length) spec = { kind: 'slab', baseUrl, codec: pack.codec, slab: m.companionSlab, layout, markCount, dir, want };
+        if (want.length) spec = { kind: 'slab', baseUrl, codec: pack.codec, dictUrl, slab: m.companionSlab, layout, markCount, dir, want };
       }
       if (spec) {
         try {
