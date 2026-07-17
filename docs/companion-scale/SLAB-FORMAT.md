@@ -50,15 +50,38 @@ ordered axes, exactly one is chosen cumulative (§4, recorded per-axis); all ord
 categorical axes. `manifest.companionSlab.axes` lists axes in cell order (fastest last) so the client
 derives identical strides.
 
-## 3. Layout choice (measured, per view, at bake)
+## 3. Layout choice (measured **per leaf tile**, at bake)
 
-Occupancy `= nnz / (Σ_leaves marks · cells)` where `nnz` = total grain cells (facts at grain). Measured at
-bake; recorded in `manifest.companionSlab.layout` and the bake log.
+Occupancy `= nnz / (marks · cells)` where `nnz` = the grain-cell count (facts at grain). The gate is applied
+**per tile** from that tile's own `nnz` and `marks`, not once for the whole view:
 
-- `occupancy < 0.5` → **sparse (CSR)** — the reference views (measured 37.8 %).
+- `occupancy < 0.5` → **sparse (CSR)**.
 - `occupancy ≥ 0.5` → **dense (cell-major, cumulative)**.
 
-The client branches on the recorded layout, never on data shape.
+Skewed spatial density means one view holds tiles of both kinds; the writer chooses each independently and the
+reader/decoder branches per tile. Data-agnostic: it is the same measured gate, applied to the tile.
+
+**Recording the choice.** `manifest.companionSlab.layout` is the **view default** — the layout picked from the
+view's *global* occupancy (`nnz / (Σ_leaves marks · cells)`), and the layout an older client that ignores the
+per-tile field would use for every tile. `manifest.companionSlab.tileLayouts` is an optional map
+`tileKey → "dense"|"sparse"` recording **only the tiles whose own layout differs from the default** (skew makes
+those the minority, so the map is small). A tile's layout is:
+
+```
+layoutOf(tileKey) = companionSlab.tileLayouts?[tileKey] ?? companionSlab.layout
+```
+
+Absent `tileLayouts` (a uniform view, or a bake predating per-tile choice) ⇒ every tile is the default —
+backward compatible. The client, which must know a tile's layout *before* it fetches (sparse fetches the `@idx`
+structure, dense fetches `cnt`; §5), reads this field; the C# reader can instead read it physically — a sparse
+tile carries an `@idx` block, a dense one never does (§5) — and the two always agree.
+
+**cnt is always present.** A dense tile needs a `cnt` plane for both survival (a mark survives a range iff its
+cumulative `cnt` over the range is > 0) and the witness (§7). Because the gate is per tile and tiles are
+streamed, any tile may go dense, so the partial set always includes `cnt` even when no declared measure needs
+it. Sparse tiles carry it too — the witness prefers `Σ cnt` (correct even when a grain cell holds several source
+facts) to `nnz`, and a near-all-ones `cnt` plane compresses to almost nothing. The fold still reads only the
+planes its measures need.
 
 ## 4. Physical layouts
 
@@ -134,10 +157,12 @@ shared `measures.ts` code, unchanged. The two paths differ only in how partials 
 
 ## 7. Witness (verifier)
 
-`Σ cnt == source rows`. When a `cnt` plane exists (a `count`/`avg` measure), the verifier sums it (dense:
-the last ordered bin's cumulative cnt per (cat, mark); sparse: the `cnt` array). When it does not, the
-witness is `Σ nnz` (sparse entry count) / `Σ` occupied cells — identical to today's row-count witness on
-grain-unique sources, which the reference data is. Recorded per view in the verify output.
+`Σ cnt == source rows`. A slab bake always carries a `cnt` plane (§3), so the verifier sums it per tile under
+that tile's layout — dense: the last ordered bin's cumulative cnt per (cat, mark); sparse: the `cnt` array. (A
+row-form bake, or an older slab without `cnt`, falls back to `Σ nnz` / `Σ` occupied cells — identical to the
+row-count witness on grain-unique sources, which the reference data is.) The C# reader resolves the per-tile
+layout from the `@idx` block's presence, so a mixed-layout pack witnesses correctly tile by tile. Recorded per
+view in the verify output.
 
 ## 8. Types (narrow where lossless)
 

@@ -22,13 +22,25 @@ internal sealed class SlabCompanionWriter : IDisposable
     public const string IdxPlane = "@idx";
 
     private readonly SlabPlan _plan;
+    // Test support only: forces every tile's layout instead of the per-tile occupancy gate, so the shared
+    // fixture can pin the dense encoder against a tile whose occupancy would otherwise select sparse. Null in
+    // production (the gate decides per tile).
+    private readonly bool? _layoutOverride;
     private readonly FileStream _pack;
     private readonly Dictionary<string, long[]> _entries = new(StringComparer.Ordinal);
     private readonly Dictionary<string, IReadOnlyDictionary<string, long[]>> _planeEntries = new(StringComparer.Ordinal);
+    // Tiles whose per-tile layout (SLAB-FORMAT §3) differs from the view default (_plan.Dense) — the only
+    // ones the manifest records (CompanionSlab.TileLayouts); the rest fall back to the default.
+    private readonly Dictionary<string, string> _tileLayouts = new(StringComparer.Ordinal);
 
-    public SlabCompanionWriter(string outputDirectory, SlabPlan plan)
+    /// <summary>Per-tile layout overrides discovered while writing, or null when every tile matched the view
+    /// default. The reducer folds this into <see cref="CompanionSlab.TileLayouts"/>.</summary>
+    public IReadOnlyDictionary<string, string>? TileLayouts => _tileLayouts.Count > 0 ? _tileLayouts : null;
+
+    public SlabCompanionWriter(string outputDirectory, SlabPlan plan, bool? layoutOverride = null)
     {
         _plan = plan;
+        _layoutOverride = layoutOverride;
         Directory.CreateDirectory(outputDirectory);
         _pack = File.Create(Path.Combine(outputDirectory, FileName));
     }
@@ -81,11 +93,14 @@ internal sealed class SlabCompanionWriter : IDisposable
         var planes = new Dictionary<string, long[]>(StringComparer.Ordinal);
         long start = _pack.Position;
 
-        if (_plan.Dense) WriteDense(markCount, mkis, cellIds, vals, planes);
+        // The per-leaf-tile gate: this tile's own occupancy, not the view's, picks its layout.
+        bool dense = _layoutOverride ?? _plan.TileDense(cellIds.Count, markCount);
+        if (dense) WriteDense(markCount, mkis, cellIds, vals, planes);
         else WriteSparse(markCount, mkis, cellIds, vals, planes);
 
         _entries[key] = [start, _pack.Position - start];
         _planeEntries[key] = planes;
+        if (dense != _plan.Dense) _tileLayouts[key] = dense ? "dense" : "sparse";
     }
 
     // Sparse CSR: @idx (offsets[markCount+1] + cellIds[nnz]) then one block per partial (values[nnz]).

@@ -21,7 +21,11 @@ public static class SlabCompanionReader
 {
     public static SlabTile Read(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab)
     {
-        bool dense = slab.Layout == "dense";
+        // Per-tile layout (SLAB-FORMAT §3): a sparse tile carries an @idx structure block, a dense one never
+        // does, so the block set names the layout physically — no need to thread the manifest's per-tile
+        // field down here (that field is for the client, which must know layout before it fetches). The two
+        // always agree: the writer emits @idx iff it chose sparse.
+        bool dense = !planes.ContainsKey(SlabCompanionWriter.IdxPlane);
         int[]? offsets = null, cellIds = null;
         if (!dense && planes.TryGetValue(SlabCompanionWriter.IdxPlane, out var idx))
         {

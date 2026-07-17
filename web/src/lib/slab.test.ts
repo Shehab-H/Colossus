@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
-import type { SlabAxis } from './manifest';
+import { type CompanionSlab, type SlabAxis, tileLayoutOf } from './manifest';
 import {
   buildFoldContext,
   type CompanionData,
@@ -15,6 +15,7 @@ import { foldSlab, type SlabData } from './slab';
 // The SAME cross-language fixture the C# SlabFormatTests pins the writer against. Here the TS fold over the
 // fixture's sparse CSR and dense cumulative encodings must reproduce fixture.folds — and agree with the
 // row-form foldTile built from the same facts, so the fixture's hand-computed values are cross-checked.
+interface Fact { mki: number; operator: string; quarter: string; tests: number; download_mbps: number }
 interface Fixture {
   axes: Record<string, { kind: 'categorical' | 'ordered'; domain: string[] }>;
   grainOrder: string[];
@@ -22,11 +23,18 @@ interface Fixture {
   cumulative: string[];
   cellCount: number;
   markCount: number;
-  facts: { mki: number; operator: string; quarter: string; tests: number; download_mbps: number }[];
+  facts: Fact[];
   sparse: { offsets: number[]; cellIds: number[]; planes: Record<string, number[]> };
   dense: { planes: Record<string, (number | null)[]> };
   measures: { name: string; expr: string }[];
   folds: { context: Record<string, string>; expect: Record<string, (number | null)[]> }[];
+  mixedPack: {
+    gate: number;
+    viewDefaultLayout: 'sparse' | 'dense';
+    tileLayouts: Record<string, 'sparse' | 'dense'>;
+    tiles: { key: string; markCount: number; expectLayout: 'sparse' | 'dense'; facts: Fact[]; dense?: { planes: Record<string, (number | null)[]> } }[];
+    folds: { context: Record<string, string>; expect: Record<string, Record<string, (number | null)[]>> }[];
+  };
 }
 
 const fx: Fixture = JSON.parse(readFileSync(new URL('../../../tests/fixtures/slab-cases.json', import.meta.url), 'utf8'));
@@ -128,6 +136,56 @@ describe('slab fold (shared fixture)', () => {
       // Cross-check the fixture's own expected values against the frozen row-form fold.
       const row = foldTile(rowData, measures, ctx, fx.markCount, domains);
       assertFold(row, c.expect, `row ${JSON.stringify(c.context)}`);
+    }
+  });
+
+  // Per-tile layout (SLAB-FORMAT §3): a mixed pack has a sparse tile and a dense tile; `tileLayoutOf`
+  // resolves each from the recorded overrides, decode/fold branch per tile, and every fold is byte-identical
+  // to the row-form oracle built from the same facts. Tile 0/0/0 reuses the top-level sparse encoding.
+  test('mixed-layout pack: per-tile layout resolves, and each tile folds identically to its row form', () => {
+    const mp = fx.mixedPack;
+    const slabMeta: CompanionSlab = {
+      layout: mp.viewDefaultLayout,
+      cells: fx.cellCount,
+      occupancy: 0,
+      axes,
+      partials: fx.partials.map((p) => ({ name: p, type: p === 'cnt' ? 'i32' : 'f32' })),
+      tileLayouts: mp.tileLayouts,
+    };
+    const tileB = mp.tiles.find((t) => t.key === '0/0/1')!;
+    const denseB: SlabData = {
+      layout: 'dense',
+      markCount: tileB.markCount,
+      cells: fx.cellCount,
+      axes,
+      strides,
+      planes: Object.fromEntries(fx.partials.map((p) => [p, f32(tileB.dense!.planes[p])])),
+      decodedBytes: 0,
+    };
+    const rowOf = (facts: typeof tileB.facts): CompanionData => ({
+      rowCount: facts.length,
+      mki: Int32Array.from(facts, (f) => f.mki),
+      dim: { operator: { dict: fx.axes.operator.domain, codes: Uint8Array.from(facts, (f) => fx.axes.operator.domain.indexOf(f.operator)) } as CompanionDim },
+      temporalDays: { quarter: Float32Array.from(facts, (f) => dayNumber(f.quarter)) },
+      partial: {
+        sum__tests: Float32Array.from(facts, (f) => f.tests),
+        cnt: Float32Array.from(facts, () => 1),
+        swp__download_mbps__tests: Float32Array.from(facts, (f) => f.download_mbps * f.tests),
+        max__tests: Float32Array.from(facts, (f) => f.tests),
+      },
+    });
+    const slabOf = (key: string): SlabData => (key === '0/0/0' ? sparseData : denseB);
+
+    for (const t of mp.tiles) expect(tileLayoutOf(slabMeta, t.key)).toBe(t.expectLayout);
+
+    for (const c of mp.folds) {
+      const ctx = buildFoldContext(view, c.context);
+      for (const t of mp.tiles) {
+        const label = `mixed ${t.key} ${JSON.stringify(c.context)}`;
+        assertFold(foldSlab(slabOf(t.key), measures, ctx, t.markCount, domains), c.expect[t.key], `slab ${label}`);
+        // Cross-check the fixture's expected values against the frozen row-form fold of the same facts.
+        assertFold(foldTile(rowOf(t.facts), measures, ctx, t.markCount, domains), c.expect[t.key], `row ${label}`);
+      }
     }
   });
 

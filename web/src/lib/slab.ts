@@ -5,7 +5,7 @@
 // which path runs; the row form stays for older bakes.
 
 import { type Table, tableFromIPC } from 'apache-arrow';
-import type { CompanionSlab, Manifest, SlabAxis } from './manifest';
+import { type CompanionSlab, type Manifest, type SlabAxis, tileLayoutOf } from './manifest';
 import {
   type Agg,
   aggCh,
@@ -58,16 +58,21 @@ function listChild(table: Table, name: string): Float32Array | Int32Array | Cell
   return d.children[0].values.subarray(base, base + n);
 }
 
-/** Decode a slab tile from a map of `planeName → decompressed Arrow IPC bytes`. Only the planes present in
- *  the map are decoded — plane splitting hands in `@idx` (sparse) plus just the active measures' planes. */
-export function decodeSlab(planeBlocks: Record<string, ArrayBuffer>, slab: CompanionSlab): SlabData {
+/** Decode a slab tile from a map of `planeName → decompressed Arrow IPC bytes`, under the tile's resolved
+ *  layout (SLAB-FORMAT §3 — per tile, not per view). Only the planes present in the map are decoded — plane
+ *  splitting hands in `@idx` (sparse) plus just the active measures' planes. */
+export function decodeSlab(
+  planeBlocks: Record<string, ArrayBuffer>,
+  slab: CompanionSlab,
+  layout: 'sparse' | 'dense' = slab.layout,
+): SlabData {
   const strides = computeStrides(slab.axes);
   let offsets: Int32Array | undefined;
   let cellIds: CellIds | undefined;
   let bytes = 0;
   // `@idx` is absent when this is an incremental plane-split fetch (the structure was decoded on an
   // earlier fetch of the same tile and cached under its key); the caller merges these planes into it.
-  if (slab.layout === 'sparse' && planeBlocks['@idx']) {
+  if (layout === 'sparse' && planeBlocks['@idx']) {
     const idx = tableFromIPC(new Uint8Array(planeBlocks['@idx']));
     offsets = listChild(idx, 'offsets') as Int32Array;
     cellIds = listChild(idx, 'cellIds') as CellIds;
@@ -82,8 +87,8 @@ export function decodeSlab(planeBlocks: Record<string, ArrayBuffer>, slab: Compa
     bytes += planes[p.name].byteLength;
   }
   const first = Object.values(planes)[0];
-  const markCount = offsets ? offsets.length - 1 : slab.layout === 'dense' && first ? first.length / slab.cells : 0;
-  return { layout: slab.layout, markCount, cells: slab.cells, axes: slab.axes, strides, offsets, cellIds, planes, decodedBytes: bytes };
+  const markCount = offsets ? offsets.length - 1 : layout === 'dense' && first ? first.length / slab.cells : 0;
+  return { layout, markCount, cells: slab.cells, axes: slab.axes, strides, offsets, cellIds, planes, decodedBytes: bytes };
 }
 
 // ── plane selection (fold needs / plane split fetches) ─────────────────────────────────────────────────
@@ -105,9 +110,14 @@ function measurePlanes(ast: MeasureExpr): string[] {
   return aggPlanes(ast as Agg);
 }
 
-/** Plane names a set of measures needs, plus `@idx` (sparse) and `cnt` (dense survival). Used for the
- *  fold and, on the pack directory, for plane-split fetch. */
-export function slabPlanesForMeasures(manifest: Manifest, measureNames: string[]): string[] {
+/** Plane names a set of measures needs on a tile of the given layout, plus `@idx` (sparse) and `cnt` (dense
+ *  survival). Layout is per tile (SLAB-FORMAT §3), so this is resolved per tile. Used for the fold and, on
+ *  the pack directory, for plane-split fetch. */
+export function slabPlanesForMeasures(
+  manifest: Manifest,
+  measureNames: string[],
+  layout: 'sparse' | 'dense' = manifest.companionSlab!.layout,
+): string[] {
   const slab = manifest.companionSlab!;
   const byName = new Map((manifest.view.measures ?? []).map((m) => [m.name, m.expr]));
   const need = new Set<string>();
@@ -115,19 +125,20 @@ export function slabPlanesForMeasures(manifest: Manifest, measureNames: string[]
     const expr = byName.get(name);
     if (expr) for (const p of measurePlanes(parseMeasure(expr))) need.add(p);
   }
-  if (slab.layout === 'sparse') need.add('@idx');
+  if (layout === 'sparse') need.add('@idx');
   else need.add('cnt'); // dense survival witness
   // Only planes the slab actually carries.
   const have = new Set(['@idx', ...slab.partials.map((p) => p.name)]);
   return [...need].filter((p) => have.has(p));
 }
 
-/** Bytes a plane-split fetch of these measures' planes moves for one tile (R5). */
+/** Bytes a plane-split fetch of these measures' planes moves for one tile (R5), under the tile's layout. */
 export function activeFetchBytes(manifest: Manifest, tileKey: string, measureNames: string[]): number {
   const dir = manifest.companionPack?.planeEntries?.[tileKey];
   if (!dir) return 0;
+  const layout = tileLayoutOf(manifest.companionSlab!, tileKey);
   let bytes = 0;
-  for (const p of slabPlanesForMeasures(manifest, measureNames)) bytes += dir[p]?.[1] ?? 0;
+  for (const p of slabPlanesForMeasures(manifest, measureNames, layout)) bytes += dir[p]?.[1] ?? 0;
   return bytes;
 }
 

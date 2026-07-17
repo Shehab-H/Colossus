@@ -155,7 +155,16 @@ export function decodeCompanion(table: Table, grain: CompanionGrain[]): Companio
  *  per-file companion (internal levels, older bakes). */
 export type CompanionFetch =
   | { kind: 'row'; viewId: string; version: string; key: string; grain: CompanionGrain[]; pack: PackBlock | null }
-  | { kind: 'slab'; baseUrl: string; codec: CompressionFormat; slab: CompanionSlab; dir: Record<string, [number, number]>; want: string[] };
+  | {
+      kind: 'slab';
+      baseUrl: string;
+      codec: CompressionFormat;
+      slab: CompanionSlab;
+      /** The tile's resolved layout (SLAB-FORMAT §3) — decode branches on this, not the view default. */
+      layout: 'sparse' | 'dense';
+      dir: Record<string, [number, number]>;
+      want: string[];
+    };
 
 /** A decoded companion, tagged by format so the fold picks foldTile (row) or foldSlab (slab). */
 export type Companion = { kind: 'row'; data: CompanionData } | { kind: 'slab'; data: SlabData };
@@ -164,7 +173,7 @@ export type Companion = { kind: 'row'; data: CompanionData } | { kind: 'slab'; d
 export async function loadCompanion(spec: CompanionFetch, signal?: AbortSignal): Promise<Companion> {
   if (spec.kind === 'slab') {
     const blocks = await fetchSlabPlanes(spec.baseUrl, spec.codec, spec.dir, spec.want, signal);
-    const data = timedSync('decode.companion', () => decodeSlab(blocks, spec.slab), (d) => ({ n: d.markCount, bytes: d.decodedBytes }));
+    const data = timedSync('decode.companion', () => decodeSlab(blocks, spec.slab, spec.layout), (d) => ({ n: d.markCount, bytes: d.decodedBytes }));
     return { kind: 'slab', data };
   }
   const [z, x, y] = spec.key.split('/').map(Number);

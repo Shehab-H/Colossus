@@ -109,5 +109,85 @@
         "apex_share": [null, null]
       }
     }
-  ]
+  ],
+  "mixedPack": {
+    "_comment": "Per-tile layout choice (SLAB-FORMAT §3): one pack, two tiles, gate 0.5, same axes/partials/measures as above. Tile 0/0/0 (5 grain cells / (2 marks × 6 cells) = 0.417 < gate) → sparse; tile 0/0/1 (4 / (1 × 6) = 0.667 ≥ gate) → dense. Both languages: the C# writer picks each tile's layout from its own occupancy and records only the exception vs the view default (sparse), so tileLayouts = {0/0/1: dense}; the reader/decoder branches per tile; folds are byte-identical to whole-slab folds. Dense planes: null = empty cell (0 additive, NaN min/max); cumulative along quarter within each operator run. Tile 0/0/0 reuses the top-level facts (its sparse encoding and folds are the top-level sparse/folds).",
+    "gate": 0.5,
+    "viewDefaultLayout": "sparse",
+    "tileLayouts": { "0/0/1": "dense" },
+    "tiles": [
+      {
+        "key": "0/0/0",
+        "markCount": 2,
+        "expectLayout": "sparse",
+        "facts": [
+          { "mki": 0, "operator": "apex", "quarter": "2025-01-01", "tests": 10, "download_mbps": 50 },
+          { "mki": 0, "operator": "apex", "quarter": "2025-04-01", "tests": 5, "download_mbps": 40 },
+          { "mki": 0, "operator": "zenith", "quarter": "2025-01-01", "tests": 3, "download_mbps": 90 },
+          { "mki": 1, "operator": "zenith", "quarter": "2025-01-01", "tests": 8, "download_mbps": 20 },
+          { "mki": 1, "operator": "zenith", "quarter": "2025-07-01", "tests": 4, "download_mbps": 60 }
+        ]
+      },
+      {
+        "key": "0/0/1",
+        "markCount": 1,
+        "expectLayout": "dense",
+        "facts": [
+          { "mki": 0, "operator": "apex", "quarter": "2025-01-01", "tests": 4, "download_mbps": 100 },
+          { "mki": 0, "operator": "apex", "quarter": "2025-04-01", "tests": 6, "download_mbps": 50 },
+          { "mki": 0, "operator": "zenith", "quarter": "2025-01-01", "tests": 2, "download_mbps": 20 },
+          { "mki": 0, "operator": "zenith", "quarter": "2025-07-01", "tests": 8, "download_mbps": 10 }
+        ],
+        "dense": {
+          "planes": {
+            "sum__tests": [4, 10, 10, 2, 2, 10],
+            "cnt": [1, 2, 2, 1, 1, 2],
+            "swp__download_mbps__tests": [400, 700, 700, 40, 40, 120],
+            "max__tests": [4, 6, null, 2, null, 8]
+          }
+        }
+      }
+    ],
+    "folds": [
+      {
+        "context": {},
+        "expect": {
+          "0/0/0": {
+            "total_tests": [18, 12], "avg_download": [53.888889, 33.333333], "n": [3, 2],
+            "max_tests": [10, 8], "dominant_operator": [0, 1], "apex_share": [0.833333, 0]
+          },
+          "0/0/1": {
+            "total_tests": [20], "avg_download": [41], "n": [4],
+            "max_tests": [8], "dominant_operator": [0], "apex_share": [0.5]
+          }
+        }
+      },
+      {
+        "context": { "operator": "apex" },
+        "expect": {
+          "0/0/0": {
+            "total_tests": [15, null], "avg_download": [46.666667, null], "n": [2, null],
+            "max_tests": [10, null], "dominant_operator": [0, 65535], "apex_share": [1, null]
+          },
+          "0/0/1": {
+            "total_tests": [10], "avg_download": [70], "n": [2],
+            "max_tests": [6], "dominant_operator": [0], "apex_share": [1]
+          }
+        }
+      },
+      {
+        "context": { "quarter": "2025-01-01..2025-01-01" },
+        "expect": {
+          "0/0/0": {
+            "total_tests": [13, 8], "avg_download": [59.230769, 20], "n": [2, 1],
+            "max_tests": [10, 8], "dominant_operator": [0, 1], "apex_share": [0.769231, 0]
+          },
+          "0/0/1": {
+            "total_tests": [6], "avg_download": [73.333333], "n": [2],
+            "max_tests": [4], "dominant_operator": [0], "apex_share": [0.666667]
+          }
+        }
+      }
+    ]
+  }
 }

@@ -176,14 +176,24 @@ export interface SlabAxis {
   domain: string[];
 }
 
-/** Group-regime slab companion metadata (SLAB-FORMAT). `layout` picks the decode/fold path; `partials`
- *  names the planes and their element type. */
+/** Group-regime slab companion metadata (SLAB-FORMAT). `layout` is the view default; a tile's actual layout
+ *  is `tileLayouts[key] ?? layout` (SLAB-FORMAT §3). `partials` names the planes and their element type. */
 export interface CompanionSlab {
   layout: 'sparse' | 'dense';
   cells: number;
   occupancy: number;
   axes: SlabAxis[];
   partials: { name: string; type: 'f32' | 'i32' }[];
+  /** Per-leaf-tile layout overrides: `tileKey → 'dense'|'sparse'` for tiles whose own occupancy disagrees
+   *  with `layout`. Only exceptions are listed; absent tiles (and an absent field) use `layout`. */
+  tileLayouts?: Record<string, 'sparse' | 'dense'>;
+}
+
+/** A tile's layout: its per-tile override if any, else the view default (SLAB-FORMAT §3). The one place the
+ *  client resolves a per-tile choice — it must know a tile's layout before it fetches (sparse fetches the
+ *  `@idx` structure, dense fetches `cnt`; the slice math differs). */
+export function tileLayoutOf(slab: CompanionSlab, tileKey: string): 'sparse' | 'dense' {
+  return slab.tileLayouts?.[tileKey] ?? slab.layout;
 }
 
 /** The leaf companion archive and its directory: `file` is relative to the version directory, `codec`

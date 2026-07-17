@@ -12,7 +12,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tableFromIPC } from 'apache-arrow';
-import type { Manifest } from '../src/lib/manifest';
+import { type Manifest, tileLayoutOf } from '../src/lib/manifest';
 import { companionGrain, decodeCompanion } from '../src/lib/tileData';
 import { buildFoldContext, type CompanionData, foldTile, type MeasureExpr, parseMeasure } from '../src/lib/measures';
 
@@ -149,7 +149,7 @@ async function bench(viewId: string) {
         const g = gunzipSync(pack.subarray(off, off + len));
         blocks[name] = g.buffer.slice(g.byteOffset, g.byteOffset + g.byteLength);
       }
-      const s = slabLib.decodeSlab(blocks, manifest.companionSlab!);
+      const s = slabLib.decodeSlab(blocks, manifest.companionSlab!, tileLayoutOf(manifest.companionSlab!, worst.key));
       return { c: s, decoded: s.decodedBytes };
     }
     const raw = gunzipSync(pack.subarray(worst.offset, worst.offset + worst.length));

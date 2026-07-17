@@ -63,7 +63,9 @@ public class SlabFormatTests : IDisposable
             FROM facts GROUP BY mki, operator, quarter ORDER BY mki, cellId
             """;
 
-        using (var writer = new SlabCompanionWriter(_dir.FullName, plan))
+        // layoutOverride forces the encoder under test: the fixture tile's occupancy (5/12) would otherwise
+        // send the per-tile gate to sparse, so the dense encoder could never be pinned against it.
+        using (var writer = new SlabCompanionWriter(_dir.FullName, plan, layoutOverride: dense))
         {
             writer.AppendLevel(0, db.Connection, sql, new Dictionary<(long, long), long> { [(0, 0)] = 2 });
             var pack = writer.Finish();
@@ -102,6 +104,76 @@ public class SlabFormatTests : IDisposable
         AssertFloatsWithNaN(planes.GetProperty("max__tests"), tile.FloatPlanes["max__tests"]);
 
         Assert.Equal(5, SlabCompanionReader.Facts(tile, Plan(true).ToManifest())); // Σ cnt via last-bin
+    }
+
+    // Per-tile layout choice (SLAB-FORMAT §3): one writer, two tiles of different occupancy, the gate — not a
+    // per-view flag — picks each layout, and only the exception vs the view default is recorded.
+    [Fact]
+    public void MixedPack_PerTileGate_ChoosesAndRecordsPerTile()
+    {
+        var mixed = Fixture.RootElement.GetProperty("mixedPack");
+        var plan = Plan(dense: false); // view default = sparse (tile 0/0/0 is sparse, 0/0/1 the dense exception)
+
+        using var db = DuckDbSession.InMemory();
+        db.Exec("CREATE TABLE facts (tx BIGINT, ty BIGINT, mki INTEGER, operator VARCHAR, quarter DATE, tests FLOAT, download_mbps FLOAT)");
+        var markCounts = new Dictionary<(long, long), long>();
+        foreach (var t in mixed.GetProperty("tiles").EnumerateArray())
+        {
+            var (tx, ty) = ParseKey(t.GetProperty("key").GetString()!);
+            markCounts[(tx, ty)] = t.GetProperty("markCount").GetInt32();
+            string values = string.Join(",\n", t.GetProperty("facts").EnumerateArray().Select(f =>
+                $"({tx}, {ty}, {f.GetProperty("mki").GetInt32()}, '{f.GetProperty("operator").GetString()}', " +
+                $"DATE '{f.GetProperty("quarter").GetString()}', {f.GetProperty("tests").GetDouble()}::FLOAT, " +
+                $"{f.GetProperty("download_mbps").GetDouble()}::FLOAT)"));
+            db.Exec($"INSERT INTO facts VALUES {values}");
+        }
+
+        string sql = $"""
+            SELECT tx, ty, mki, ({plan.CellIdSql()}) AS cellId,
+                   sum(tests)::FLOAT AS "sum__tests", count(*)::INTEGER AS "cnt",
+                   sum(download_mbps * tests)::FLOAT AS "swp__download_mbps__tests", max(tests)::FLOAT AS "max__tests"
+            FROM facts GROUP BY tx, ty, mki, operator, quarter ORDER BY tx, ty, mki, cellId
+            """;
+
+        using var writer = new SlabCompanionWriter(_dir.FullName, plan); // no override — the per-tile gate decides
+        writer.AppendLevel(0, db.Connection, sql, markCounts);
+        var pack = writer.Finish();
+
+        // Only the tile that disagrees with the view default is recorded.
+        Assert.NotNull(writer.TileLayouts);
+        Assert.Equal(new Dictionary<string, string> { ["0/0/1"] = "dense" }, writer.TileLayouts);
+
+        var manifest = plan.ToManifest() with { TileLayouts = writer.TileLayouts };
+        string packPath = Path.Combine(_dir.FullName, pack.File);
+        foreach (var t in mixed.GetProperty("tiles").EnumerateArray())
+        {
+            string key = t.GetProperty("key").GetString()!;
+            string expectLayout = t.GetProperty("expectLayout").GetString()!;
+            Assert.Equal(expectLayout, manifest.LayoutOf(key));
+
+            var tile = SlabCompanionReader.Read(packPath, pack.PlaneEntries![key], manifest);
+            Assert.Equal(expectLayout == "dense", tile.Dense); // physical layout agrees with the recorded choice
+
+            if (expectLayout == "dense")
+            {
+                var dp = t.GetProperty("dense").GetProperty("planes");
+                Assert.Equal(Floats(dp.GetProperty("sum__tests")), tile.FloatPlanes["sum__tests"]);
+                Assert.Equal(Ints(dp.GetProperty("cnt")), tile.IntPlanes["cnt"]);
+                Assert.Equal(Floats(dp.GetProperty("swp__download_mbps__tests")), tile.FloatPlanes["swp__download_mbps__tests"]);
+                AssertFloatsWithNaN(dp.GetProperty("max__tests"), tile.FloatPlanes["max__tests"]);
+                Assert.Equal(4, SlabCompanionReader.Facts(tile, manifest)); // Σ cnt = 4 facts (last-bin cumulative per run)
+            }
+            else
+            {
+                Assert.Equal(5, SlabCompanionReader.Facts(tile, manifest)); // Σ cnt over the sparse entries
+            }
+        }
+    }
+
+    private static (long tx, long ty) ParseKey(string key)
+    {
+        var p = key.Split('/');
+        return (long.Parse(p[1]), long.Parse(p[2]));
     }
 
     private static int[] Ints(JsonElement a) => [.. a.EnumerateArray().Select(e => e.GetInt32())];

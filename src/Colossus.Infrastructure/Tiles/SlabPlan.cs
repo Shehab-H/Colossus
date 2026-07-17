@@ -53,10 +53,14 @@ internal static class SlabAxisValue
 /// hands it to <see cref="SlabCompanionWriter"/> and projects it into <see cref="Manifest.CompanionSlab"/>.</summary>
 internal sealed class SlabPlan
 {
-    // Occupancy at or above this ⇒ dense (cell-major, cumulative); below ⇒ sparse (CSR). The reference
-    // views measure ~0.38, so they are sparse; dense is the high-occupancy path.
+    // Occupancy at or above this ⇒ dense (cell-major, cumulative); below ⇒ sparse (CSR). Applied per leaf
+    // tile at write time (SLAB-FORMAT §3); the view-level occupancy only picks the default Layout. The
+    // reference views measure ~0.38 globally, so their default is sparse, but skewed density sends a
+    // minority of tiles dense.
     public const double DenseThreshold = 0.5;
 
+    /// <summary>The view's default layout, from global occupancy. A leaf tile overrides it from its own
+    /// occupancy (<see cref="TileDense"/>); this is only the fallback recorded in the manifest.</summary>
     public required bool Dense { get; init; }
     public required int Cells { get; init; }
     public required double Occupancy { get; init; }
@@ -68,6 +72,12 @@ internal sealed class SlabPlan
     public required int CumulativeCardinality { get; init; }
 
     public string Layout => Dense ? "dense" : "sparse";
+
+    /// <summary>The layout for one tile from its own occupancy — the per-leaf-tile gate (SLAB-FORMAT §3).
+    /// <paramref name="nnz"/> is the tile's grain-cell count (CSR entry count), <paramref name="markCount"/>
+    /// its marks. Data-agnostic: the same measured gate as the view default, applied to the tile.</summary>
+    public bool TileDense(int nnz, int markCount) =>
+        markCount > 0 && Cells > 0 && (double)nnz / ((double)markCount * Cells) >= DenseThreshold;
 
     public CompanionSlab ToManifest() => new()
     {
@@ -140,10 +150,14 @@ internal static class SlabPlanner
         double occupancy = marks > 0 && cells > 0 ? (double)nnz / ((double)marks * cells) : 0;
         bool dense = occupancy >= SlabPlan.DenseThreshold;
 
-        // Dense has no entry count to witness facts by, so it always carries a cnt plane (Σ cnt == facts,
-        // SLAB-FORMAT §7); the fold ignores planes its measures don't need. Sparse witnesses via nnz.
+        // Every bake carries a cnt plane. A dense tile needs it for both the survival test (a mark survives a
+        // range iff its cumulative cnt over the range is > 0) and the witness (Σ cnt == facts, SLAB-FORMAT §7);
+        // with the per-tile gate ANY tile may go dense, and the writer streams tiles so it cannot know in
+        // advance which will, so cnt is always present. Sparse tiles carry it too — the witness prefers it to
+        // nnz (correct even when a grain cell holds several source facts), and a cnt plane of near-all-1s
+        // compresses to almost nothing. The fold still ignores planes its measures don't read.
         var partials = companion.Partials;
-        if (dense && !partials.Any(p => p.Kind == PartialKind.Count))
+        if (!partials.Any(p => p.Kind == PartialKind.Count))
             partials = [.. partials, new Partial(PartialKind.Count)];
 
         return new SlabPlan

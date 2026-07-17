@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Manifest } from '../lib/manifest';
-import { packBlockUrl } from '../lib/manifest';
+import { packBlockUrl, tileLayoutOf } from '../lib/manifest';
 import { isGroupRegime } from '../lib/channels';
 import { buildFoldContext, foldTile, type MeasureExpr, parseMeasure } from '../lib/measures';
 import { companionGrain, type Companion, type CompanionFetch, packBlock } from '../lib/tileData';
@@ -174,13 +174,18 @@ export function useMeasureFold(
       };
     }
 
-    const needed = slab ? slabPlanesForMeasures(manifest, foldNames) : [];
+    // Slab planes are resolved per tile — a tile's layout (dense/sparse) decides whether it needs `@idx`
+    // (sparse structure) or `cnt` (dense survival), so a mixed-layout view asks different tiles for
+    // different planes (SLAB-FORMAT §3).
+    const slabPlanesFor = (key: string): string[] =>
+      slab ? slabPlanesForMeasures(manifest, foldNames, tileLayoutOf(manifest.companionSlab!, key)) : [];
     const specFor = (key: string, want: string[]): CompanionFetch | null => {
       if (slab) {
         const pack = manifest.companionPack;
         const dir = pack?.planeEntries?.[key];
         if (!pack || !dir || !manifest.companionSlab) return null;
-        return { kind: 'slab', baseUrl: packBlockUrl(manifest.view.id, version, pack.file, key), codec: pack.codec, slab: manifest.companionSlab, dir, want };
+        const layout = tileLayoutOf(manifest.companionSlab, key);
+        return { kind: 'slab', baseUrl: packBlockUrl(manifest.view.id, version, pack.file, key), codec: pack.codec, slab: manifest.companionSlab, layout, dir, want };
       }
       const pack = packBlock(manifest.companionPack, manifest.view.id, version, key);
       return { kind: 'row', viewId: manifest.view.id, version, key, grain, pack };
@@ -196,7 +201,7 @@ export function useMeasureFold(
           const ck = ckey(t.key);
           const cur = companions.current.get(ck);
           if (cur === 'missing') return;
-          const want = slab ? needed.filter((p) => !residentPlanes(cur).has(p)) : [];
+          const want = slab ? slabPlanesFor(t.key).filter((p) => !residentPlanes(cur).has(p)) : [];
           if (cur && (!slab || want.length === 0)) return; // row-form cached, or all needed planes resident
           const spec = specFor(t.key, want);
           if (!spec) {
@@ -284,13 +289,14 @@ export function useMeasureFold(
       if (!isSlab(m)) return null;
       const ck = `${m.version}|${key}`;
       if (companions.current.get(ck) === 'missing') return null;
-      const need = slabPlanesForMeasures(m, inspectNames);
+      const layout = tileLayoutOf(m.companionSlab!, key);
+      const need = slabPlanesForMeasures(m, inspectNames, layout);
       const want = need.filter((p) => !residentPlanes(companions.current.get(ck)).has(p));
       if (want.length) {
         const pack = m.companionPack;
         const dir = pack?.planeEntries?.[key];
         if (!pack || !dir || !m.companionSlab) return null;
-        const spec: CompanionFetch = { kind: 'slab', baseUrl: packBlockUrl(m.view.id, m.version, pack.file, key), codec: pack.codec, slab: m.companionSlab, dir, want };
+        const spec: CompanionFetch = { kind: 'slab', baseUrl: packBlockUrl(m.view.id, m.version, pack.file, key), codec: pack.codec, slab: m.companionSlab, layout, dir, want };
         try {
           const c = await tileLoader.loadCompanion(spec);
           const prev = companions.current.get(ck);

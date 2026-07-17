@@ -42,7 +42,11 @@ public sealed class AggregateReducer : IReductionStrategy
         BuildPyramid(db, ctx, tiles, ref leafTotal, slab, plan);
 
         var pack = slab?.Finish();
-        return new ReductionResult(tiles, leafTotal, pack, plan?.ToManifest(),
+        // Fold the per-tile layout overrides the writer discovered into the slab metadata (SLAB-FORMAT §3).
+        var slabMeta = plan?.ToManifest();
+        if (slabMeta is not null && slab?.TileLayouts is { } tileLayouts)
+            slabMeta = slabMeta with { TileLayouts = tileLayouts };
+        return new ReductionResult(tiles, leafTotal, pack, slabMeta,
             ctx.Companion is not null ? WriteFoldFacts(db, ctx) : null);
     }
 
