@@ -20,8 +20,12 @@ public sealed record BakeOutcome(
 /// plan (reduction, depth, budget, root) comes from <see cref="BakePlanner"/>.</summary>
 public sealed class BakeViewUseCase(
     ISourceAdapterCatalog sources, IReductionCatalog reductions, IBakeStore store, BakePlanner planner,
-    IChannelDomainScanner domains, IFactGrouper grouper)
+    IChannelDomainScanner domains, IFactGrouper grouper, FoldRoutingOptions foldRouting)
 {
+    // The retained facts Parquet the R4 server fold reads, relative to the version directory (RULES R5:
+    // baked artifact, never the source DB).
+    private const string FactsParquetName = "facts.parquet";
+
     public async Task<BakeOutcome> BakeAsync(ViewConfig view, CancellationToken ct = default)
     {
         var source = sources.Resolve(view.Source.Adapter);
@@ -78,6 +82,18 @@ public sealed class BakeViewUseCase(
 
         var result = reductions.Resolve(plan.Reduction).Reduce(rc);
 
+        // R4: a group-regime view retains its facts Parquet per version (the server fold's input) and the
+        // planner prices the fold route from the companion bytes the reduction just measured. Additive —
+        // the row regime and the static tile serve are untouched (RULES R7).
+        string? factsParquet = null;
+        FoldRoute? foldRoute = null;
+        if (group is not null && result.CompanionPack is { } companionPack)
+        {
+            File.Copy(group.Companion.FactsParquetPath, Path.Combine(outputDir, FactsParquetName), overwrite: true);
+            factsParquet = FactsParquetName;
+            foldRoute = FoldRoutePlanner.Price(view, companionPack, result.CompanionSlab, foldRouting);
+        }
+
         int bakedMaxZoom = result.Tiles.Count > 0 ? result.Tiles.Max(t => t.Z) : 0;
         await store.WriteManifestAsync(new Manifest
         {
@@ -101,8 +117,15 @@ public sealed class BakeViewUseCase(
             GrainChannels = group?.GrainChannels,
             CompanionPack = result.CompanionPack,
             CompanionSlab = result.CompanionSlab,
+            FactsParquet = factsParquet,
+            FoldRoute = foldRoute,
         }, ct);
         store.PublishLatest(view.Id, version);
+
+        if (foldRoute is not null)
+            Console.WriteLine($"  {view.Id}: fold route = {foldRoute.Execution} " +
+                $"(worst tile {foldRoute.WorstTileBytes:N0} B vs budget {foldRoute.BudgetBytes:N0} B" +
+                (foldRoute.Forced ? ", forced" : "") + ")");
 
         return new BakeOutcome(view.Id, version, probe.Count, result.Tiles.Count,
             result.Tiles.Count(t => t.IsLeaf), result.LeafPointCount, probe.Bounds, plan.MaxZoom);

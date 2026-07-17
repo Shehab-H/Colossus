@@ -5,10 +5,11 @@ import { isGroupRegime } from '../lib/channels';
 import { buildFoldContext, foldTile, type MeasureExpr, parseMeasure } from '../lib/measures';
 import { companionGrain, type Companion, type CompanionFetch, packBlock } from '../lib/tileData';
 import { foldSlab, isSlab, slabPlanesForMeasures } from '../lib/slab';
+import { type FoldedColumns, foldRemote, isRemoteFold } from '../lib/remoteFold';
 import { tileLoader } from '../lib/tileLoader';
 import type { RenderedTile } from './useTiles';
 
-export type FoldedColumns = Record<string, Float32Array | Uint16Array>;
+export type { FoldedColumns };
 
 /** Folded measure columns for the on-screen tiles, tagged with the context that produced them. The tag
  *  is what keys derived GPU buffers — never the *current* selection, which may be a fold ahead of the
@@ -38,6 +39,23 @@ export const foldActive = (manifest: Manifest | null, context: Record<string, st
 // Companions cached per (version, tile); fold results per (version, tile, active measures, context). Bounded.
 const FOLD_CACHE_CAP = 256;
 type CompanionEntry = Companion | 'missing';
+
+/** Drop fold results for tiles that have left the screen, then cap the cache (oldest-first, insertion
+ *  order) so a long scrub can't hold every context it visited. `live` holds `version|tileKey` keys; a fold
+ *  key is `version|tileKey|measures|context`, so its first two segments are the tile's identity. Shared by
+ *  both routes — the fold-result cache keys are identical whether the fold ran here or on the server. */
+function evict(folds: Map<string, FoldedColumns>, live: Set<string>): void {
+  for (const k of folds.keys()) {
+    const p = k.split('|');
+    if (!live.has(`${p[0]}|${p[1]}`)) folds.delete(k);
+  }
+  let over = folds.size - FOLD_CACHE_CAP;
+  if (over > 0)
+    for (const k of folds.keys()) {
+      folds.delete(k);
+      if (--over <= 0) break;
+    }
+}
 
 /** Planes already decoded for a cached slab tile: its structure block (`@idx`, sparse) plus each partial
  *  plane fetched so far. A plane-split fetch adds only the ones not yet resident (SLAB-FORMAT §5). */
@@ -85,6 +103,9 @@ export function useMeasureFold(
   // A slab view folds only the active measure(s) for the map (its planes are the only ones fetched); a
   // row-form bake, or a colour channel that is not a measure, folds every measure as before (no split).
   const slab = !!manifest && isSlab(manifest);
+  // R4: an over-budget view (priced `remote` at bake, or forced with ?fold=remote) folds on the server —
+  // same seam, same outputs, same cache keys; it fetches folded columns instead of companion planes.
+  const remote = !!manifest && isRemoteFold(manifest);
   const scoped = useMemo(() => measures.filter((m) => activeMeasures.includes(m.name)), [measures, activeMeasures]);
   const foldMeasures = slab && scoped.length ? scoped : measures;
   const foldNames = foldMeasures.map((m) => m.name);
@@ -121,6 +142,37 @@ export function useMeasureFold(
     const version = manifest.version;
     const grain = companionGrain(manifest);
     const ckey = (key: string) => `${version}|${key}`;
+    const fkey = (key: string) => `${version}|${key}|${activeSig}|${contextSig}`;
+
+    // Remote route: one batched fold request for the on-screen tiles this context hasn't folded yet. No
+    // companion fetch, no local fold — the seam's outputs and cache keys are identical, so everything
+    // downstream (render gate, GPU buffers, eviction) is unchanged.
+    if (remote) {
+      (async () => {
+        const need = rendered.filter((t) => !folds.current.has(fkey(t.key)));
+        if (need.length) {
+          try {
+            const r = await foldRemote(manifest.view.id, version, foldNames, ctx, need.map((t) => t.key));
+            if (!alive) return;
+            for (const [key, cols] of r.byTile) folds.current.set(fkey(key), cols);
+          } catch {
+            if (alive) setTimeout(() => alive && setRetry((x) => x + 1), 1500);
+          }
+        }
+        if (!alive) return;
+        const byTile = new Map<string, FoldedColumns>();
+        for (const t of rendered) {
+          const cols = folds.current.get(fkey(t.key));
+          if (cols) byTile.set(t.key, cols);
+        }
+        setFolded({ byTile, missing: new Set(), contextSig });
+        evict(folds.current, new Set(rendered.map((t) => ckey(t.key))));
+      })();
+      return () => {
+        alive = false;
+      };
+    }
+
     const needed = slab ? slabPlanesForMeasures(manifest, foldNames) : [];
     const specFor = (key: string, want: string[]): CompanionFetch | null => {
       if (slab) {
@@ -172,8 +224,7 @@ export function useMeasureFold(
       const byTile = new Map<string, FoldedColumns>();
       const missing = new Set<string>();
       for (const t of rendered) {
-        const fkey = `${version}|${t.key}|${activeSig}|${contextSig}`;
-        let cols = folds.current.get(fkey);
+        let cols = folds.current.get(fkey(t.key));
         if (!cols) {
           const comp = companions.current.get(ckey(t.key));
           if (!comp || comp === 'missing') {
@@ -184,28 +235,22 @@ export function useMeasureFold(
             comp.kind === 'slab'
               ? foldSlab(comp.data, foldMeasures, ctx, t.data.count, domains)
               : foldTile(comp.data, foldMeasures, ctx, t.data.count, domains);
-          folds.current.set(fkey, cols);
+          folds.current.set(fkey(t.key), cols);
         }
         byTile.set(t.key, cols);
       }
       setFolded({ byTile, missing, contextSig });
 
-      // Evict caches for tiles no longer on screen (bounded like the tile cache), then cap the fold
-      // cache so a long scrub can't hold every context it visited (oldest-first, insertion order).
+      // Evict caches for tiles no longer on screen (bounded like the tile cache).
       const live = new Set(rendered.map((t) => ckey(t.key)));
       for (const k of companions.current.keys()) if (!live.has(k)) companions.current.delete(k);
-      for (const k of folds.current.keys()) {
-        const p = k.split('|');
-        if (!live.has(`${p[0]}|${p[1]}`)) folds.current.delete(k);
-      }
-      let over = folds.current.size - FOLD_CACHE_CAP;
-      if (over > 0) for (const k of folds.current.keys()) { folds.current.delete(k); if (--over <= 0) break; }
+      evict(folds.current, live);
     })();
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manifest, active, contextSig, renderSig, activeSig, slab, measures, domains, retry]);
+  }, [manifest, active, contextSig, renderSig, activeSig, slab, remote, measures, domains, retry]);
 
   // Inspect a clicked mark under the active context: ensure every inspect measure's planes are resident for
   // the one tile (fetch the missing ones, merge under its key), then fold them. The map fold only carries
@@ -213,11 +258,23 @@ export function useMeasureFold(
   const foldInspect = useCallback(
     async (key: string): Promise<FoldedColumns | null> => {
       const m = manifestRef.current;
-      if (!m || !isSlab(m)) return null;
+      if (!m) return null;
       const ctxObj = ctxRef.current;
       if (!foldActive(m, ctxObj)) return null;
       const inspectMeasures = measures.filter((mm) => inspectNames.includes(mm.name));
       if (!inspectMeasures.length) return null;
+      // Remote route: the tooltip's measures fold on the server for this one tile — the same request the
+      // map makes, just a different measure set (no planes to fetch or merge).
+      if (isRemoteFold(m)) {
+        try {
+          const r = await foldRemote(m.view.id, m.version, inspectMeasures.map((mm) => mm.name),
+            buildFoldContext(m.view, ctxObj), [key]);
+          return r.byTile.get(key) ?? null;
+        } catch {
+          return null;
+        }
+      }
+      if (!isSlab(m)) return null;
       const ck = `${m.version}|${key}`;
       if (companions.current.get(ck) === 'missing') return null;
       const need = slabPlanesForMeasures(m, inspectNames);

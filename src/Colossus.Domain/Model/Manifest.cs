@@ -59,6 +59,37 @@ public sealed record Manifest
     /// <summary>Group-regime slab companion metadata (companion-scale R1). Null on row-form bakes — the
     /// client keeps the row-form decode/fold. Present ⇒ the pack's blocks are slab planes.</summary>
     public CompanionSlab? CompanionSlab { get; init; }
+
+    /// <summary>Group-regime only (companion-scale R4): the baked facts Parquet, relative to the version
+    /// directory, that the server fold reads (DuckDB over the baked artifact, never the source DB — RULES
+    /// R5). Retained per version so a fold is reproducible against exactly the bake it prices. Null in the
+    /// row regime and on older group bakes that predate R4.</summary>
+    public string? FactsParquet { get; init; }
+
+    /// <summary>Group-regime only (companion-scale R4): the planner's fold-execution route, priced at bake
+    /// from measured companion bytes. The client reads <see cref="FoldRoute.Execution"/> to pick the local
+    /// fold or the remote fold endpoint behind the same seam. Null in the row regime.</summary>
+    public FoldRoute? FoldRoute { get; init; }
+}
+
+/// <summary>The planner's fold-execution decision for a group-regime view (companion-scale R4). Priced at
+/// bake from the measured per-interaction companion transfer (plane-split bytes, R5): a view whose worst
+/// leaf tile exceeds the budget routes its fold to the server, shipping folded columns instead of facts.
+/// The extra fields are diagnostics — the client obeys only <see cref="Execution"/>.</summary>
+public sealed record FoldRoute
+{
+    /// <summary>"client" (fold in the browser over fetched companion planes) or "remote" (fold on the
+    /// server over the baked facts Parquet, ship folded columns).</summary>
+    public required string Execution { get; init; }
+    /// <summary>Measured worst single-tile per-interaction transfer (the color measure's plane-split bytes)
+    /// — the dense-leaf number the budget guards.</summary>
+    public long WorstTileBytes { get; init; }
+    /// <summary>Measured estimate for a dense screenful (sum of the largest N tiles' per-interaction bytes).</summary>
+    public long ViewportEstimateBytes { get; init; }
+    /// <summary>The configured budget the worst tile was compared against.</summary>
+    public long BudgetBytes { get; init; }
+    /// <summary>True when the route was forced remote by config regardless of price (benchmark/testing).</summary>
+    public bool Forced { get; init; }
 }
 
 /// <summary>The companion archive and its directory. <see cref="File"/> is relative to the version

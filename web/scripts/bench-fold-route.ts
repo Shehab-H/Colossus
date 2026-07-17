@@ -15,9 +15,9 @@ import { gunzipSync } from 'node:zlib';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { tableFromIPC } from 'apache-arrow';
 import type { Manifest } from '../src/lib/manifest';
 import { buildFoldContext, type FoldContext, type MeasureExpr, parseMeasure } from '../src/lib/measures';
+import { decodeFoldResponse } from '../src/lib/remoteFold';
 import { decodeSlab, foldSlab, slabPlanesForMeasures } from '../src/lib/slab';
 
 const TILES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tiles');
@@ -153,24 +153,8 @@ async function foldRemote(
   if (!res.ok) throw new Error(`fold ${res.status}: ${await res.text()}`);
   const buf = new Uint8Array(await res.arrayBuffer());
   const serverMs = res.headers.get('x-fold-ms');
-  const table = tableFromIPC(buf);
-  const tileCol = table.getChild('tile')!;
-  const byTile = new Map<string, Record<string, Float32Array | Uint16Array>>();
-  // Rows are ordered by (tile, mki) with dense mki per tile, so contiguous runs of the tile column are
-  // one tile's marks in mki order — split each measure column by run (zero-copy subarray).
-  const colArrays: Record<string, Float32Array | Uint16Array> = {};
-  for (const name of measureNames) colArrays[name] = table.getChild(name)!.toArray() as Float32Array | Uint16Array;
-  let runStart = 0;
-  const n = table.numRows;
-  for (let i = 1; i <= n; i++) {
-    if (i === n || tileCol.get(i) !== tileCol.get(runStart)) {
-      const key = String(tileCol.get(runStart));
-      const cols: Record<string, Float32Array | Uint16Array> = {};
-      for (const name of measureNames) cols[name] = colArrays[name].subarray(runStart, i) as Float32Array | Uint16Array;
-      byTile.set(key, cols);
-      runStart = i;
-    }
-  }
+  // Decoded through the REAL client decoder, so the harness measures the path the app runs.
+  const { byTile } = decodeFoldResponse(buf, measureNames);
   return { byTile, responseBytes: buf.byteLength, serverMs: serverMs ? +serverMs : null };
 }
 

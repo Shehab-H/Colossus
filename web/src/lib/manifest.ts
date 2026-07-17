@@ -147,6 +147,23 @@ export interface Manifest {
   /** Group-regime slab companion metadata (companion-scale R1). Present ⇒ the pack holds slab planes and
    *  the client takes the slab decode/fold; absent ⇒ the row-form companion path (older bakes). */
   companionSlab?: CompanionSlab;
+  /** Group-regime only (companion-scale R4): the baked facts Parquet the server fold reads, relative to
+   *  the version dir. The client never fetches it — it is the server's input. */
+  factsParquet?: string;
+  /** Group-regime only (companion-scale R4): the planner's fold-execution route, priced at bake. The
+   *  client folds locally over companion planes when `client`, or posts to /api/views/{id}/fold when
+   *  `remote` (behind the same seam). A `?fold=remote|client` query override wins over this. */
+  foldRoute?: FoldRoute;
+}
+
+/** The bake-priced fold-execution route (companion-scale R4). The client obeys `execution`; the rest are
+ *  diagnostics (measured per-interaction bytes vs the budget). */
+export interface FoldRoute {
+  execution: 'client' | 'remote';
+  worstTileBytes?: number;
+  viewportEstimateBytes?: number;
+  budgetBytes?: number;
+  forced?: boolean;
 }
 
 /** One companion grain channel as a slab axis (SLAB-FORMAT §1–2). `domain` is the full ordered value list

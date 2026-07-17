@@ -36,6 +36,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IChannelDomainScanner, DuckDbChannelDomainScanner>();
         services.AddSingleton<IFactGrouper, DuckDbFactGrouper>();
 
+        // R4 fold routing: a plain options record read from the FoldRouting config section (documented
+        // default in docs/DEPLOY.md), plus env override for the force flag so a bake/CI can flip it.
+        var foldRouting = new FoldRoutingOptions();
+        configuration.GetSection(FoldRoutingOptions.Section).Bind(foldRouting);
+        if (Environment.GetEnvironmentVariable("COLOSSUS_FOLD_FORCE_REMOTE") is { } f)
+            foldRouting.ForceRemote = f is "1" or "true" or "TRUE";
+        services.AddSingleton(foldRouting);
+
+        // R4 server fold executor (DuckDB over the baked facts Parquet). Stateless; used by the server's
+        // fold endpoint, inert in the bake host.
+        services.AddSingleton<Colossus.Infrastructure.Fold.DuckDbFoldExecutor>();
+
         // Use cases.
         services.AddSingleton<BakePlanner>();
         services.AddSingleton<BakeViewUseCase>();
