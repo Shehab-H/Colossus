@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using Colossus.Domain.Model;
@@ -26,16 +27,30 @@ public static class SlabCompanionReader
         // field down here (that field is for the client, which must know layout before it fetches). The two
         // always agree: the writer emits @idx iff it chose sparse.
         bool dense = !planes.ContainsKey(SlabCompanionWriter.IdxPlane);
+        var fp = new Dictionary<string, float[]>(StringComparer.Ordinal);
+        var ip = new Dictionary<string, int[]>(StringComparer.Ordinal);
+
+        if (dense)
+        {
+            // A dense plane's region is the concatenation of its per-cell-row gzip blocks (SLAB-FORMAT §4b/§5);
+            // GZipStream inflates the concatenated members into the whole plane's raw little-endian bytes.
+            foreach (var p in slab.Partials)
+            {
+                if (!planes.TryGetValue(p.Name, out var r)) continue;
+                byte[] raw = ReadRegion(packPath, r);
+                if (p.Type == "i32") ip[p.Name] = Int32Le(raw);
+                else fp[p.Name] = Float32Le(raw);
+            }
+            return new SlabTile(true, null, null, fp, ip);
+        }
+
         int[]? offsets = null, cellIds = null;
-        if (!dense && planes.TryGetValue(SlabCompanionWriter.IdxPlane, out var idx))
+        if (planes.TryGetValue(SlabCompanionWriter.IdxPlane, out var idx))
         {
             using var b = ReadBatch(packPath, idx);
             offsets = IntChild(b, "offsets");
             cellIds = IntChild(b, "cellIds");
         }
-
-        var fp = new Dictionary<string, float[]>(StringComparer.Ordinal);
-        var ip = new Dictionary<string, int[]>(StringComparer.Ordinal);
         foreach (var p in slab.Partials)
         {
             if (!planes.TryGetValue(p.Name, out var r)) continue;
@@ -43,7 +58,28 @@ public static class SlabCompanionReader
             if (p.Type == "i32") ip[p.Name] = IntChild(b, p.Name);
             else fp[p.Name] = FloatChild(b, p.Name);
         }
-        return new SlabTile(dense, offsets, cellIds, fp, ip);
+        return new SlabTile(false, offsets, cellIds, fp, ip);
+    }
+
+    // Inflate a whole (possibly multi-member) region to raw bytes.
+    private static byte[] ReadRegion(string packPath, long[] range)
+    {
+        using var s = CompanionPackWriter.ReadBlock(packPath, range[0], range[1]);
+        return s.ToArray();
+    }
+
+    private static float[] Float32Le(byte[] raw)
+    {
+        var o = new float[raw.Length / 4];
+        for (int i = 0; i < o.Length; i++) o[i] = BinaryPrimitives.ReadSingleLittleEndian(raw.AsSpan(i * 4));
+        return o;
+    }
+
+    private static int[] Int32Le(byte[] raw)
+    {
+        var o = new int[raw.Length / 4];
+        for (int i = 0; i < o.Length; i++) o[i] = BinaryPrimitives.ReadInt32LittleEndian(raw.AsSpan(i * 4));
+        return o;
     }
 
     /// <summary>Source facts this tile stands for — the verifier's witness (SLAB-FORMAT §7). Σ cnt when a

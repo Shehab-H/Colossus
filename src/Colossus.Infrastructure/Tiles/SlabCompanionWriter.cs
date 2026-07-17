@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO.Compression;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
@@ -29,6 +30,8 @@ internal sealed class SlabCompanionWriter : IDisposable
     private readonly FileStream _pack;
     private readonly Dictionary<string, long[]> _entries = new(StringComparer.Ordinal);
     private readonly Dictionary<string, IReadOnlyDictionary<string, long[]>> _planeEntries = new(StringComparer.Ordinal);
+    // Per-cell-row block lengths for dense tiles (R5 cell-run slicing); keyed tileKey → plane → lengths.
+    private readonly Dictionary<string, IReadOnlyDictionary<string, int[]>> _sliceEntries = new(StringComparer.Ordinal);
     // Tiles whose per-tile layout (SLAB-FORMAT §3) differs from the view default (_plan.Dense) — the only
     // ones the manifest records (CompanionSlab.TileLayouts); the rest fall back to the default.
     private readonly Dictionary<string, string> _tileLayouts = new(StringComparer.Ordinal);
@@ -95,7 +98,12 @@ internal sealed class SlabCompanionWriter : IDisposable
 
         // The per-leaf-tile gate: this tile's own occupancy, not the view's, picks its layout.
         bool dense = _layoutOverride ?? _plan.TileDense(cellIds.Count, markCount);
-        if (dense) WriteDense(markCount, mkis, cellIds, vals, planes);
+        if (dense)
+        {
+            var slices = new Dictionary<string, int[]>(StringComparer.Ordinal);
+            WriteDense(markCount, mkis, cellIds, vals, planes, slices);
+            _sliceEntries[key] = slices; // dense tiles are cell-run sliceable (R5)
+        }
         else WriteSparse(markCount, mkis, cellIds, vals, planes);
 
         _entries[key] = [start, _pack.Position - start];
@@ -127,24 +135,58 @@ internal sealed class SlabCompanionWriter : IDisposable
     }
 
     // Dense: one cell-major plane per partial (cells × markCount); subtractable partials cumulated along the
-    // ordered axis. Empty cells are 0 (additive) or NaN (min/max).
+    // ordered axis. Empty cells are 0 (additive) or NaN (min/max). Each plane is written as one independently
+    // compressed block **per cell row** (all marks at one cell — the R5 slice unit, SLAB-FORMAT §4b), so the
+    // client fetches only the rows a context reads. The blocks are raw little-endian typed-array bytes, not
+    // Arrow: per-row Arrow framing would swamp a small tile's payload, and the row's type is known from the
+    // partial. `planes[p]` is the whole-plane region (all its cell-row blocks); `slices[p]` their lengths.
     private void WriteDense(int markCount, List<int> mkis, List<int> cellIds, List<float>[] vals,
-        Dictionary<string, long[]> planes)
+        Dictionary<string, long[]> planes, Dictionary<string, int[]> slices)
     {
-        int size = _plan.Cells * markCount;
+        int cells = _plan.Cells;
+        int size = cells * markCount;
         for (int i = 0; i < _plan.Partials.Count; i++)
         {
             var p = _plan.Partials[i];
             bool minmax = p.Kind is PartialKind.Min or PartialKind.Max;
+            bool isInt = p.Kind == PartialKind.Count;
             var plane = new float[size];
             if (minmax) System.Array.Fill(plane, float.NaN);
             var col = vals[i];
             for (int e = 0; e < cellIds.Count; e++) plane[cellIds[e] * markCount + mkis[e]] = col[e];
             if (!minmax) Cumulate(plane, markCount);
-            planes[p.Name] = p.Kind == PartialKind.Count
-                ? AppendBlock(One(p.Name, Int32Type.Default), [SingleRowList(I32(ToInt(plane)), Int32Type.Default)])
-                : AppendBlock(One(p.Name, FloatType.Default), [SingleRowList(F32(plane, plane.Length), FloatType.Default)]);
+
+            long planeStart = _pack.Position;
+            var lens = new int[cells];
+            var rowBytes = new byte[markCount * 4];
+            for (int c = 0; c < cells; c++)
+            {
+                CellRowBytes(plane, c, markCount, isInt, rowBytes);
+                lens[c] = AppendRaw(rowBytes);
+            }
+            planes[p.Name] = [planeStart, _pack.Position - planeStart];
+            slices[p.Name] = lens;
         }
+    }
+
+    // One cell row (all marks at cell c) as raw little-endian bytes: i32 (cnt, rounded) or f32.
+    private static void CellRowBytes(float[] plane, int cell, int markCount, bool isInt, byte[] into)
+    {
+        long baseIdx = (long)cell * markCount;
+        for (int m = 0; m < markCount; m++)
+        {
+            var span = into.AsSpan(m * 4);
+            if (isInt) BinaryPrimitives.WriteInt32LittleEndian(span, checked((int)MathF.Round(plane[baseIdx + m])));
+            else BinaryPrimitives.WriteSingleLittleEndian(span, plane[baseIdx + m]);
+        }
+    }
+
+    // Append one raw (non-Arrow) block, gzip-compressed like the plane blocks; returns its compressed length.
+    private int AppendRaw(byte[] raw)
+    {
+        long offset = _pack.Position;
+        using (var gz = new GZipStream(_pack, CompressionLevel.Optimal, leaveOpen: true)) gz.Write(raw);
+        return checked((int)(_pack.Position - offset));
     }
 
     // Prefix-sum each cell along the cumulative ordered axis: cell c gains cell (c - stride) whenever its
@@ -182,6 +224,7 @@ internal sealed class SlabCompanionWriter : IDisposable
             Format = "slab",
             Entries = _entries,
             PlaneEntries = _planeEntries,
+            SliceEntries = _sliceEntries.Count > 0 ? _sliceEntries : null,
         };
     }
 

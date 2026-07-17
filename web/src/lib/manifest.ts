@@ -207,8 +207,15 @@ export interface CompanionPack {
   /** "row" (R2 leaf pack) or "slab" (R1). Absent ⇒ "row" (older bakes). */
   format?: 'row' | 'slab';
   /** Slab only: `tileKey → (planeName → [offset, length])`. Plane `"@idx"` is the CSR structure block;
-   *  the rest are partial planes. Enables plane-split fetch (R5); absent ⇒ whole-tile fetch. */
+   *  the rest are partial planes. A dense plane's region is its cell-row blocks concatenated. Enables
+   *  plane-split fetch (R5); absent ⇒ whole-tile fetch. */
   planeEntries?: Record<string, Record<string, [number, number]>>;
+  /** Cell-run slice directory (R5 second half): `tileKey → (planeName → per-cell-row block lengths)`, for
+   *  **dense** tiles only (sparse opts out). A dense plane is one compressed block per cell row; cell `c`'s
+   *  block is at `planeEntries[tile][plane][0] + Σ_{i<c} lengths[i]` for `lengths[c]` bytes, so only lengths
+   *  are stored. Blocks are raw little-endian f32/i32 (per the partial), not Arrow. Absent (or a sparse tile)
+   *  ⇒ whole-block fetch. */
+  sliceEntries?: Record<string, Record<string, number[]>>;
 }
 
 const TILES_BASE = import.meta.env.VITE_TILES_BASE ?? 'http://localhost:5174/tiles';

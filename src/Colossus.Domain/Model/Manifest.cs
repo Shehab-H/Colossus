@@ -108,8 +108,20 @@ public sealed record CompanionPack
     public string? Format { get; init; }
 
     /// <summary>Slab only: <c>tileKey → (planeName → [offset, length])</c>. Plane <c>"@idx"</c> is the CSR
-    /// structure block (sparse layout); the rest are partial planes. Null ⇒ whole-tile fetch only.</summary>
+    /// structure block (sparse layout); the rest are partial planes. A dense plane's region is the
+    /// concatenation of its per-cell-row blocks (<see cref="SliceEntries"/>); a whole-plane fetch ranges the
+    /// region and inflates each block. Null ⇒ whole-tile fetch only.</summary>
     public IReadOnlyDictionary<string, IReadOnlyDictionary<string, long[]>>? PlaneEntries { get; init; }
+
+    /// <summary>Cell-run slice directory (companion-scale R5 second half): <c>tileKey → (planeName → per-cell
+    /// compressed block lengths)</c>, present only for **dense** tiles (sparse opts out — SLAB-FORMAT §5). A
+    /// dense plane is stored as one independently compressed block per cell row (all marks at one cell — the
+    /// slice unit, §4b); cell <c>c</c>'s block is at <c>PlaneEntries[tile][plane][0] + Σ_{i&lt;c} lengths[i]</c>
+    /// for <c>lengths[c]</c> bytes, so only the block lengths are recorded. The client fetches only the cell
+    /// rows the active context reads; absence of this directory (or a sparse tile) selects the whole-block
+    /// fetch. Blocks are raw little-endian typed-array bytes (f32/i32 per the partial), not Arrow — per-row
+    /// Arrow framing would swamp a small tile's payload.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, int[]>>? SliceEntries { get; init; }
 }
 
 /// <summary>The derived channel split of a group-regime view.</summary>
