@@ -34,6 +34,11 @@ export interface SlabData {
   offsets?: Int32Array;
   cellIds?: CellIds;
   planes: Record<string, Float32Array>;
+  /** Dense cell-run slicing (R5): which cell rows of each plane are materialized. A plane array is full
+   *  length (`cells × markCount`) but only these rows carry real values (the rest are 0 / NaN); the fold
+   *  reads only the rows a context needs, and an incremental fetch fills more (SLAB-FORMAT §5). Absent ⇒
+   *  every cell is resident (a whole-plane decode — sparse, or an un-sliced dense fetch). */
+  residentCells?: Record<string, Set<number>>;
   decodedBytes: number;
 }
 
@@ -140,6 +145,132 @@ export function activeFetchBytes(manifest: Manifest, tileKey: string, measureNam
   let bytes = 0;
   for (const p of slabPlanesForMeasures(manifest, measureNames, layout)) bytes += dir[p]?.[1] ?? 0;
   return bytes;
+}
+
+// ── dense cell-run slicing (R5 second half) ─────────────────────────────────────────────────────────────
+
+/** A raw (never cumulative) plane — the fold scans its `[lo..hi]` run rather than subtracting two rows. */
+const isScanPlane = (name: string): boolean => name.startsWith('min__') || name.startsWith('max__');
+
+/** The cell rows a fold of `activePlanes` under `ctx` reads on a **dense** tile (SLAB-FORMAT §5), so the
+ *  client fetches only those. Mirrors foldDense's reads exactly: for each passing categorical run, a
+ *  cumulative plane needs the `hi` and (when `lo>0`) `lo−1` rows; a scan (min/max) plane needs the `[lo..hi]`
+ *  run. `cnt` is among activePlanes (dense survival). `impossible` ⇒ the fold empties every mark, so nothing
+ *  is fetched. With no cumulative axis (a degenerate view) every cell is needed (whole plane). */
+export function denseNeeds(
+  slab: CompanionSlab,
+  ctx: FoldContext,
+  activePlanes: string[],
+): { cells: Record<string, number[]>; impossible: boolean } {
+  const axes = slab.axes;
+  const strides = computeStrides(axes);
+  const cumAi = axes.findIndex((a) => a.cumulative);
+  const T = cumAi >= 0 ? axes[cumAi].cardinality : 1;
+  const runs = slab.cells / T;
+  const ai = (ch: string) => axes.findIndex((a) => a.name === ch);
+
+  const eqs: { stride: number; card: number; want: number }[] = [];
+  const rgs: { stride: number; card: number; lo: number; hi: number }[] = [];
+  let lo = 0;
+  let hi = T - 1;
+  let impossible = false;
+  for (const ch in ctx.equals) {
+    const i = ai(ch);
+    const want = i >= 0 ? axes[i].domain.indexOf(ctx.equals[ch]) : -1;
+    if (want < 0) impossible = true;
+    else eqs.push({ stride: strides[i], card: axes[i].cardinality, want });
+  }
+  for (const ch in ctx.ranges) {
+    const i = ai(ch);
+    if (i < 0 || axes[i].kind !== 'ordered') { impossible = true; continue; }
+    const [l, h] = resolveBins(axes[i].domain, ctx.ranges[ch].from, ctx.ranges[ch].to);
+    if (l > h) impossible = true;
+    else if (i === cumAi) { lo = l; hi = h; }
+    else rgs.push({ stride: strides[i], card: axes[i].cardinality, lo: l, hi: h });
+  }
+
+  const cells: Record<string, number[]> = {};
+  for (const p of activePlanes) cells[p] = [];
+  if (impossible) return { cells, impossible };
+  if (cumAi < 0) {
+    for (const p of activePlanes) cells[p] = [...Array(slab.cells).keys()];
+    return { cells, impossible };
+  }
+
+  const cumRows = (base: number): number[] => (lo > 0 ? [base + hi, base + lo - 1] : [base + hi]);
+  const scanRows = (base: number): number[] => {
+    const r: number[] = [];
+    for (let b = lo; b <= hi; b++) r.push(base + b);
+    return r;
+  };
+  for (let g = 0; g < runs; g++) {
+    const base = g * T; // this run's cumulative-axis coord 0 (the cumulative axis is innermost, stride 1)
+    let pass = true;
+    for (const e of eqs) if (Math.floor(base / e.stride) % e.card !== e.want) { pass = false; break; }
+    if (pass) for (const r of rgs) { const b = Math.floor(base / r.stride) % r.card; if (b < r.lo || b > r.hi) { pass = false; break; } }
+    if (!pass) continue;
+    for (const p of activePlanes) for (const c of isScanPlane(p) ? scanRows(base) : cumRows(base)) cells[p].push(c);
+  }
+  return { cells, impossible };
+}
+
+/** Assemble fetched cell-row blocks into a dense `SlabData`. Each plane array is full length
+ *  (`cells × markCount`) with only the fetched rows filled — 0 for additive planes, NaN for scan — and
+ *  `residentCells` records which. The fold reads only the rows a context needs (denseNeeds), so the holes are
+ *  never read; an incremental fetch fills more via mergeSlab. `fetched` is `plane → {cell, buf}[]` of raw
+ *  little-endian blocks (i32 cnt widened to f32, as decodeSlab does). */
+export function assembleDenseSlab(
+  fetched: Record<string, { cell: number; buf: ArrayBuffer }[]>,
+  slab: CompanionSlab,
+  markCount: number,
+): SlabData {
+  const strides = computeStrides(slab.axes);
+  const type = new Map(slab.partials.map((p) => [p.name, p.type]));
+  const planes: Record<string, Float32Array> = {};
+  const residentCells: Record<string, Set<number>> = {};
+  let bytes = 0;
+  for (const [name, rows] of Object.entries(fetched)) {
+    const plane = new Float32Array(slab.cells * markCount);
+    if (isScanPlane(name)) plane.fill(NaN);
+    const resident = new Set<number>();
+    for (const { cell, buf } of rows) {
+      const row = type.get(name) === 'i32' ? Float32Array.from(new Int32Array(buf)) : new Float32Array(buf);
+      plane.set(row, cell * markCount);
+      resident.add(cell);
+      bytes += buf.byteLength;
+    }
+    planes[name] = plane;
+    residentCells[name] = resident;
+  }
+  return { layout: 'dense', markCount, cells: slab.cells, axes: slab.axes, strides, planes, residentCells, decodedBytes: bytes };
+}
+
+/** Merge a freshly-fetched companion `next` into a cached `prev` under the same tile key (SLAB-FORMAT §5).
+ *  Dense: copy next's resident cell rows into prev's plane arrays (adding a plane prev lacked) and union the
+ *  resident sets — an incremental slice fetch that a later context widened. Sparse: add whole planes (a plane
+ *  split), the prior behaviour. */
+export function mergeSlab(prev: SlabData, next: SlabData): void {
+  if (prev.layout === 'dense' && next.layout === 'dense') {
+    const M = prev.markCount;
+    prev.residentCells ??= {};
+    for (const [name, plane] of Object.entries(next.planes)) {
+      const resident = next.residentCells?.[name];
+      if (!prev.planes[name] || !resident) {
+        prev.planes[name] = plane;
+        prev.residentCells[name] = new Set(resident ?? []);
+        continue;
+      }
+      const target = prev.planes[name];
+      const set = (prev.residentCells[name] ??= new Set());
+      for (const c of resident) {
+        target.set(plane.subarray(c * M, (c + 1) * M), c * M);
+        set.add(c);
+      }
+    }
+  } else {
+    Object.assign(prev.planes, next.planes);
+  }
+  prev.decodedBytes += next.decodedBytes;
 }
 
 // ── fold ────────────────────────────────────────────────────────────────────────────────────────────

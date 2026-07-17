@@ -118,16 +118,24 @@ a GPU texture row (gpu-residency §5.3–5.4), uploadable without reshape.
 
 No `offsets`/`cellIds` (every cell is present). `markCount` = the tile's mark count; `cells` from the axes.
 
-## 5. Block container, pack directory, plane split (R2 + R5)
+A dense plane is stored **one independently compressed block per cell row** (§5), not one whole-plane block,
+so the client can fetch just the rows a context reads (R5 cell-run slicing). The blocks are **raw
+little-endian typed-array bytes** (f32, or i32 for `cnt`) — *not* Arrow: per-row Arrow framing would swamp a
+small tile's payload, and the row's element type is already known from the partial. Their concatenation, in
+cell order, is the whole plane; the C# reader inflates the whole region in one pass (`GZipStream` reads the
+concatenated gzip members), the client inflates only the rows it fetched.
 
-The slab is Arrow IPC (managed `Apache.Arrow` writer — RULES R3; the nanoarrow extension segfaults on
-DuckDB.NET 1.5.3), but split into **independently gzip-compressed blocks**, one per plane plus, for sparse,
-one structure block. Each block is a single-row Arrow message whose columns are `List<T>` (the child buffer
-*is* the plane's typed array — zero-copy on the client). Block order in the pack: structure first, then
-partials in `MeasurePartials` order.
+## 5. Block container, pack directory, plane split + cell-run slice (R2 + R5)
+
+The slab is split into **independently compressed blocks**. A **sparse** tile's blocks are Arrow IPC (managed
+`Apache.Arrow` writer — RULES R3; the nanoarrow extension segfaults on DuckDB.NET 1.5.3): one structure block
+plus one per plane, each a single-row Arrow message whose columns are `List<T>` (the child buffer *is* the
+plane's typed array — zero-copy on the client). A **dense** tile's blocks are **raw little-endian cell-row
+blocks** (§4b) — one per cell row per plane, no Arrow framing. Block order in the pack: structure first, then
+partials in `MeasurePartials` order (a dense partial's cell rows in cell order).
 
 - `@idx` (sparse only): `offsets` + `cellIds`.
-- `<partialName>`: that plane's values.
+- `<partialName>`: that plane's values — one block (sparse), or `cells` cell-row blocks (dense).
 
 `manifest.companionPack` (extended; `format: "slab"`):
 
@@ -136,12 +144,26 @@ partials in `MeasurePartials` order.
   working. **All** companion tiles (leaf *and* internal) are packed — internal companions are no longer
   per-tile files, which is what compresses them (R5 internal compression) and unifies the fetch path.
 - `planeEntries[tileKey] = { "@idx": [off,len], "<partial>": [off,len], … }` — absolute pack offsets per
-  block, for plane splitting: a fold fetches `@idx` (sparse) plus only the planes its active measures need,
-  coalescing adjacent ranges. Absent → whole-tile fetch (older bakes, or a non-split client).
+  plane region, for plane splitting: a fold fetches `@idx` (sparse) plus only the planes its active measures
+  need, coalescing adjacent ranges. A dense plane's region spans all its cell-row blocks. Absent → whole-tile
+  fetch (older bakes, or a non-split client).
+- `sliceEntries[tileKey] = { "<partial>": [len₀, len₁, … len_{cells−1}], … }` — **dense tiles only** (R5
+  cell-run slicing): each plane's per-cell-row compressed block lengths. Cell `c`'s block sits at
+  `planeEntries[tile][plane][0] + Σ_{i<c} lenᵢ` for `len_c` bytes, so only lengths are stored (offsets are the
+  prefix sum). Absent (or a sparse tile) → whole-plane fetch. Sparse opts out: its blocks are already small
+  and CSR is mark-major, hostile to cell slicing (REQUIREMENTS R5).
 
-`manifest.companionSlab` records `layout`, `axes` (name, kind, cardinality, `cumulative`, domain ref), the
-partial list with types, and `cells`. Row-form bakes have no `companionSlab`; the client keeps the row
-path (backward compatible, manifest-gated).
+**Cell-run slice fetch (dense, client).** From the active context the client compiles the exact cell rows the
+fold reads (`denseNeeds`, mirroring §6's dense reads): for each passing categorical run, a cumulative plane
+needs the `hi` and (when `lo>0`) `lo−1` rows, a `min`/`max` plane the `[lo..hi]` run; `cnt` (survival) is
+always among them. It fetches only those cell-row blocks — coalescing adjacent ones into a single HTTP Range,
+parallel ranges otherwise — inflates each, and assembles a plane array in which only the fetched rows carry
+values (the fold never reads the holes). Slices cache **under the tile key** (`(version, tileKey)` stays the
+only data identity — RULES R4); a later context that needs more rows fetches just the delta and merges it in.
+
+`manifest.companionSlab` records `layout`, `tileLayouts` (per-tile overrides, §3), `axes` (name, kind,
+cardinality, `cumulative`, domain), the partial list with types, and `cells`. Row-form bakes have no
+`companionSlab`; the client keeps the row path (backward compatible, manifest-gated).
 
 ## 6. Fold equivalence (frozen)
 

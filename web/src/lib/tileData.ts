@@ -1,10 +1,10 @@
 import { Type, type Table, type Vector } from 'apache-arrow';
 import type { CompanionPack, CompanionSlab, Manifest, ViewConfig } from './manifest';
 import { factsUrl, packBlockUrl, tileUrl } from './manifest';
-import { fetchArrowBlock, fetchArrowTable, fetchSlabPlanes } from './arrow';
+import { fetchArrowBlock, fetchArrowTable, fetchSlabCellRows, fetchSlabPlanes } from './arrow';
 import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
 import type { CompanionData, CompanionDim } from './measures';
-import { decodeSlab, type SlabData } from './slab';
+import { assembleDenseSlab, decodeSlab, type SlabData } from './slab';
 import { buildFilterValues, canonicalCodeLut, dayNumber, MISSING_CODE, type FilterSlots } from './gpuFilter';
 import { TileColumns } from './schema';
 import { timedSync } from './perf';
@@ -162,8 +162,12 @@ export type CompanionFetch =
       slab: CompanionSlab;
       /** The tile's resolved layout (SLAB-FORMAT §3) — decode branches on this, not the view default. */
       layout: 'sparse' | 'dense';
+      markCount: number;
       dir: Record<string, [number, number]>;
+      /** Sparse / dense-whole: the plane names to fetch whole. */
       want: string[];
+      /** Dense cell-run slice (R5): fetch only these cell rows per plane instead of whole planes. */
+      slice?: { sliceDir: Record<string, number[]>; cells: Record<string, number[]> };
     };
 
 /** A decoded companion, tagged by format so the fold picks foldTile (row) or foldSlab (slab). */
@@ -172,6 +176,12 @@ export type Companion = { kind: 'row'; data: CompanionData } | { kind: 'slab'; d
 /** Fetch + decode a tile's fact companion into the shape its fold reads. */
 export async function loadCompanion(spec: CompanionFetch, signal?: AbortSignal): Promise<Companion> {
   if (spec.kind === 'slab') {
+    if (spec.slice) {
+      // Dense cell-run slice (R5): fetch only the cell rows the context reads, assemble into a partial plane.
+      const fetched = await fetchSlabCellRows(spec.baseUrl, spec.codec, spec.dir, spec.slice.sliceDir, spec.slice.cells, signal);
+      const data = timedSync('decode.companion', () => assembleDenseSlab(fetched, spec.slab, spec.markCount), (d) => ({ n: d.markCount, bytes: d.decodedBytes }));
+      return { kind: 'slab', data };
+    }
     const blocks = await fetchSlabPlanes(spec.baseUrl, spec.codec, spec.dir, spec.want, signal);
     const data = timedSync('decode.companion', () => decodeSlab(blocks, spec.slab, spec.layout), (d) => ({ n: d.markCount, bytes: d.decodedBytes }));
     return { kind: 'slab', data };

@@ -10,7 +10,7 @@ import {
   parseMeasure,
 } from './measures';
 import { dayNumber } from './dates';
-import { foldSlab, type SlabData } from './slab';
+import { assembleDenseSlab, denseNeeds, foldSlab, mergeSlab, type SlabData } from './slab';
 
 // The SAME cross-language fixture the C# SlabFormatTests pins the writer against. Here the TS fold over the
 // fixture's sparse CSR and dense cumulative encodings must reproduce fixture.folds — and agree with the
@@ -187,6 +187,74 @@ describe('slab fold (shared fixture)', () => {
         assertFold(foldTile(rowOf(t.facts), measures, ctx, t.markCount, domains), c.expect[t.key], `row ${label}`);
       }
     }
+  });
+
+  // Cell-run slicing (R5 second half): a dense fold that fetches only the cell rows the context reads
+  // (denseNeeds) must reproduce the whole-slab fold exactly, and a later context that needs more rows must
+  // merge in losslessly. Uses the mixed pack's dense tile (0/0/1).
+  test('dense cell-run slice folds identically to the whole slab, and merges incrementally', () => {
+    const mp = fx.mixedPack;
+    const slabMeta: CompanionSlab = {
+      layout: mp.viewDefaultLayout,
+      cells: fx.cellCount,
+      occupancy: 0,
+      axes,
+      partials: fx.partials.map((p) => ({ name: p, type: p === 'cnt' ? 'i32' : 'f32' })),
+      tileLayouts: mp.tileLayouts,
+    };
+    const tileB = mp.tiles.find((t) => t.key === '0/0/1')!;
+    const M = tileB.markCount;
+    const whole: SlabData = {
+      layout: 'dense',
+      markCount: M,
+      cells: fx.cellCount,
+      axes,
+      strides,
+      planes: Object.fromEntries(fx.partials.map((p) => [p, f32(tileB.dense!.planes[p])])),
+      decodedBytes: 0,
+    };
+    // Simulate the R5 fetch: pull each needed cell row out of the whole plane as a raw block (i32 for cnt).
+    const sliceFetch = (cells: Record<string, number[]>): Record<string, { cell: number; buf: ArrayBuffer }[]> => {
+      const out: Record<string, { cell: number; buf: ArrayBuffer }[]> = {};
+      for (const [p, cs] of Object.entries(cells)) {
+        out[p] = cs.map((c) => {
+          const row = whole.planes[p].subarray(c * M, (c + 1) * M);
+          const typed = p === 'cnt' ? Int32Array.from(row) : Float32Array.from(row);
+          return { cell: c, buf: typed.buffer };
+        });
+      }
+      return out;
+    };
+    const sameCols = (a: Record<string, Float32Array | Uint16Array>, b: Record<string, Float32Array | Uint16Array>, label: string) => {
+      for (const name of Object.keys(b)) {
+        const av = a[name];
+        const bv = b[name];
+        expect(av.length, `${label} ${name} length`).toBe(bv.length);
+        for (let i = 0; i < bv.length; i++) {
+          const tag = `${label} ${name}[${i}]`;
+          if (Number.isNaN(bv[i])) expect(Number.isNaN(av[i]), tag).toBe(true);
+          else expect(av[i], tag).toBe(bv[i]);
+        }
+      }
+    };
+
+    const active = fx.partials; // the full measure set touches every partial (incl. cnt survival)
+    for (const c of mp.folds) {
+      const ctx = buildFoldContext(view, c.context);
+      const { cells } = denseNeeds(slabMeta, ctx, active);
+      const sliced = assembleDenseSlab(sliceFetch(cells), slabMeta, M);
+      sameCols(foldSlab(sliced, measures, ctx, M, domains), foldSlab(whole, measures, ctx, M, domains), `slice ${JSON.stringify(c.context)}`);
+    }
+
+    // Incremental merge: slice a narrow context, then widen — the delta cell rows merge in and fold whole.
+    const narrow = buildFoldContext(view, { quarter: '2025-01-01..2025-01-01' });
+    const wide = buildFoldContext(view, {});
+    const sliced = assembleDenseSlab(sliceFetch(denseNeeds(slabMeta, narrow, active).cells), slabMeta, M);
+    const wideCells = denseNeeds(slabMeta, wide, active).cells;
+    const delta: Record<string, number[]> = {};
+    for (const p of active) delta[p] = (wideCells[p] ?? []).filter((c) => !sliced.residentCells![p].has(c));
+    mergeSlab(sliced, assembleDenseSlab(sliceFetch(delta), slabMeta, M));
+    sameCols(foldSlab(sliced, measures, wide, M, domains), foldSlab(whole, measures, wide, M, domains), 'merged {}');
   });
 
   // Plane split (R1/R5): the map fetches only the active measure's planes, so a fold over a plane-SUBSET

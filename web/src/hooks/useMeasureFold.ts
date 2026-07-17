@@ -4,7 +4,7 @@ import { packBlockUrl, tileLayoutOf } from '../lib/manifest';
 import { isGroupRegime } from '../lib/channels';
 import { buildFoldContext, foldTile, type MeasureExpr, parseMeasure } from '../lib/measures';
 import { companionGrain, type Companion, type CompanionFetch, packBlock } from '../lib/tileData';
-import { foldSlab, isSlab, slabPlanesForMeasures } from '../lib/slab';
+import { denseNeeds, foldSlab, isSlab, mergeSlab, slabPlanesForMeasures } from '../lib/slab';
 import { type FoldedColumns, foldRemote, isRemoteFold } from '../lib/remoteFold';
 import { tileLoader } from '../lib/tileLoader';
 import { timedSync } from '../lib/perf';
@@ -174,46 +174,65 @@ export function useMeasureFold(
       };
     }
 
-    // Slab planes are resolved per tile — a tile's layout (dense/sparse) decides whether it needs `@idx`
-    // (sparse structure) or `cnt` (dense survival), so a mixed-layout view asks different tiles for
-    // different planes (SLAB-FORMAT §3).
-    const slabPlanesFor = (key: string): string[] =>
-      slab ? slabPlanesForMeasures(manifest, foldNames, tileLayoutOf(manifest.companionSlab!, key)) : [];
-    const specFor = (key: string, want: string[]): CompanionFetch | null => {
-      if (slab) {
-        const pack = manifest.companionPack;
-        const dir = pack?.planeEntries?.[key];
-        if (!pack || !dir || !manifest.companionSlab) return null;
-        const layout = tileLayoutOf(manifest.companionSlab, key);
-        return { kind: 'slab', baseUrl: packBlockUrl(manifest.view.id, version, pack.file, key), codec: pack.codec, slab: manifest.companionSlab, layout, dir, want };
+    // Plan one tile's companion fetch under the active context. A dense tile slices: it fetches only the cell
+    // rows the fold reads (denseNeeds, SLAB-FORMAT §5), minus those already resident, and merges them in. A
+    // sparse tile fetches whole planes (plane split, R1). Returns a spec to fetch, 'cached' when nothing is
+    // missing, or null on a definitive miss (no pack/dir — an older bake).
+    const planTileFetch = (key: string, markCount: number, cur: CompanionEntry | undefined): CompanionFetch | 'cached' | null => {
+      if (!slab) {
+        if (cur) return 'cached';
+        const pack = packBlock(manifest.companionPack, manifest.view.id, version, key);
+        return { kind: 'row', viewId: manifest.view.id, version, key, grain, pack };
       }
-      const pack = packBlock(manifest.companionPack, manifest.view.id, version, key);
-      return { kind: 'row', viewId: manifest.view.id, version, key, grain, pack };
+      const pack = manifest.companionPack;
+      const dir = pack?.planeEntries?.[key];
+      if (!pack || !dir || !manifest.companionSlab) return null;
+      const layout = tileLayoutOf(manifest.companionSlab, key);
+      const baseUrl = packBlockUrl(manifest.view.id, version, pack.file, key);
+      const active = slabPlanesForMeasures(manifest, foldNames, layout);
+      const sliceDir = layout === 'dense' ? pack.sliceEntries?.[key] : undefined;
+      if (layout === 'dense' && sliceDir) {
+        const { cells } = denseNeeds(manifest.companionSlab, ctx, active);
+        const resident = cur && cur !== 'missing' && cur.kind === 'slab' ? cur.data.residentCells : undefined;
+        const delta: Record<string, number[]> = {};
+        let any = false;
+        for (const p of active) {
+          const have = resident?.[p];
+          const missing = have ? (cells[p] ?? []).filter((c) => !have.has(c)) : (cells[p] ?? []);
+          delta[p] = missing;
+          if (missing.length) any = true;
+        }
+        if (cur && cur !== 'missing' && !any) return 'cached';
+        return { kind: 'slab', baseUrl, codec: pack.codec, slab: manifest.companionSlab, layout, markCount, dir, want: [], slice: { sliceDir, cells: delta } };
+      }
+      // Sparse (or a dense tile without a slice directory — an older bake): whole-plane split.
+      const have = residentPlanes(cur);
+      const want = active.filter((p) => !have.has(p));
+      if (cur && cur !== 'missing' && want.length === 0) return 'cached';
+      return { kind: 'slab', baseUrl, codec: pack.codec, slab: manifest.companionSlab, layout, markCount, dir, want };
     };
     (async () => {
-      // Fetch + decode the missing planes in parallel on the worker pool. A slab tile fetches only the
-      // active measure's planes not already resident; a row-form tile fetches its one block once. Only a
-      // definitive miss (404, or a companion the fold can't use) is cached 'missing' (baked fallback, never
-      // re-requested); a transient failure stays un-entered and schedules a retry.
+      // Fetch + decode the missing planes/cell-rows in parallel on the worker pool. A dense slab tile fetches
+      // only the context's cell rows not already resident; a sparse tile its active planes; a row-form tile
+      // its one block. Only a definitive miss (404, or a companion the fold can't use) is cached 'missing'
+      // (baked fallback, never re-requested); a transient failure stays un-entered and schedules a retry.
       let transient = false;
       await Promise.all(
         rendered.map(async (t) => {
           const ck = ckey(t.key);
           const cur = companions.current.get(ck);
           if (cur === 'missing') return;
-          const want = slab ? slabPlanesFor(t.key).filter((p) => !residentPlanes(cur).has(p)) : [];
-          if (cur && (!slab || want.length === 0)) return; // row-form cached, or all needed planes resident
-          const spec = specFor(t.key, want);
-          if (!spec) {
+          const plan = planTileFetch(t.key, t.data.count, cur);
+          if (plan === 'cached') return;
+          if (!plan) {
             companions.current.set(ck, 'missing');
             return;
           }
           try {
-            const c = await tileLoader.loadCompanion(spec);
+            const c = await tileLoader.loadCompanion(plan);
             const prev = companions.current.get(ck);
             if (slab && c.kind === 'slab' && prev && prev !== 'missing' && prev.kind === 'slab') {
-              Object.assign(prev.data.planes, c.data.planes); // merge planes under the tile key
-              prev.data.decodedBytes += c.data.decodedBytes;
+              mergeSlab(prev.data, c.data); // incremental slice / plane merge under the tile key
             } else {
               companions.current.set(ck, c);
             }
@@ -286,21 +305,44 @@ export function useMeasureFold(
           return null;
         }
       }
-      if (!isSlab(m)) return null;
+      if (!isSlab(m) || !m.companionSlab) return null;
       const ck = `${m.version}|${key}`;
-      if (companions.current.get(ck) === 'missing') return null;
-      const layout = tileLayoutOf(m.companionSlab!, key);
-      const need = slabPlanesForMeasures(m, inspectNames, layout);
-      const want = need.filter((p) => !residentPlanes(companions.current.get(ck)).has(p));
-      if (want.length) {
-        const pack = m.companionPack;
-        const dir = pack?.planeEntries?.[key];
-        if (!pack || !dir || !m.companionSlab) return null;
-        const spec: CompanionFetch = { kind: 'slab', baseUrl: packBlockUrl(m.view.id, m.version, pack.file, key), codec: pack.codec, slab: m.companionSlab, layout, dir, want };
+      const cur = companions.current.get(ck);
+      if (cur === 'missing') return null;
+      const pack = m.companionPack;
+      const dir = pack?.planeEntries?.[key];
+      if (!pack || !dir) return null;
+      const layout = tileLayoutOf(m.companionSlab, key);
+      const baseUrl = packBlockUrl(m.view.id, m.version, pack.file, key);
+      const ctxF = buildFoldContext(m.view, ctxObj);
+      const active = slabPlanesForMeasures(m, inspectNames, layout);
+      const markCount = cur && cur.kind === 'slab' ? cur.data.markCount : 0;
+
+      // A dense tile slices the inspect measures' cell rows for this one clicked tile; a sparse tile fetches
+      // their whole planes. Either way, only the not-yet-resident part is fetched and merged under the key.
+      let spec: CompanionFetch | null = null;
+      const sliceDir = layout === 'dense' ? pack.sliceEntries?.[key] : undefined;
+      if (layout === 'dense' && sliceDir && markCount) {
+        const { cells } = denseNeeds(m.companionSlab, ctxF, active);
+        const resident = cur && cur.kind === 'slab' ? cur.data.residentCells : undefined;
+        const delta: Record<string, number[]> = {};
+        let any = false;
+        for (const p of active) {
+          const have = resident?.[p];
+          const missing = have ? (cells[p] ?? []).filter((c) => !have.has(c)) : (cells[p] ?? []);
+          delta[p] = missing;
+          if (missing.length) any = true;
+        }
+        if (any) spec = { kind: 'slab', baseUrl, codec: pack.codec, slab: m.companionSlab, layout, markCount, dir, want: [], slice: { sliceDir, cells: delta } };
+      } else {
+        const want = active.filter((p) => !residentPlanes(cur).has(p));
+        if (want.length) spec = { kind: 'slab', baseUrl, codec: pack.codec, slab: m.companionSlab, layout, markCount, dir, want };
+      }
+      if (spec) {
         try {
           const c = await tileLoader.loadCompanion(spec);
           const prev = companions.current.get(ck);
-          if (c.kind === 'slab' && prev && prev !== 'missing' && prev.kind === 'slab') Object.assign(prev.data.planes, c.data.planes);
+          if (c.kind === 'slab' && prev && prev !== 'missing' && prev.kind === 'slab') mergeSlab(prev.data, c.data);
           else companions.current.set(ck, c);
         } catch {
           return null;
@@ -308,7 +350,7 @@ export function useMeasureFold(
       }
       const comp = companions.current.get(ck);
       if (!comp || comp === 'missing' || comp.kind !== 'slab') return null;
-      return foldSlab(comp.data, inspectMeasures, buildFoldContext(m.view, ctxObj), comp.data.markCount, domains);
+      return foldSlab(comp.data, inspectMeasures, ctxF, comp.data.markCount, domains);
     },
     [measures, inspectNames, domains],
   );
