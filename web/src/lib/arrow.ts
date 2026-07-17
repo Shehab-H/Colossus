@@ -1,5 +1,5 @@
 import { tableFromIPC, type Table } from 'apache-arrow';
-import { netMeasure, record, timedSync } from './perf';
+import { netMeasure, record, SW_CACHE_HEADER, timedSync } from './perf';
 
 /** A parsed tile plus the one ArrayBuffer it was parsed from. Under tile format 2 the table's column
  *  buffers are typed-array views into `buffer`, so retaining it lets decode take views instead of
@@ -17,7 +17,13 @@ export async function fetchArrowTable(url: string, signal?: AbortSignal): Promis
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`tile ${res.status} ${url}`);
   const buffer = await res.arrayBuffer();
-  record({ stage: 'net.tile', ms: performance.now() - t0, t: performance.now(), bytes: buffer.byteLength, ...netMeasure(url) });
+  record({
+    stage: 'net.tile',
+    ms: performance.now() - t0,
+    t: performance.now(),
+    bytes: buffer.byteLength,
+    ...netMeasure(url, buffer.byteLength, res.headers.get(SW_CACHE_HEADER)),
+  });
   const table = timedSync('decode.ipc', () => tableFromIPC(new Uint8Array(buffer)), (tb) => ({ n: tb.numRows, bytes: buffer.byteLength }));
   return { table, buffer };
 }
@@ -35,7 +41,13 @@ export async function fetchArrowBlock(
   const res = await fetch(url, { signal, headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
   if (!res.ok) throw new Error(`tile ${res.status} ${url}`);
   const body = await res.arrayBuffer();
-  record({ stage: 'net.facts', ms: performance.now() - t0, t: performance.now(), bytes: body.byteLength, ...netMeasure(url) });
+  record({
+    stage: 'net.facts',
+    ms: performance.now() - t0,
+    t: performance.now(),
+    bytes: body.byteLength,
+    ...netMeasure(url, body.byteLength, res.headers.get(SW_CACHE_HEADER)),
+  });
   const buffer = await inflateBlock(body, offset, length, codec);
   const table = timedSync('decode.ipc', () => tableFromIPC(new Uint8Array(buffer)), (tb) => ({ n: tb.numRows, bytes: buffer.byteLength }));
   return { table, buffer };
@@ -111,7 +123,7 @@ export async function fetchSlabPlanes(
         t: performance.now(),
         bytes: body.byteLength,
         n: run.members.length,
-        ...netMeasure(url),
+        ...netMeasure(url, body.byteLength, res.headers.get(SW_CACHE_HEADER)),
       });
       const whole = body.byteLength !== run.len; // server ignored Range → whole archive
       await Promise.all(

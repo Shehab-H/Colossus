@@ -28,6 +28,12 @@ export type PerfStage =
  *  browser exposes it — so 'http' means "the HTTP cache, either tier". */
 export type CacheSource = 'network' | 'http' | 'sw';
 
+/** Response header sw.js stamps with its cache outcome ('hit' | 'miss'). The page has no other way to
+ *  know: every SW-mediated response reports transferSize 0, so without this a miss that pulled megabytes
+ *  reads identically to a free cache hit. Kept here beside the reader (netMeasure); sw.js is plain JS with
+ *  no bundler and declares the same literal on its side. */
+export const SW_CACHE_HEADER = 'X-Colossus-Cache';
+
 export interface PerfEvent {
   stage: PerfStage;
   ms: number;
@@ -301,15 +307,30 @@ export function timedSync<T>(stage: PerfStage, fn: () => T, fields?: (v: T) => O
  *  a SW hit served from the Cache API has workerStart set and transferSize 0, while a SW pass-through to
  *  the network keeps its real transferSize. Without this, sw.js's cache — the only one that survives an
  *  HTTP-cache eviction, and the entire reason a returning session renders offline — is invisible. */
-export function netMeasure(url: string): { wire?: number; cached?: boolean; source?: CacheSource } {
+export function netMeasure(
+  url: string,
+  bodyBytes: number,
+  swOutcome?: string | null,
+): { wire?: number; cached?: boolean; source?: CacheSource } {
+  // The service worker is AUTHORITATIVE whenever it answered, and Resource Timing must not be consulted:
+  // a response sw.js constructs or replays reports transferSize 0 whether the bytes came from the Cache
+  // API or off the wire a millisecond earlier. Trusting transferSize here scored every SW miss as a free
+  // cache hit — the whole app read as 100% cached while the network was saturated. sw.js tags the outcome
+  // (X-Colossus-Cache) because it is the only party that can know it.
+  if (swOutcome === 'hit') return { wire: 0, cached: true, source: 'sw' };
+  // A SW miss: the worker fetched these bytes. Its own transfer is invisible to us, so the body size is
+  // the honest stand-in — exact for tiles and pack blocks, which are served raw (already-compressed
+  // bytes, no transport encoding), as the cold measurements confirm (wire == body).
+  if (swOutcome === 'miss') return { wire: bodyBytes, cached: false, source: 'network' };
+
   try {
     const list = performance.getEntriesByName(url);
     const e = list[list.length - 1] as PerformanceResourceTiming | undefined;
     if (!e) return {};
-    const viaWorker = e.workerStart > 0;
     if (e.transferSize > 0) return { wire: e.transferSize, cached: false, source: 'network' };
-    if (e.decodedBodySize > 0 || e.encodedBodySize > 0)
-      return { wire: 0, cached: true, source: viaWorker ? 'sw' : 'http' };
+    // No service worker in the path (it would have tagged the response), so transferSize 0 against a real
+    // body is a genuine HTTP-cache hit.
+    if (e.decodedBodySize > 0 || e.encodedBodySize > 0) return { wire: 0, cached: true, source: 'http' };
     return {};
   } catch {
     return {};

@@ -9,6 +9,20 @@
 const TILE_RE = /\/[^/]+\/v[^/]+\/\d+\/\d+\/\d+(\.facts)?\.arrow$/; // <viewId>/<version>/z/x/y[.facts].arrow
 const PACK_RE = /\/([^/]+)\/(v[^/]+)\/[^/]+\.pack$/; // <viewId>/<version>/facts.pack (+ ?tile= and a Range header)
 
+// Where a response actually came from. The page CANNOT work this out for itself: a response this worker
+// constructs — or replays out of the Cache API — reports transferSize 0 to Resource Timing either way,
+// so a miss that just pulled megabytes over the wire is indistinguishable from a free cache hit. This
+// worker is the only party that knows, so it says so on every response it answers.
+const CACHE_HEADER = 'X-Colossus-Cache';
+
+/** Re-emit a response carrying the cache outcome. `res.body` streams through rather than being buffered,
+ *  so this adds a header, not a copy — the tile hot path is untouched. */
+function tagged(res, outcome) {
+  const headers = new Headers(res.headers);
+  headers.set(CACHE_HEADER, outcome);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
@@ -48,10 +62,10 @@ function cacheName(viewId, version) {
 async function cacheFirst(name, request) {
   const cache = await caches.open(name);
   const hit = await cache.match(request);
-  if (hit) return hit;
+  if (hit) return tagged(hit, 'hit');
   const res = await fetch(request);
   if (res.ok) await putSafe(cache, request, res.clone());
-  return res;
+  return tagged(res, 'miss');
 }
 
 // One companion block. The Cache API rejects 206 responses, so the fetched block is re-wrapped as a
@@ -61,17 +75,21 @@ async function cacheFirst(name, request) {
 async function cachedBlock(name, request) {
   const cache = await caches.open(name);
   const hit = await cache.match(request);
-  if (hit) return hit;
+  if (hit) return tagged(hit, 'hit');
   const res = await fetch(request);
   if (!res.ok) return res;
   const range = /bytes=(\d+)-(\d+)/.exec(request.headers.get('range'));
   const buf = await res.arrayBuffer();
   if (!range || buf.byteLength !== Number(range[2]) - Number(range[1]) + 1) {
-    return new Response(buf, { status: res.status, statusText: res.statusText, headers: res.headers });
+    const headers = new Headers(res.headers);
+    headers.set(CACHE_HEADER, 'miss');
+    return new Response(buf, { status: res.status, statusText: res.statusText, headers });
   }
+  // Stored WITHOUT a verdict of its own: the header is stamped per answer (tagged() on the hit path
+  // overwrites it), so a cached block can never replay this miss's verdict to a later reader.
   const block = new Response(buf, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
   await putSafe(cache, request, block.clone());
-  return block;
+  return tagged(block, 'miss');
 }
 
 // Quota-safe put: on QuotaExceededError, evict the oldest tile cache entirely and retry once; give up to
