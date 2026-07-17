@@ -1,4 +1,5 @@
 import { tableFromIPC, type Table } from 'apache-arrow';
+import { netMeasure, record, timedSync } from './perf';
 
 /** A parsed tile plus the one ArrayBuffer it was parsed from. Under tile format 2 the table's column
  *  buffers are typed-array views into `buffer`, so retaining it lets decode take views instead of
@@ -12,10 +13,13 @@ export interface FetchedArrow {
 // decode. The resulting column buffers ARE the typed arrays deck.gl wants, so a tile flows disk → GPU
 // with no per-cell work and nothing to unwind on the JS heap — the whole reason we left Parquet behind.
 export async function fetchArrowTable(url: string, signal?: AbortSignal): Promise<FetchedArrow> {
+  const t0 = performance.now();
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`tile ${res.status} ${url}`);
   const buffer = await res.arrayBuffer();
-  return { table: tableFromIPC(new Uint8Array(buffer)), buffer };
+  record({ stage: 'net.tile', ms: performance.now() - t0, t: performance.now(), bytes: buffer.byteLength, ...netMeasure(url) });
+  const table = timedSync('decode.ipc', () => tableFromIPC(new Uint8Array(buffer)), (tb) => ({ n: tb.numRows, bytes: buffer.byteLength }));
+  return { table, buffer };
 }
 
 /** One tile's block out of a companion pack (companion-scale R2): HTTP-Range the compressed block,
@@ -27,10 +31,14 @@ export async function fetchArrowBlock(
   codec: CompressionFormat,
   signal?: AbortSignal,
 ): Promise<FetchedArrow> {
+  const t0 = performance.now();
   const res = await fetch(url, { signal, headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
   if (!res.ok) throw new Error(`tile ${res.status} ${url}`);
-  const buffer = await inflateBlock(await res.arrayBuffer(), offset, length, codec);
-  return { table: tableFromIPC(new Uint8Array(buffer)), buffer };
+  const body = await res.arrayBuffer();
+  record({ stage: 'net.facts', ms: performance.now() - t0, t: performance.now(), bytes: body.byteLength, ...netMeasure(url) });
+  const buffer = await inflateBlock(body, offset, length, codec);
+  const table = timedSync('decode.ipc', () => tableFromIPC(new Uint8Array(buffer)), (tb) => ({ n: tb.numRows, bytes: buffer.byteLength }));
+  return { table, buffer };
 }
 
 /** Decompress one block of a ranged response body. An exact-length body IS the block (a 206, or the
@@ -44,12 +52,19 @@ export async function inflateBlock(
   codec: CompressionFormat,
 ): Promise<ArrayBuffer> {
   const block = body.byteLength === length ? body : body.slice(offset, offset + length);
-  const inflated = new Response(block).body!.pipeThrough(new DecompressionStream(codec));
-  return new Response(inflated).arrayBuffer();
+  return inflate(block, codec);
 }
 
-const inflate = (block: ArrayBuffer, codec: CompressionFormat): Promise<ArrayBuffer> =>
-  new Response(new Response(block).body!.pipeThrough(new DecompressionStream(codec))).arrayBuffer();
+const inflate = async (block: ArrayBuffer, codec: CompressionFormat): Promise<ArrayBuffer> => {
+  const t0 = performance.now();
+  const out = await new Response(
+    new Response(block).body!.pipeThrough(new DecompressionStream(codec)),
+  ).arrayBuffer();
+  // `bytes` is what the block expands to; the compressed size it came from is net.facts' own `bytes`.
+  // No `wire` here — nothing in this stage touches the network, and the field means exactly that.
+  record({ stage: 'inflate', ms: performance.now() - t0, t: performance.now(), bytes: out.byteLength });
+  return out;
+};
 
 /** Fetch a slab tile's requested planes out of the pack (companion-scale R1/R5 plane split). The wanted
  *  plane ranges are coalesced into contiguous runs — a fold that needs only some planes ranges only those
@@ -83,9 +98,21 @@ export async function fetchSlabPlanes(
   await Promise.all(
     runs.map(async (run) => {
       const url = `${baseUrl}&r=${run.off}-${run.len}`;
+      const t0 = performance.now();
       const res = await fetch(url, { signal, headers: { Range: `bytes=${run.off}-${run.off + run.len - 1}` } });
       if (!res.ok) throw new Error(`companion ${res.status} ${url}`);
       const body = await res.arrayBuffer();
+      // One event per coalesced run — the unit actually requested. `bytes` is the block bytes received
+      // (still compressed; the inflate stage reports what they expand to); `wire`/`cached` come from
+      // Resource Timing, so a service-worker hit on a warm pan reports 0 rather than the run length.
+      record({
+        stage: 'net.facts',
+        ms: performance.now() - t0,
+        t: performance.now(),
+        bytes: body.byteLength,
+        n: run.members.length,
+        ...netMeasure(url),
+      });
       const whole = body.byteLength !== run.len; // server ignored Range → whole archive
       await Promise.all(
         run.members.map(async (m) => {

@@ -7,6 +7,7 @@ import type { CompanionData, CompanionDim } from './measures';
 import { decodeSlab, type SlabData } from './slab';
 import { buildFilterValues, canonicalCodeLut, dayNumber, MISSING_CODE, type FilterSlots } from './gpuFilter';
 import { TileColumns } from './schema';
+import { timedSync } from './perf';
 
 /** A per-mark channel column in transfer-friendly form. Row-wise JS strings never cross the worker
  *  boundary (cloning ~1M of them per tile was the zoom stutter): categorical columns become integer
@@ -80,7 +81,7 @@ export async function loadTile(
 ): Promise<TileData> {
   const [z, x, y] = key.split('/').map(Number);
   const { table, buffer } = await fetchArrowTable(tileUrl(view.id, version, z, x, y), signal);
-  return decodeTile(view, table, slots, tileFormat, buffer);
+  return timedSync('decode.tile', () => decodeTile(view, table, slots, tileFormat, buffer), (d) => ({ n: d.count, bytes: tileBytes(d), key }));
 }
 
 /** Which companion columns are grain (and their temporality) — the minimal, structured-clone-friendly
@@ -163,13 +164,15 @@ export type Companion = { kind: 'row'; data: CompanionData } | { kind: 'slab'; d
 export async function loadCompanion(spec: CompanionFetch, signal?: AbortSignal): Promise<Companion> {
   if (spec.kind === 'slab') {
     const blocks = await fetchSlabPlanes(spec.baseUrl, spec.codec, spec.dir, spec.want, signal);
-    return { kind: 'slab', data: decodeSlab(blocks, spec.slab) };
+    const data = timedSync('decode.companion', () => decodeSlab(blocks, spec.slab), (d) => ({ n: d.markCount, bytes: d.decodedBytes }));
+    return { kind: 'slab', data };
   }
   const [z, x, y] = spec.key.split('/').map(Number);
   const { table } = spec.pack
     ? await fetchArrowBlock(spec.pack.url, spec.pack.offset, spec.pack.length, spec.pack.codec, signal)
     : await fetchArrowTable(factsUrl(spec.viewId, spec.version, z, x, y), signal);
-  return { kind: 'row', data: decodeCompanion(table, spec.grain) };
+  const data = timedSync('decode.companion', () => decodeCompanion(table, spec.grain), (d) => ({ n: d.rowCount, key: spec.key }));
+  return { kind: 'row', data };
 }
 
 /** Single-chunk non-null Int32 column viewed in place, else copied. */

@@ -8,6 +8,7 @@
 import { tableFromIPC } from 'apache-arrow';
 import { API_BASE, type Manifest } from './manifest';
 import type { FoldContext } from './measures';
+import { record } from './perf';
 
 export type FoldedColumns = Record<string, Float32Array | Uint16Array>;
 
@@ -45,6 +46,7 @@ export async function foldRemote(
   tiles: string[],
   signal?: AbortSignal,
 ): Promise<RemoteFoldResult> {
+  const t0 = performance.now();
   const res = await fetch(`${API_BASE}/views/${encodeURIComponent(viewId)}/fold`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -54,7 +56,17 @@ export async function foldRemote(
   if (!res.ok) throw new Error(`fold ${res.status} ${await res.text().catch(() => '')}`);
   const bytes = new Uint8Array(await res.arrayBuffer());
   const serverMs = res.headers.get('x-fold-ms');
-  return { ...decodeFoldResponse(bytes, measureNames), responseBytes: bytes.byteLength, serverMs: serverMs ? +serverMs : null };
+  const ms = performance.now() - t0;
+  const server = serverMs ? +serverMs : undefined;
+  // Round trip AND the server's own compute: the gap between them is transport + queueing, which is the
+  // number that decides whether a remote-priced view is actually paying for itself.
+  // A POST is never served from cache, so these bytes always crossed the wire.
+  record({ stage: 'fold.remote', ms, t: performance.now(), bytes: bytes.byteLength, wire: bytes.byteLength, cached: false, serverMs: server, n: tiles.length });
+  // The server's own compute, unwrapped into a stage of its own so it gets percentiles next to every
+  // other stage — a mean alone hides the tail, and the tail is what a fold budget is set against. It
+  // carries no bytes: those are fold.remote's, and counting them twice would inflate the byte totals.
+  if (server !== undefined) record({ stage: 'fold.server', ms: server, t: performance.now(), n: tiles.length });
+  return { ...decodeFoldResponse(bytes, measureNames), responseBytes: bytes.byteLength, serverMs: server ?? null };
 }
 
 /** Decode the folded-columns Arrow into per-tile, mki-indexed columns. Exported for the benchmark harness

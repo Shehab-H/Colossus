@@ -7,6 +7,7 @@ import { companionGrain, type Companion, type CompanionFetch, packBlock } from '
 import { foldSlab, isSlab, slabPlanesForMeasures } from '../lib/slab';
 import { type FoldedColumns, foldRemote, isRemoteFold } from '../lib/remoteFold';
 import { tileLoader } from '../lib/tileLoader';
+import { timedSync } from '../lib/perf';
 import type { RenderedTile } from './useTiles';
 
 export type { FoldedColumns };
@@ -231,10 +232,16 @@ export function useMeasureFold(
             if (comp === 'missing') missing.add(t.key);
             continue;
           }
-          cols =
-            comp.kind === 'slab'
-              ? foldSlab(comp.data, foldMeasures, ctx, t.data.count, domains)
-              : foldTile(comp.data, foldMeasures, ctx, t.data.count, domains);
+          // The local counterpart of fold.remote: same seam, same outputs. Measured per tile so the
+          // dashboard can put a client fold's p50 next to a remote round trip and compare like for like.
+          cols = timedSync(
+            'fold.client',
+            () =>
+              comp.kind === 'slab'
+                ? foldSlab(comp.data, foldMeasures, ctx, t.data.count, domains)
+                : foldTile(comp.data, foldMeasures, ctx, t.data.count, domains),
+            () => ({ n: t.data.count, key: t.key }),
+          );
           folds.current.set(fkey(t.key), cols);
         }
         byTile.set(t.key, cols);

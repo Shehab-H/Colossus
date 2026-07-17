@@ -1,6 +1,7 @@
 import { type Companion, type CompanionFetch, loadCompanion, loadTile, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
+import { emitAll, isPerfOn, type PerfEvent } from './perf';
 
 interface LoadResponse {
   id: number;
@@ -8,6 +9,8 @@ interface LoadResponse {
   companion?: Companion;
   error?: string;
   aborted?: boolean;
+  /** Stage timings measured in the worker (fetch, inflate, decode) — re-emitted into the main-thread bus. */
+  perf?: PerfEvent[];
 }
 
 interface Pending {
@@ -49,6 +52,7 @@ class TileLoader {
   }
 
   private settle(res: LoadResponse): void {
+    if (res.perf) emitAll(res.perf);
     const p = this.pending.get(res.id);
     if (!p) return;
     this.pending.delete(res.id);
@@ -80,7 +84,7 @@ class TileLoader {
     const worker = this.workers[this.rr++ % this.workers.length];
     const promise = new Promise<LoadResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, view, version, key, slots, tileFormat });
+      worker.postMessage({ id, view, version, key, slots, tileFormat, perf: isPerfOn() });
     }).then((r) => r.tile as TileData);
     // postMessage on a terminated worker is a silent no-op, so a late cancel is always safe.
     return { promise, cancel: () => worker.postMessage({ cancel: id }) };
@@ -96,7 +100,7 @@ class TileLoader {
     const worker = this.workers[this.rr++ % this.workers.length];
     return new Promise<LoadResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, companion: spec });
+      worker.postMessage({ id, companion: spec, perf: isPerfOn() });
     }).then((r) => r.companion as Companion);
   }
 }

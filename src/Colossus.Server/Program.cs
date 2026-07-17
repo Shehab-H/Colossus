@@ -29,7 +29,7 @@ builder.Services.AddControllers().AddJsonOptions(o => ColossusJson.Apply(o.JsonS
 // is fully inspectable cross-origin. No credentials, so AllowAnyOrigin is safe.
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()
-    .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length", "X-Fold-Ms")));
+    .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length", "X-Fold-Ms", "Server-Timing")));
 builder.Services.AddOpenApi(o => o.AddDocumentTransformer((doc, _, _) =>
 {
     doc.Info = new OpenApiInfo
@@ -85,6 +85,11 @@ app.UseStaticFiles(new StaticFileOptions
             name is "latest.json" or "manifest.json"
                 ? "public, max-age=60"
                 : "public, max-age=31536000, immutable";
+        // Without this a cross-origin reader (the SPA on another host, or a CDN tile base) sees
+        // transferSize/encodedBodySize zeroed in Resource Timing — the perf dashboard would report a
+        // multi-megabyte tile fetch as 0 bytes rather than as unknown. No credentials are involved and
+        // the sizes are already public, so `*` exposes nothing the body doesn't.
+        ctx.Context.Response.Headers["Timing-Allow-Origin"] = "*";
     },
 });
 

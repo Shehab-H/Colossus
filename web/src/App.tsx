@@ -9,6 +9,8 @@ import { Map as BaseMap, useControl } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import Hud from './components/Hud';
 import Controls from './components/Controls';
+import PerfDashboard from './components/PerfDashboard';
+import { isPerfOn, timedSync } from './lib/perf';
 import { panel } from './components/controlStyles';
 import InspectPanel, { type Selection } from './components/InspectPanel';
 import LegendBox from './components/Legend';
@@ -259,7 +261,7 @@ export default function App() {
     if (!manifest) return [];
     const coordinateSystem = isGeo ? COORDINATE_SYSTEM.LNGLAT : COORDINATE_SYSTEM.CARTESIAN;
     const pickable = !!inspect; // marks answer clicks only when the view opts into inspection
-    return drawn.map(({ key, data }) => {
+    return timedSync('layers', () => drawn.map(({ key, data }) => {
       // Key by tile ONLY — never by measure/filter. A stable id lets deck match the existing layer
       // and swap attribute buffers in place; folding measure into the id destroyed and rebuilt every
       // on-screen layer per picker switch, re-running geometry setup for ~1M cells in one frame.
@@ -297,7 +299,7 @@ export default function App() {
         ...gpuProps,
         autoHighlight: false, // see the polygon layer above — per-pointermove picking is the pan stall
       });
-    });
+    }), (ls) => ({ n: ls.length }));
   }, [drawn, viewId, manifest, isGeo, isPolygon, renderChannel, colorCategories, inspect, slots, gpuProps, folded, contextKey]);
 
   return (
@@ -368,6 +370,10 @@ export default function App() {
       {selection && <InspectPanel selection={selection} onClose={() => setSelection(null)} />}
       {manifest && legend && <LegendBox legend={legend} />}
       {chrome && <ThemeToggle theme={theme} onToggle={toggle} />}
+
+      {/* ?perf=1 — the live post-bake lifecycle monitor. Mounts in the embed too: an iframed showcase is
+          a legitimate thing to measure, and the flag is explicit either way. */}
+      {isPerfOn() && <PerfDashboard manifest={manifest} tilesInView={selKeys.length} />}
     </div>
   );
 }

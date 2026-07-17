@@ -52,6 +52,11 @@ public sealed class FoldController(
             // DuckDB is blocking; keep it off the request thread so the server stays responsive.
             var result = await Task.Run(() => executor.Fold(manifest, factsPath, query.Measures, query.Context, query.Tiles), ct);
             Response.Headers["X-Fold-Ms"] = result.FoldMs.ToString();
+            // The same number in the standard form: Server-Timing lands in the browser's Resource Timing
+            // entry and in devtools' waterfall on its own, so server compute is visible without the client
+            // reading a custom header. Timing-Allow-Origin is what makes either readable cross-origin.
+            Response.Headers["Server-Timing"] = $"fold;dur={result.FoldMs}";
+            Response.Headers["Timing-Allow-Origin"] = "*";
             return File(result.Arrow, "application/vnd.apache.arrow.stream");
         }
         catch (ArgumentException e)

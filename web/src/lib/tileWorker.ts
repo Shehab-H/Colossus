@@ -6,6 +6,7 @@
 import { type Companion, type CompanionFetch, loadCompanion, loadTile, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
+import { initResourceTiming, setPerfEnabled, takeEvents } from './perf';
 
 interface LoadRequest {
   id: number;
@@ -14,6 +15,7 @@ interface LoadRequest {
   key: string;
   slots: FilterSlots | null;
   tileFormat: number;
+  perf?: boolean;
 }
 
 /** Fetch + decode a fact companion off the main thread — a low-zoom companion runs to millions of rows,
@@ -22,6 +24,7 @@ interface LoadRequest {
 interface CompanionRequest {
   id: number;
   companion: CompanionFetch;
+  perf?: boolean;
 }
 
 interface CancelRequest {
@@ -81,6 +84,10 @@ function companionTransferable(c: Companion): Transferable[] {
 
 const inflight = new Map<number, AbortController>();
 
+// Tiles and companions are fetched here, so the worker's own Resource Timing timeline is the one that
+// holds their wire sizes — it needs the same headroom as the main thread's.
+initResourceTiming();
+
 ctx.onmessage = async (e) => {
   if ('cancel' in e.data) {
     inflight.get(e.data.cancel)?.abort();
@@ -89,18 +96,22 @@ ctx.onmessage = async (e) => {
   const { id } = e.data;
   const ac = new AbortController();
   inflight.set(id, ac);
+  // The worker can't see the page's ?perf=1 (self.location is the worker script), so the flag rides on
+  // each request. `takeEvents` drains this request's events into the response; tileLoader re-emits them
+  // on the main thread, where the dashboard lives.
+  setPerfEnabled(e.data.perf === true);
   try {
     if ('companion' in e.data) {
       const companion = await loadCompanion(e.data.companion, ac.signal);
-      ctx.postMessage({ id, companion }, companionTransferable(companion));
+      ctx.postMessage({ id, companion, perf: takeEvents() }, companionTransferable(companion));
     } else {
       const { view, version, key, slots, tileFormat } = e.data;
       const tile = await loadTile(view, version, key, slots, tileFormat, ac.signal);
-      ctx.postMessage({ id, tile }, transferable(tile));
+      ctx.postMessage({ id, tile, perf: takeEvents() }, transferable(tile));
     }
   } catch (err) {
     const aborted = ac.signal.aborted;
-    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err), aborted });
+    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err), aborted, perf: takeEvents() });
   } finally {
     inflight.delete(id);
   }
