@@ -190,6 +190,32 @@ describe('cumulative', () => {
   });
 });
 
+describe('cache source', () => {
+  it('splits the two disk caches, which "cached" alone collapses', () => {
+    // sw.js and the browser HTTP cache have very different lifetimes: the SW copy survives an HTTP-cache
+    // eviction and is what makes a returning session render offline. One "cached" total hides it.
+    record(ev({ stage: 'net.tile', bytes: 1000, wire: 0, cached: true, source: 'http' }));
+    record(ev({ stage: 'net.tile', bytes: 3000, wire: 0, cached: true, source: 'sw' }));
+    record(ev({ stage: 'net.facts', bytes: 500, wire: 0, cached: true, source: 'sw' }));
+    record(ev({ stage: 'net.tile', bytes: 200, wire: 200, cached: false, source: 'network' }));
+    const c = cumulative();
+    expect(c.cacheHttp).toBe(1000);
+    expect(c.cacheSw).toBe(3500);
+    expect(c.cache).toBe(4500); // both disk caches
+    expect(c.wire).toBe(200); // network is not a cache
+  });
+
+  it('counts a source-less cache hit toward the total but neither disk cache', () => {
+    // An older entry, or a realm that reports no workerStart: still truthfully a cache hit, just not
+    // attributable. Guessing a cache for it would invent a number.
+    record(ev({ stage: 'net.tile', bytes: 800, wire: 0, cached: true }));
+    const c = cumulative();
+    expect(c.cache).toBe(800);
+    expect(c.cacheHttp).toBe(0);
+    expect(c.cacheSw).toBe(0);
+  });
+});
+
 describe('fold.server', () => {
   it('gets its own percentiles, separate from the round trip that carried it', () => {
     record(ev({ stage: 'fold.remote', ms: 100, bytes: 500, wire: 500, cached: false, serverMs: 80 }));

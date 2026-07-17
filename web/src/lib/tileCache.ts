@@ -33,6 +33,11 @@ export class TileCache {
   private readonly sizes = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
 
+  /** Tiles dropped by the byte budget since load. Every eviction is a decode the next backtrack pays
+   *  again, so a climbing count under a steady camera is thrash — the one symptom the byte and timing
+   *  numbers cannot show, because a re-fetched tile looks identical to a first fetch. */
+  evictions = 0;
+
   // Bound so they can be passed straight to useSyncExternalStore.
   subscribe = (onChange: () => void): (() => void) => {
     this.listeners.add(onChange);
@@ -109,6 +114,7 @@ export class TileCache {
       total -= this.sizes.get(key) ?? 0;
       tiles.delete(key);
       this.sizes.delete(key);
+      this.evictions++;
     }
     return tiles;
   }

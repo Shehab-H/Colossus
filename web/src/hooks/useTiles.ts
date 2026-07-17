@@ -3,6 +3,7 @@ import type { Manifest } from '../lib/manifest';
 import { renderDecodeView } from '../lib/channels';
 import type { FilterSlots } from '../lib/gpuFilter';
 import { TileCache, TILE_BUDGET_BYTES } from '../lib/tileCache';
+import type { CacheGauge } from '../lib/perf';
 import type { TileData } from '../lib/tileData';
 import { tileLoader } from '../lib/tileLoader';
 import { coverTiles, prefetchCandidates, selectTiles, tileKey } from '../lib/tiling';
@@ -127,5 +128,17 @@ export function useTiles(
     rendered.length > 0 &&
     selKeys.every((k) => tileIndex.get(k)?.isLeaf && snapshot.tiles.has(compositeKey(manifest.version, k)));
 
-  return { selKeys, rendered, marksLoaded, atFullFidelity, loadError: snapshot.error };
+  // Live residency gauge for the perf dashboard. Derived from `snapshot`, so it is recomputed exactly
+  // when the cache actually changes — never on a timer, and never a reason to re-render on its own.
+  const cacheGauge = useMemo<CacheGauge>(
+    () => ({
+      resident: cache.bytesResident(),
+      budget: TILE_BUDGET_BYTES,
+      tiles: snapshot.tiles.size,
+      evictions: cache.evictions,
+    }),
+    [cache, snapshot],
+  );
+
+  return { selKeys, rendered, marksLoaded, atFullFidelity, loadError: snapshot.error, cacheGauge };
 }

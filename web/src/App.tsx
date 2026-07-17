@@ -10,7 +10,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import Hud from './components/Hud';
 import Controls from './components/Controls';
 import PerfDashboard from './components/PerfDashboard';
-import { isPerfOn, timedSync } from './lib/perf';
+import { isPerfOn, recordDeck, timedSync } from './lib/perf';
 import { panel } from './components/controlStyles';
 import InspectPanel, { type Selection } from './components/InspectPanel';
 import LegendBox from './components/Legend';
@@ -114,7 +114,16 @@ export default function App() {
   // or its options change, so it stays a stable object across filter changes.
   const slots = useMemo(() => (manifest ? filterSlots(manifest, options) : null), [manifest, options]);
 
-  const { selKeys, rendered: loaded, marksLoaded, atFullFidelity, loadError } = useTiles(manifest, camera, size, slots);
+  const { selKeys, rendered: loaded, marksLoaded, atFullFidelity, loadError, cacheGauge } = useTiles(manifest, camera, size, slots);
+
+  // deck publishes its own metrics once a second (GPU buffer/texture residency, GPU vs CPU frame time,
+  // attribute-upload cost). Passed only when armed: the prop is what makes deck collect them at all, so
+  // an unflagged session doesn't pay for stats it will never show. Stable identity — a fresh closure each
+  // render would defeat deck's prop diffing.
+  const onMetrics = useMemo(
+    () => (isPerfOn() ? (m: Record<string, number>) => recordDeck(m as unknown as Parameters<typeof recordDeck>[0]) : undefined),
+    [],
+  );
 
   // A filter is a GPU predicate (perMark → tile decode/uniforms, exactly as the row regime) or a fold
   // context (perFact → recompute measures over the surviving facts). Row-regime views split all-predicate.
@@ -313,7 +322,7 @@ export default function App() {
           onLoad={(e: { target: { resize: () => void } }) => e.target.resize()}
           style={{ position: 'absolute', inset: 0 }}
         >
-          <DeckOverlay layers={layers} onClick={onPick} />
+          <DeckOverlay layers={layers} onClick={onPick} _onMetrics={onMetrics} />
         </BaseMap>
       )}
 
@@ -326,6 +335,7 @@ export default function App() {
           onViewStateChange={(e: { viewState: CameraState }) => setCamera(e.viewState)}
           onClick={onPick}
           layers={layers}
+          _onMetrics={onMetrics}
         />
       )}
 
@@ -373,7 +383,7 @@ export default function App() {
 
       {/* ?perf=1 — the live post-bake lifecycle monitor. Mounts in the embed too: an iframed showcase is
           a legitimate thing to measure, and the flag is explicit either way. */}
-      {isPerfOn() && <PerfDashboard manifest={manifest} tilesInView={selKeys.length} />}
+      {isPerfOn() && <PerfDashboard manifest={manifest} tilesInView={selKeys.length} cache={cacheGauge} />}
     </div>
   );
 }

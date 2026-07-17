@@ -1,10 +1,14 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Manifest } from '../lib/manifest';
 import { foldRouteOverride } from '../lib/remoteFold';
+import { unregisterTileCache } from '../lib/swClient';
 import {
+  type CacheGauge,
   clearPerf,
   cumulative,
+  deckSnapshot,
   frameSamples,
+  gpuName,
   LONG_FRAME_MS,
   perfEvents,
   perfStore,
@@ -20,7 +24,15 @@ import { btn } from './controlStyles';
  *  during real interaction — pan the map and the stages, bytes, and frames below move with it. Renders
  *  off the perf store's throttled notification (~4Hz), never per event: at pan rates a per-event render
  *  would make the dashboard the dominant cost in the frames it is reporting on. */
-export default function PerfDashboard({ manifest, tilesInView }: { manifest: Manifest | null; tilesInView: number }) {
+export default function PerfDashboard({
+  manifest,
+  tilesInView,
+  cache,
+}: {
+  manifest: Manifest | null;
+  tilesInView: number;
+  cache: CacheGauge;
+}) {
   useSyncExternalStore(perfStore.subscribe, perfStore.getSnapshot);
   const [open, setOpen] = useState(true);
 
@@ -33,6 +45,7 @@ export default function PerfDashboard({ manifest, tilesInView }: { manifest: Man
   const st = stats(events);
   const t = totals(events, frames);
   const c = cumulative();
+  const gpu = deckSnapshot();
 
   if (!open)
     return (
@@ -48,6 +61,17 @@ export default function PerfDashboard({ manifest, tilesInView }: { manifest: Man
         <span style={{ opacity: 0.55, fontSize: 10, flex: 1 }}>{manifest ? `${manifest.view.id} · ${manifest.version}` : '—'}</span>
         <button style={mini} onClick={() => clearPerf()} title="Reset the window — pan somewhere, clear, then measure the thing you care about">
           clear
+        </button>
+        {/* The disk cache is cache-first, so once warm it answers every tile forever and a cold load
+            becomes unmeasurable. This drops the SW and its caches, then reloads uncontrolled. */}
+        <button
+          style={mini}
+          title="Drop the service worker + tile disk caches and reload — measures a genuinely cold load"
+          onClick={() => {
+            void unregisterTileCache().then(() => window.location.reload());
+          }}
+        >
+          cold
         </button>
         <button style={mini} onClick={() => setOpen(false)}>
           ▼
@@ -70,6 +94,10 @@ export default function PerfDashboard({ manifest, tilesInView }: { manifest: Man
       <Section title="session total · since load/clear">
         <Line label="network" v={bytes(c.wire)} note={`↓ ${c.tileReqs + c.factsReqs + c.foldReqs} req`} />
         <Line label="from cache" v={bytes(c.cache)} note={`⚡ saved`} />
+        {/* The two disk caches, split. sw.js registers on production builds only, so `sw` reading 0 in dev
+            is correct rather than broken — and a non-zero value is the proof it engaged. */}
+        <Line label=" · http disk" v={bytes(c.cacheHttp)} note="browser" />
+        <Line label=" · sw disk" v={bytes(c.cacheSw)} note={c.cacheSw > 0 ? 'sw.js' : 'prod only'} />
         <Line label=" · tiles" v={bytes(c.tileWire)} note={`${bytes(c.tileCache)} ⚡`} />
         <Line label=" · facts" v={bytes(c.factsWire)} note={`${bytes(c.factsCache)} ⚡`} />
         {c.foldReqs > 0 && <Line label=" · fold" v={bytes(c.foldWire)} note={`${c.foldReqs} req`} />}
@@ -78,6 +106,38 @@ export default function PerfDashboard({ manifest, tilesInView }: { manifest: Man
           v={c.wire + c.cache > 0 ? `${((c.cache / (c.wire + c.cache)) * 100).toFixed(0)}%` : '—'}
           note="of bytes"
         />
+      </Section>
+
+      {/* The in-memory tile cache — the memory number that actually governs this app, not the JS heap.
+          Evictions climbing under a steady camera is thrash: ground being decoded, dropped, and decoded
+          again, which every byte and timing figure above would report as ordinary work. */}
+      <Section title="tile cache · ram">
+        <Line label="resident" v={bytes(cache.resident)} note={`${cache.tiles} tiles`} />
+        <Line
+          label="of budget"
+          v={`${((cache.resident / cache.budget) * 100).toFixed(0)}%`}
+          note={bytes(cache.budget)}
+        />
+        <Line label="evictions" v={String(cache.evictions)} note={cache.evictions > 0 ? 'thrash?' : 'none'} />
+      </Section>
+
+      {/* deck's own once-per-second gauges. bufferMemory is GPU residency measured at the source — the
+          bytes deck is holding on the card — rather than inferred from what we uploaded. */}
+      <Section title={`gpu · ${gpuName() ?? 'deck'}`}>
+        {gpu ? (
+          <>
+            <Line label="buffers" v={bytes(gpu.bufferMemory)} note="resident" />
+            <Line label="textures" v={bytes(gpu.textureMemory)} note="resident" />
+            <Line label="gpu/frame" v={`${gpu.gpuTimePerFrame.toFixed(2)} ms`} note="deck" />
+            <Line label="cpu/frame" v={`${gpu.cpuTimePerFrame.toFixed(2)} ms`} note="deck" />
+            {/* The layer-admission cost: `layers` above only times building the layer objects, which is
+                ~0ms — this is deck committing their attributes to the GPU, where the hitch actually is. */}
+            <Line label="attr upload" v={`${gpu.updateAttributesTime.toFixed(1)} ms`} note="admission" />
+            <Line label="layers" v={`${gpu.drawLayersCount}/${gpu.layersCount}`} note="drawn/all" />
+          </>
+        ) : (
+          <div style={sub}>waiting for deck (publishes once a second)</div>
+        )}
       </Section>
 
       {/* Wire vs decoded, cold vs warm, over the ROLLING WINDOW — the last 4000 events. Deliberately not
