@@ -104,8 +104,9 @@ worker pool; service worker caches blocks per tile. Verifier reads leaf witnesse
 Leaf companions collectively hold every fact exactly once; stop paying per-file overhead for them.
 
 - One archive per (view, version): leaf slabs concatenated in tile order, each tile's block
-  **independently compressed** (an encoding the browser-native `DecompressionStream` accepts — no
-  new dependencies), with a directory (`tileKey → offset, length`) in the manifest or a sidecar.
+  **independently compressed** (the manifest records the codec — gzip via the browser-native
+  `DecompressionStream` today), with a directory (`tileKey → offset, length`) in the manifest or a
+  sidecar.
 - Client fetches by HTTP `Range` and decompresses in the worker. Per-tile caching is untouched:
   the cache key is still the tile, never the byte range. The service worker caches by tile key.
 - Internal-level companions stay per-tile files — they are small and grid-bounded.
