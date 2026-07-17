@@ -10,11 +10,42 @@ namespace Colossus.Infrastructure.Tiles;
 
 /// <summary>One companion grain channel resolved to a slab axis with its cell-order stride
 /// (docs/companion-scale/SLAB-FORMAT.md §2). <see cref="Stride"/> is the product of the cardinalities of
-/// all axes inner to it; the innermost (ordered) axis has stride 1.</summary>
+/// all axes inner to it; the innermost (ordered) axis has stride 1. <see cref="Temporal"/>/<see cref="DuckType"/>
+/// drive the axis's canonical value rendering (<see cref="SlabAxisValue"/>).</summary>
 internal sealed record SlabAxisPlan(
-    string Name, bool Categorical, IReadOnlyList<string> Domain, int Stride, bool Cumulative)
+    string Name, bool Categorical, IReadOnlyList<string> Domain, int Stride, bool Cumulative,
+    bool Temporal = false, string DuckType = "")
 {
     public int Cardinality => Domain.Count;
+}
+
+/// <summary>The canonical string form of an axis value — the one spelling the recorded domain, the cellId
+/// mapping, and the client's range compare must all agree on (SLAB-FORMAT §1; pinned by
+/// tests/fixtures/slab-cases.json, whose ordered domain is ISO <c>YYYY-MM-DD</c>).
+///
+/// A temporal channel arrives as the adapter left it: a DATE, or — ClickHouse's <c>Date</c>, which extracts
+/// as an integer — a day count, or epoch millis. Rendering it raw made the domain read <c>'19723'</c> while
+/// the client compared it against ISO context bounds, so every range fold resolved empty and blanked the
+/// map. Normalising here (the same day-count vs epoch-millis split web/src/lib/dates.ts uses) keeps the
+/// domain in the ISO form the fixture and the client already require. Data-agnostic: the conversion follows
+/// the channel's declared temporal role, never its name.</summary>
+internal static class SlabAxisValue
+{
+    private const long EpochMillisFloor = 10_000_000; // below this an integer is a day count, not epoch ms
+
+    public static string Sql(string colExpr, bool categorical, bool temporal, string duckType)
+    {
+        if (categorical) return colExpr;               // dict codes key on the raw value
+        if (!temporal) return $"CAST({colExpr} AS VARCHAR)";
+        string t = duckType.ToUpperInvariant();
+        if (t.StartsWith("VARCHAR")) return colExpr;   // already the adapter's own string form
+        if (t.Contains("DATE") || t.Contains("TIMESTAMP")) return $"strftime(CAST({colExpr} AS DATE), '%Y-%m-%d')";
+        return $"strftime(CASE WHEN abs(CAST({colExpr} AS BIGINT)) < {EpochMillisFloor} " +
+               $"THEN DATE '1970-01-01' + CAST({colExpr} AS INTEGER) " +
+               $"ELSE CAST(epoch_ms(CAST({colExpr} AS BIGINT)) AS DATE) END, '%Y-%m-%d')";
+    }
+
+    public static string Sql(SlabAxisPlan a, string colExpr) => Sql(colExpr, a.Categorical, a.Temporal, a.DuckType);
 }
 
 /// <summary>The per-view slab decision (layout + axes + cell space), plus the SQL that maps a companion
@@ -50,16 +81,15 @@ internal sealed class SlabPlan
 
     /// <summary>SQL scalar mapping the axis grain columns to a canonical cellId (Σ codeᵢ·strideᵢ), for a
     /// companion query. A value is resolved to its 0-based code by <c>list_position</c> over the axis's
-    /// literal domain — categorical on the raw string, ordered on the date cast to its <c>YYYY-MM-DD</c>
-    /// form (the domain values). Domains are the full extract, so every grain value is present.</summary>
+    /// literal domain, rendered in the axis's canonical form (<see cref="SlabAxisValue"/>) — the same
+    /// spelling the domain was scanned in, so every grain value is present.</summary>
     public string CellIdSql(string tableAlias = "")
     {
         if (Axes.Count == 0) return "0";
         string col(string name) => tableAlias.Length > 0 ? $"{tableAlias}.\"{name}\"" : $"\"{name}\"";
         var terms = Axes.Select(a =>
         {
-            string val = a.Categorical ? col(a.Name) : $"CAST({col(a.Name)} AS VARCHAR)";
-            string code = $"(list_position({DomainLiteral(a.Domain)}, {val}) - 1)";
+            string code = $"(list_position({DomainLiteral(a.Domain)}, {SlabAxisValue.Sql(a, col(a.Name))}) - 1)";
             return a.Stride == 1 ? code : $"{code} * {a.Stride}";
         });
         return string.Join(" + ", terms);
@@ -83,10 +113,12 @@ internal static class SlabPlanner
         foreach (var ch in companion.GrainChannels)
         {
             bool cat = ch.Type == ChannelType.Dict;
+            bool temporal = !cat && (ch.Type == ChannelType.Date || ch.Role == ChannelRole.Temporal);
+            string duckType = temporal ? ColumnType(db, factsTable, ch.Name) : "";
             IReadOnlyList<string> domain = cat
-                ? companion.CanonicalDictionaryOrders?.GetValueOrDefault(ch.Name) ?? ScanDomain(db, factsTable, ch.Name)
-                : ScanDomain(db, factsTable, ch.Name);
-            (cat ? categorical : ordered).Add(new SlabAxisPlan(ch.Name, cat, domain, 1, false));
+                ? companion.CanonicalDictionaryOrders?.GetValueOrDefault(ch.Name) ?? ScanDomain(db, factsTable, ch.Name, cat, temporal, duckType)
+                : ScanDomain(db, factsTable, ch.Name, cat, temporal, duckType);
+            (cat ? categorical : ordered).Add(new SlabAxisPlan(ch.Name, cat, domain, 1, false, temporal, duckType));
         }
 
         // Cell order: categorical axes (grain order) outer, ordered axes (grain order) inner/fastest. Only
@@ -136,14 +168,25 @@ internal static class SlabPlanner
             CultureInfo.InvariantCulture);
     }
 
-    private static IReadOnlyList<string> ScanDomain(DuckDbSession db, string factsTable, string channel)
+    /// <summary>The axis's distinct values in its canonical form, ordered by the RAW column so an ordered
+    /// axis's bin list stays chronological (the client's range compare is lexical, which ISO satisfies).</summary>
+    private static IReadOnlyList<string> ScanDomain(DuckDbSession db, string factsTable, string channel,
+        bool categorical, bool temporal, string duckType)
     {
         var values = new List<string>();
         using var cmd = db.Connection.CreateCommand();
-        cmd.CommandText = $"SELECT CAST(\"{channel}\" AS VARCHAR) v FROM {factsTable} " +
-                          $"WHERE \"{channel}\" IS NOT NULL GROUP BY \"{channel}\" ORDER BY \"{channel}\"";
+        cmd.CommandText = $"SELECT {SlabAxisValue.Sql($"\"{channel}\"", categorical, temporal, duckType)} v " +
+                          $"FROM {factsTable} WHERE \"{channel}\" IS NOT NULL GROUP BY \"{channel}\" ORDER BY \"{channel}\"";
         using var r = cmd.ExecuteReader();
         while (r.Read()) values.Add(r.GetString(0));
         return values;
+    }
+
+    /// <summary>The staged column's DuckDB type, so a temporal axis knows which storage it is normalising.</summary>
+    private static string ColumnType(DuckDbSession db, string table, string column)
+    {
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = $"SELECT column_type FROM (DESCRIBE SELECT \"{column}\" FROM {table})";
+        return cmd.ExecuteScalar()?.ToString() ?? "";
     }
 }

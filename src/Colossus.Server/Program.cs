@@ -29,7 +29,7 @@ builder.Services.AddControllers().AddJsonOptions(o => ColossusJson.Apply(o.JsonS
 // is fully inspectable cross-origin. No credentials, so AllowAnyOrigin is safe.
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()
-    .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length")));
+    .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length", "X-Fold-Ms")));
 builder.Services.AddOpenApi(o => o.AddDocumentTransformer((doc, _, _) =>
 {
     doc.Info = new OpenApiInfo
