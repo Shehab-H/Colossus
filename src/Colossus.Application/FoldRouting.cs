@@ -11,9 +11,14 @@ public sealed class FoldRoutingOptions
     public const string Section = "FoldRouting";
 
     /// <summary>Per-interaction worst-tile companion transfer above which a group-regime view routes its
-    /// fold to the server. Default 8 MB: a dense leaf tile whose plane-split fetch exceeds this is the
-    /// "single-tile number that hurts" (REQUIREMENTS.md). Lower it to route more views remote.</summary>
-    public long BudgetBytes { get; set; } = 8_000_000;
+    /// fold to the server — the "single-tile number that hurts" (REQUIREMENTS.md).
+    ///
+    /// Default 32 MB. The budget has to encode a limit the CLIENT actually hits, not merely a large number:
+    /// after R5's plane split the reference views' worst leaf interaction measures ~8 MB, which the browser
+    /// folds in tens of ms, so they stay client — while REQUIREMENTS' design scenario (a dense leaf costing
+    /// *tens of MB* per interaction) prices remote. Set it below a view's measured worstTileBytes (the bake
+    /// logs and the manifest record it) to route that view remote.</summary>
+    public long BudgetBytes { get; set; } = 32_000_000;
 
     /// <summary>Force every group-regime view to the remote route regardless of price — for benchmarking
     /// and testing the server executor against an in-budget view (the R4 force flag).</summary>

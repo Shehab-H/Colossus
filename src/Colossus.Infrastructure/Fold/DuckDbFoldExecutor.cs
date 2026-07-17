@@ -23,11 +23,6 @@ namespace Colossus.Infrastructure.Fold;
 /// over <see cref="TileSql"/> indices), so a column indexes the rendered marks with no string join.</summary>
 public sealed class DuckDbFoldExecutor
 {
-    // Mirrors AggregateReducer's LOD constants — the zreal tagging must reproduce the bake's exactly (a
-    // parity test over the real bake is the conformance witness).
-    private const int ZCap = 16;
-    private const double ZSlack = 0.02;
-
     public FoldResponse Fold(Manifest manifest, string factsParquetPath, IReadOnlyList<string> measureNames,
         FoldContextDto context, IReadOnlyList<string> tileKeys)
     {
@@ -140,25 +135,19 @@ public sealed class DuckDbFoldExecutor
         string cellPartials = string.Concat(partials.Select(p => $", {FoldMeasureSql.CellPartialSql(p)}"));
         string ctxPred = FoldSql.ContextPredicate(context, grainInfo);
 
-        // The tiling half: re-derive each fact's zreal / tile / grid cell exactly as the reducer did, key it
-        // to its mark (real, or the ~1px cell it merged into), assign mki in the render tile's own order,
-        // and re-derive the grain cells — the companion the client would have fetched. The fold tail then
-        // runs the frozen measure semantics over those cells.
+        // The tiling half: place each fact in its tile and grid cell, key it to its mark (its real geometry
+        // while the mark is real — zreal, tagged at bake — else the ~1px cell it merged into), assign mki in
+        // the render tile's own order, and re-derive the grain cells: the companion the client would have
+        // fetched. The fold tail then runs the frozen measure semantics over those cells.
         string tileExpr = $"({z}::VARCHAR || '/' || marks.tx::VARCHAR || '/' || marks.ty::VARCHAR)";
         return $"""
             WITH req(rtx, rty) AS (VALUES {req}),
             scoped AS (
                 SELECT * FROM read_parquet('{Sql.Path(factsPath)}') WHERE {prefilter}
             ),
-            tagged AS (
-                SELECT *, {ExtentExpr} AS ext, {txExpr} AS tx, {tyExpr} AS ty, {gxExpr} AS gx, {gyExpr} AS gy
-                FROM scoped
-            ),
             f AS (
-                SELECT *, CASE WHEN ext IS NULL OR ext <= 0 THEN {ZCap}
-                    ELSE CAST(greatest(0, least({ZCap}, ceil(log2({Sql.Lit(root.SpanX)} / ({TileSchema.GridPerTile} * ext)) - {Sql.Lit(ZSlack)}))) AS INTEGER)
-                    END AS zreal
-                FROM tagged
+                SELECT *, {txExpr} AS tx, {tyExpr} AS ty, {gxExpr} AS gx, {gyExpr} AS gy
+                FROM scoped
             ),
             tile AS (
                 SELECT f.*, CASE WHEN zreal <= {z} THEN {MarkKey.RealSql()} ELSE {MarkKey.MergedSql("gx", "gy")} END AS mk
@@ -175,11 +164,6 @@ public sealed class DuckDbFoldExecutor
             {FoldSql.Tail(measures, ctxPred, arg => ArgmaxDomain(manifest, arg.Dimension), tileExpr)}
             """;
     }
-
-    // The exact ext expression AggregateReducer.LoadTagged computes (span of the wider geometry axis).
-    private static string ExtentExpr =>
-        $"greatest(list_max(list_filter({TileSchema.Geometry}, (v, i) -> i % 2 = 1)) - list_min(list_filter({TileSchema.Geometry}, (v, i) -> i % 2 = 1)), " +
-        $"list_max(list_filter({TileSchema.Geometry}, (v, i) -> i % 2 = 0)) - list_min(list_filter({TileSchema.Geometry}, (v, i) -> i % 2 = 0)))";
 
     private static (double MinX, double MinY, double MaxX, double MaxY) ViewportBox(Bbox root, int z, List<(int X, int Y)> tiles)
     {

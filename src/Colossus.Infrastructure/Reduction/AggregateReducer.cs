@@ -21,6 +21,8 @@ public sealed class AggregateReducer : IReductionStrategy
     private const int ZCap = 16;
     // Slack on the ≥1px test so float32 coordinate noise can't split equal-sized polygons across levels.
     private const double ZSlack = 0.02;
+    // The R4 server fold's input, beside the tiles in the version directory (manifest.factsParquet).
+    private const string FoldFactsFile = "facts.parquet";
 
     public ReductionResult Reduce(ReductionContext ctx)
     {
@@ -40,7 +42,35 @@ public sealed class AggregateReducer : IReductionStrategy
         BuildPyramid(db, ctx, tiles, ref leafTotal, slab, plan);
 
         var pack = slab?.Finish();
-        return new ReductionResult(tiles, leafTotal, pack, plan?.ToManifest());
+        return new ReductionResult(tiles, leafTotal, pack, plan?.ToManifest(),
+            ctx.Companion is not null ? WriteFoldFacts(db, ctx) : null);
+    }
+
+    // R4: the server fold's input, written here because this is where the facts are already tagged with
+    // zreal. The fold needs each fact's (x, y), the LOD level that decides real-vs-merged, the grain, and
+    // the measure channels — never the geometry, which existed only to derive zreal. Dropping it and
+    // baking zreal in turns every fold from "re-read and re-measure every polygon" into a column scan, and
+    // ordering by x lets a viewport's bbox prune row groups. Returns the file name for the manifest.
+    private static string WriteFoldFacts(DuckDbSession db, ReductionContext ctx)
+    {
+        string[] derived = [TileSchema.Geometry, TileSchema.PartOffsets, "ext"];
+        var present = Columns(db, "facts");
+        var drop = derived.Where(present.Contains).Select(c => $"\"{c}\"").ToArray();
+        string exclude = drop.Length > 0 ? $" EXCLUDE ({string.Join(", ", drop)})" : "";
+        string path = Path.Combine(ctx.OutputDirectory, FoldFactsFile);
+        db.Exec($"COPY (SELECT *{exclude} FROM facts ORDER BY {TileSchema.X}, {TileSchema.Y}) " +
+                $"TO '{Sql.Path(path)}' (FORMAT PARQUET)");
+        return FoldFactsFile;
+    }
+
+    private static HashSet<string> Columns(DuckDbSession db, string table)
+    {
+        var cols = new HashSet<string>(StringComparer.Ordinal);
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = $"SELECT column_name FROM (DESCRIBE SELECT * FROM {table})";
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) cols.Add(r.GetString(0));
+        return cols;
     }
 
     // Facts share each mark's geometry, so a fact's zreal equals its mark's — the merge decision the marks
