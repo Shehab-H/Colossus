@@ -127,11 +127,17 @@ most common interaction never fetches a companion. **Gate:** build only with mea
 after Requirements 1–2 land, showing single-filter contexts dominate usage *and* companion
 transfer is still the interaction bottleneck. Do not build on speculation.
 
-## Requirement 4 — Remote fold routing (APPROVED 2026-07-16)
+## Requirement 4 — Remote fold routing (BUILT 2026-07-17)
 
-**Status: owner signed off 2026-07-16, waiving the entry criteria below** — building ahead of a
-proven over-budget view. This is the engine's first runtime compute component; RULES R7's static
-tile serve is untouched (the fold endpoint is additive, tiles remain immutable static files).
+**Status: BUILT + VERIFIED 2026-07-17** — measured before/after in [R4-BUILD.md](R4-BUILD.md); owner signed
+off 2026-07-16, waiving the entry criteria below (built ahead of a proven over-budget view). This is the
+engine's first runtime compute component; RULES R7's static tile serve is untouched (the fold endpoint is
+additive, tiles remain immutable static files). Bake: `manifest.factsParquet` (the fold's purpose-built
+input) + `manifest.foldRoute` priced from measured plane bytes vs a 32 MB budget. Server:
+`POST /api/views/{id}/fold` (DuckDB over the baked facts, never the source). Client: `remoteFold.ts` behind
+the unchanged seam, `?fold=remote` to force. Remote == local **byte-for-byte** (708/708 checks over 59
+contexts); both reference views price `client`, so the route is exercised by the force flag. Building the
+parity gate surfaced and fixed an R1 defect that blanked the map for every date-range filter (SLAB-FORMAT §1).
 
 The planner prices a view's slab; above budget, folds execute remotely (server DuckDB over the
 baked facts Parquet) behind the same `fold(measures, context) → columns` seam, shipping folded

@@ -23,6 +23,28 @@ exposed `Content-Range`/`Accept-Ranges`/`Content-Length`, see `Program.cs`), so 
 API from the SPA's origin. The tiles host sets its own CORS (Phase 1 step 4) — it must allow the SPA's
 origin and the `Range` header, since `facts.pack` reads are ranged and cross-origin.
 
+**Remote fold (companion-scale R4) — only for views the planner prices `remote`.** The bake prices every
+group-regime view's per-interaction companion transfer and records the route in its manifest
+(`foldRoute.execution`: `client` | `remote`). A `client` view needs nothing here — it folds in the browser
+over companion planes read from R2, exactly as before. A `remote` view instead POSTs its context to
+`/api/views/{id}/fold` on the app server, which folds in DuckDB over that version's **baked**
+`facts.parquet` and returns folded columns. Two consequences for this topology:
+
+- **The tiles stay static.** The fold endpoint is additive; `z/x/y.arrow` and `facts.pack` are still
+  immutable files on R2 (RULES R7). Nothing about the tile serve changes.
+- **A `remote` view's `facts.parquet` must sit where the SERVER can read it** — i.e. in the app server's
+  `TilesRoot` at `<viewId>/<version>/facts.parquet`, not only on R2 (DuckDB reads it off the local disk).
+  Ship it alongside the app in Phase 3 for those views only. It is the fold's input, never fetched by the
+  browser. All four views today price `client`, so nothing needs shipping; check the bake log line
+  (`fold route = …`) or the manifest before assuming.
+
+The budget is a **bake-time** setting — `FoldRouting:BudgetBytes` in `src/Colossus.Bake/appsettings.json`
+(**default 32 MB**: a view whose worst leaf tile moves more than that per interaction routes remote; the
+reference views measure ~8 MB after R5's plane split and stay client). Routing is decided once, at bake, and
+baked into the manifest, so serving needs no such config.
+`COLOSSUS_FOLD_FORCE_REMOTE=1` forces every group view remote at bake, and `?fold=remote` forces the client
+onto the remote route for one session — both for testing/benchmarking only.
+
 Two facts about this stack that drive the steps below:
 
 1. **Target is `net10.0`** — brand new; SmarterASP.NET's shared servers almost certainly don't have
@@ -169,6 +191,18 @@ The publish output is a self-contained ASP.NET Core app: `Colossus.Server.exe`, 
 - `https://YOURSITE.smarterasp.net/showcase/` → showcase renders, headline reads 46M, the featured
   `mobile-dominance` map is interactive.
 - `https://YOURSITE.smarterasp.net/api/views` → JSON list of the 4 views.
+- **Remote fold** (only if a view priced `remote`, or to smoke the endpoint): a POST returns Arrow bytes and
+  an `X-Fold-Ms` header. Any view with a retained `facts.parquet` answers, whatever its priced route:
+
+  ```powershell
+  curl -s -X POST "https://YOURSITE.smarterasp.net/api/views/mobile-dominance/fold" `
+    -H "content-type: application/json" `
+    -d '{\"measures\":[\"dominant_operator\"],\"context\":{\"equals\":{\"operator\":\"apex\"},\"ranges\":{}},\"tiles\":[\"5/17/19\"]}' `
+    -o fold.arrow -D -
+  ```
+
+  A `400 … has no retained facts Parquet` means the view was baked before R4 (re-bake it); a
+  `404 facts Parquet missing` means the file wasn't shipped next to the app (see the R4 note above).
 
 ---
 

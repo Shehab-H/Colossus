@@ -23,6 +23,19 @@ Each companion grain channel is one **axis**. Two kinds, distinguished by filter
 
 A value not in an axis domain matches nothing (the fold empties the affected marks).
 
+**Axis values are recorded in one canonical spelling (normative).** The domain, the `cellId` mapping, and
+the client's context compare must all agree on it, or a fold silently resolves empty. A temporal axis's
+canonical form is **ISO `YYYY-MM-DD`** — the form `tests/fixtures/slab-cases.json` pins and the client's
+range compare needs (lexical order on ISO is chronological). The bake normalises to it whatever the adapter
+delivered: a `DATE`, an integer day count (ClickHouse's `Date` extracts as one), or epoch millis — the same
+day-count vs epoch-millis split `web/src/lib/dates.ts` uses. The conversion follows the channel's declared
+temporal role, never its name (data-agnostic).
+
+> Fixed 2026-07-17 (found while building R4's parity gate): the domain was scanned with a bare
+> `CAST(col AS VARCHAR)`, so a ClickHouse `Date` recorded bins as `'19723'` while contexts arrived as
+> `'2025-01-01'`. Every range fold resolved `lo > hi` → *impossible* → the whole map went unknown. The
+> fixture never caught it because its facts are already ISO strings; only a real bake hit the integer path.
+
 ## 2. Cell space and canonical order (R5 normative)
 
 The cell space is the axis cross product; `cells = ∏ cardinality`. The **canonical cell enumeration orders

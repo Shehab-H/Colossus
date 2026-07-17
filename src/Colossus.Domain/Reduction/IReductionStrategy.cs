@@ -44,10 +44,13 @@ public sealed record ReductionContext
 
 /// <summary><paramref name="CompanionPack"/> is set when the reduction packed its companions into one
 /// archive (group regime); <paramref name="CompanionSlab"/> carries the slab metadata (companion-scale R1)
-/// when the pack holds slab planes. The bake writes both into the manifest, which gates the client.</summary>
+/// when the pack holds slab planes; <paramref name="FactsParquet"/> names the retained facts the R4 server
+/// fold reads (relative to the version directory). The bake writes all three into the manifest, which gates
+/// the client.</summary>
 public sealed record ReductionResult(
     IReadOnlyList<TileMeta> Tiles, long LeafPointCount,
-    CompanionPack? CompanionPack = null, CompanionSlab? CompanionSlab = null);
+    CompanionPack? CompanionPack = null, CompanionSlab? CompanionSlab = null,
+    string? FactsParquet = null);
 
 /// <summary>Turns a sorted staging table into tiles. One implementation per <see cref="ReductionKind"/>;
 /// a strategy chooses which real rows land in which tile — never the schema, never the mark.</summary>

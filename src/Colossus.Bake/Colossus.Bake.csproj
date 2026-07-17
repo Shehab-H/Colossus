@@ -16,4 +16,9 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The R4 fold-routing budget the planner prices against (console hosts don't auto-include it). -->
+    <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
