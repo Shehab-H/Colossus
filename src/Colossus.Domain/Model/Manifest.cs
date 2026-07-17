@@ -101,8 +101,20 @@ public sealed record FoldRoute
 public sealed record CompanionPack
 {
     public required string File { get; init; }
+    /// <summary>Block codec: "gzip" (browser-native <c>DecompressionStream</c>) or "zstd" (companion-scale
+    /// Work Item C — high-level zstd with a trained shared dictionary; the client uses a WASM zstd decoder).</summary>
     public required string Codec { get; init; }
     public required IReadOnlyDictionary<string, long[]> Entries { get; init; }
+
+    /// <summary>Trained shared dictionary path (relative to the version directory), for the "zstd" codec: one
+    /// dictionary per (view, version) over sampled blocks, so the small sliced cell-row blocks compress well
+    /// (companion-scale R5). The client fetches it once and loads it into its zstd decoder. Null when the
+    /// codec needs no dictionary (gzip, or a bake with too few blocks to train one).</summary>
+    public string? Dict { get; init; }
+
+    /// <summary>SHA-256 (hex) of the dictionary file — recorded so the client can key/verify it. Null with
+    /// <see cref="Dict"/>.</summary>
+    public string? DictHash { get; init; }
 
     /// <summary>"row" (R2 leaf pack of row-form companions) or "slab" (R1). Absent ⇒ "row" (older bakes).</summary>
     public string? Format { get; init; }

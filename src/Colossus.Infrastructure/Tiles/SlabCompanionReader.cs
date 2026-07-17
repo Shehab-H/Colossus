@@ -20,7 +20,8 @@ public sealed record SlabTile(
 /// same bounded read the R2 pack uses.</summary>
 public static class SlabCompanionReader
 {
-    public static SlabTile Read(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab)
+    public static SlabTile Read(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab,
+        string codec = "gzip", byte[]? dict = null)
     {
         // Per-tile layout (SLAB-FORMAT §3): a sparse tile carries an @idx structure block, a dense one never
         // does, so the block set names the layout physically — no need to thread the manifest's per-tile
@@ -32,12 +33,12 @@ public static class SlabCompanionReader
 
         if (dense)
         {
-            // A dense plane's region is the concatenation of its per-cell-row gzip blocks (SLAB-FORMAT §4b/§5);
-            // GZipStream inflates the concatenated members into the whole plane's raw little-endian bytes.
+            // A dense plane's region is the concatenation of its per-cell-row blocks (SLAB-FORMAT §4b/§5); the
+            // codec inflates all concatenated members/frames into the whole plane's raw little-endian bytes.
             foreach (var p in slab.Partials)
             {
                 if (!planes.TryGetValue(p.Name, out var r)) continue;
-                byte[] raw = ReadRegion(packPath, r);
+                byte[] raw = ReadRegion(packPath, r, codec, dict);
                 if (p.Type == "i32") ip[p.Name] = Int32Le(raw);
                 else fp[p.Name] = Float32Le(raw);
             }
@@ -47,14 +48,14 @@ public static class SlabCompanionReader
         int[]? offsets = null, cellIds = null;
         if (planes.TryGetValue(SlabCompanionWriter.IdxPlane, out var idx))
         {
-            using var b = ReadBatch(packPath, idx);
+            using var b = ReadBatch(packPath, idx, codec, dict);
             offsets = IntChild(b, "offsets");
             cellIds = IntChild(b, "cellIds");
         }
         foreach (var p in slab.Partials)
         {
             if (!planes.TryGetValue(p.Name, out var r)) continue;
-            using var b = ReadBatch(packPath, r);
+            using var b = ReadBatch(packPath, r, codec, dict);
             if (p.Type == "i32") ip[p.Name] = IntChild(b, p.Name);
             else fp[p.Name] = FloatChild(b, p.Name);
         }
@@ -62,9 +63,9 @@ public static class SlabCompanionReader
     }
 
     // Inflate a whole (possibly multi-member) region to raw bytes.
-    private static byte[] ReadRegion(string packPath, long[] range)
+    private static byte[] ReadRegion(string packPath, long[] range, string codec, byte[]? dict)
     {
-        using var s = CompanionPackWriter.ReadBlock(packPath, range[0], range[1]);
+        using var s = CompanionPackWriter.ReadBlock(packPath, range[0], range[1], codec, dict);
         return s.ToArray();
     }
 
@@ -112,9 +113,9 @@ public static class SlabCompanionReader
 
     private static long Sum(int[] a) { long s = 0; foreach (int v in a) s += v; return s; }
 
-    private static RecordBatch ReadBatch(string packPath, long[] range)
+    private static RecordBatch ReadBatch(string packPath, long[] range, string codec, byte[]? dict)
     {
-        using var stream = CompanionPackWriter.ReadBlock(packPath, range[0], range[1]);
+        using var stream = CompanionPackWriter.ReadBlock(packPath, range[0], range[1], codec, dict);
         using var reader = new ArrowStreamReader(stream);
         return reader.ReadNextRecordBatch()!;
     }

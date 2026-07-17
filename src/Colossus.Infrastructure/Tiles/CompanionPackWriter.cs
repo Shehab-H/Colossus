@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using Apache.Arrow.Ipc;
 using Colossus.Domain.Model;
+using ZstdSharp;
 
 namespace Colossus.Infrastructure.Tiles;
 
@@ -39,10 +40,12 @@ public static class CompanionPackWriter
         return null;
     }
 
-    /// <summary>One block decompressed back to its Arrow IPC bytes. The read is bounded to
-    /// <paramref name="length"/> before inflating — gzip members are concatenated, and .NET's
-    /// <see cref="GZipStream"/> would otherwise run on into the next tile's block.</summary>
-    public static MemoryStream ReadBlock(string packPath, long offset, long length)
+    /// <summary>One block (or a dense plane region of concatenated cell-row blocks) decompressed back to its
+    /// raw bytes. The read is bounded to <paramref name="length"/> before inflating — the pack's blocks are
+    /// concatenated, so decoding must stop at the block/region boundary rather than run into the next tile.
+    /// <paramref name="codec"/> selects gzip (<see cref="GZipStream"/>) or zstd (<see cref="DecompressionStream"/>
+    /// with the trained <paramref name="dict"/>); both read all concatenated members/frames of the region.</summary>
+    public static MemoryStream ReadBlock(string packPath, long offset, long length, string codec = "gzip", byte[]? dict = null)
     {
         byte[] compressed = new byte[length];
         using (var pack = File.OpenRead(packPath))
@@ -50,16 +53,25 @@ public static class CompanionPackWriter
             pack.Position = offset;
             pack.ReadExactly(compressed);
         }
-        var arrow = new MemoryStream();
-        using (var gz = new GZipStream(new MemoryStream(compressed), CompressionMode.Decompress))
-            gz.CopyTo(arrow);
-        arrow.Position = 0;
-        return arrow;
+        var raw = new MemoryStream();
+        if (codec == "zstd")
+        {
+            using var ds = new DecompressionStream(new MemoryStream(compressed));
+            if (dict is not null) ds.LoadDictionary(dict);
+            ds.CopyTo(raw);
+        }
+        else
+        {
+            using var gz = new GZipStream(new MemoryStream(compressed), CompressionMode.Decompress);
+            gz.CopyTo(raw);
+        }
+        raw.Position = 0;
+        return raw;
     }
 
-    public static long RowCount(string packPath, long offset, long length)
+    public static long RowCount(string packPath, long offset, long length, string codec = "gzip", byte[]? dict = null)
     {
-        using var stream = ReadBlock(packPath, offset, length);
+        using var stream = ReadBlock(packPath, offset, length, codec, dict);
         using var reader = new ArrowStreamReader(stream);
         long count = 0;
         while (reader.ReadNextRecordBatch() is { } batch)

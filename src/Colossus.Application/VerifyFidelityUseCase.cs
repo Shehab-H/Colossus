@@ -111,14 +111,17 @@ public sealed class VerifyFidelityUseCase(
         if (source is { } src)
         {
             var pack = manifest.CompanionPack;
-            string packPath = pack is null ? "" : Path.Combine(store.VersionDirectory(viewId, version), pack.File);
+            string versionDir = pack is null ? "" : store.VersionDirectory(viewId, version);
+            string packPath = pack is null ? "" : Path.Combine(versionDir, pack.File);
+            // The slab pack's trained zstd dictionary (Work Item C), read once for the whole witness.
+            byte[]? dict = pack?.Dict is { } d ? File.ReadAllBytes(Path.Combine(versionDir, d)) : null;
             long companionRows = 0;
             foreach (var tile in manifest.Tiles.Where(t => t.IsLeaf))
             {
                 string key = $"{tile.Z}/{tile.X}/{tile.Y}";
                 if (manifest.CompanionSlab is { } slab && pack?.PlaneEntries is { } pe && pe.TryGetValue(key, out var planes))
                 {
-                    long f = tiles.SlabFacts(packPath, planes, slab);
+                    long f = tiles.SlabFacts(packPath, planes, slab, pack.Codec, dict);
                     if (f < 0) { companionRows = -1; break; } // no independent slab witness
                     companionRows += f;
                 }

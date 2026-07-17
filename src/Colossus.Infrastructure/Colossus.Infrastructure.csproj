@@ -21,6 +21,9 @@
   <ItemGroup>
     <PackageReference Include="DuckDB.NET.Data.Full" Version="1.5.3" />
     <PackageReference Include="Apache.Arrow" Version="20.0.0" />
+    <!-- Managed zstd + ZDICT dictionary training for the companion pack codec (companion-scale R5/Work
+         Item C). Managed only — this repo has been burned by native extensions (SLAB-FORMAT §5). -->
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />

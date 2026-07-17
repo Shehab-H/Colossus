@@ -11,6 +11,8 @@ public interface ITileReader
     long PackedRowCount(string packPath, long offset, long length, string codec);
     /// <summary>Source facts one slab companion tile witnesses (companion-scale R1, SLAB-FORMAT §7): Σ cnt
     /// when a cnt plane exists, else sparse nnz. −1 when unavailable. <paramref name="planes"/> is the
-    /// tile's per-plane byte directory from <see cref="CompanionPack.PlaneEntries"/>.</summary>
-    long SlabFacts(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab);
+    /// tile's per-plane byte directory from <see cref="CompanionPack.PlaneEntries"/>; <paramref name="codec"/>
+    /// and the optional trained <paramref name="dict"/> decode its blocks (Work Item C).</summary>
+    long SlabFacts(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab,
+        string codec, byte[]? dict);
 }

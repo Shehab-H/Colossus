@@ -168,7 +168,8 @@ public class GroupBakeTests : IDisposable
     {
         var pack = result.CompanionPack!;
         Assert.True(pack.PlaneEntries!.TryGetValue(key, out var planes), $"pack has no plane directory for {key}");
-        return SlabCompanionReader.Read(Path.Combine(outDir, pack.File), planes!, result.CompanionSlab!);
+        byte[]? dict = pack.Dict is { } d ? File.ReadAllBytes(Path.Combine(outDir, d)) : null;
+        return SlabCompanionReader.Read(Path.Combine(outDir, pack.File), planes!, result.CompanionSlab!, pack.Codec, dict);
     }
 
     private static string Ring(double px, double py) =>

@@ -1,33 +1,51 @@
 using System.Buffers.Binary;
-using System.IO.Compression;
+using System.Security.Cryptography;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using Apache.Arrow.Types;
 using Colossus.Domain.Measures;
 using Colossus.Domain.Model;
 using DuckDB.NET.Data;
+using ZstdSharp;
 
 namespace Colossus.Infrastructure.Tiles;
 
 /// <summary>Writes fact companions as slabs (docs/companion-scale/SLAB-FORMAT.md) into one per-bake archive
 /// (<c>facts.pack</c>). Streams the companion grain rows of each level — <c>(tx, ty, mki, cellId, partials…)</c>
-/// ordered by <c>(tx, ty, mki, cellId)</c> — and, per tile, encodes either sparse CSR or dense cumulative
-/// cell-major planes, writing each plane (and, for sparse, the <c>@idx</c> structure) as an independently
-/// gzip-compressed Arrow block. The directory (<see cref="CompanionPack.Entries"/> whole-tile regions,
-/// <see cref="CompanionPack.PlaneEntries"/> per-plane ranges) rides the manifest. Both leaf and internal
-/// levels are packed — internal companions are compressed and range-fetchable too (R5).</summary>
+/// ordered by <c>(tx, ty, mki, cellId)</c> — and, per tile, encodes either sparse CSR (Arrow blocks) or dense
+/// cumulative cell-major planes (raw per-cell-row blocks — SLAB-FORMAT §4b).
+///
+/// <para>Codec is **zstd + a trained shared dictionary** (Work Item C): because the dictionary must exist
+/// before any block is compressed but is trained on the blocks, the writer runs two passes over a scratch
+/// file — pass 1 streams every block **raw** to <c>facts.pack.tmp</c> and reservoir-samples the small ones;
+/// <see cref="Finish"/> trains one dictionary (ZstdSharp/ZDICT), then transcodes the raw blocks into the final
+/// <c>facts.pack</c> with zstd-19+dict, rebuilding the directory with compressed offsets and writing
+/// <c>facts.dict</c>. Managed only — no native bindings (SLAB-FORMAT §5).</para>
+///
+/// <para>The directory (<see cref="CompanionPack.Entries"/> whole-tile regions, <see cref="CompanionPack.PlaneEntries"/>
+/// per-plane ranges, <see cref="CompanionPack.SliceEntries"/> dense per-cell-row lengths) rides the manifest.
+/// Both leaf and internal levels are packed (R5).</para></summary>
 internal sealed class SlabCompanionWriter : IDisposable
 {
     public const string FileName = CompanionPackWriter.FileName; // "facts.pack"
-    public const string Codec = CompanionPackWriter.Codec;       // "gzip"
+    public const string DictFileName = "facts.dict";
+    public const string Codec = "zstd";
     public const string IdxPlane = "@idx";
+
+    private const int ZstdLevel = 19;             // high level — the bake is a batch job
+    private const int DictCapacity = 112 * 1024;  // ~110 KB trained dictionary
+    private const int MinSamplesForDict = 16;     // fewer than this ⇒ no dictionary (plain zstd)
+    private const int MaxSampleBlock = 32 * 1024; // only small blocks are the dictionary's target
+    private const int MaxSamples = 4000;          // reservoir size (bounds training memory)
 
     private readonly SlabPlan _plan;
     // Test support only: forces every tile's layout instead of the per-tile occupancy gate, so the shared
     // fixture can pin the dense encoder against a tile whose occupancy would otherwise select sparse. Null in
     // production (the gate decides per tile).
     private readonly bool? _layoutOverride;
-    private readonly FileStream _pack;
+    private readonly string _outputDir;
+    private readonly string _tempPath;
+    private readonly FileStream _pack; // pass 1: raw scratch (facts.pack.tmp); replaced by the final pack in Finish
     private readonly Dictionary<string, long[]> _entries = new(StringComparer.Ordinal);
     private readonly Dictionary<string, IReadOnlyDictionary<string, long[]>> _planeEntries = new(StringComparer.Ordinal);
     // Per-cell-row block lengths for dense tiles (R5 cell-run slicing); keyed tileKey → plane → lengths.
@@ -35,6 +53,10 @@ internal sealed class SlabCompanionWriter : IDisposable
     // Tiles whose per-tile layout (SLAB-FORMAT §3) differs from the view default (_plan.Dense) — the only
     // ones the manifest records (CompanionSlab.TileLayouts); the rest fall back to the default.
     private readonly Dictionary<string, string> _tileLayouts = new(StringComparer.Ordinal);
+    // Reservoir sample of small raw blocks for dictionary training (unbiased across all levels).
+    private readonly List<byte[]> _samples = new();
+    private readonly Random _rng = new(1);
+    private int _sampleSeen;
 
     /// <summary>Per-tile layout overrides discovered while writing, or null when every tile matched the view
     /// default. The reducer folds this into <see cref="CompanionSlab.TileLayouts"/>.</summary>
@@ -44,8 +66,10 @@ internal sealed class SlabCompanionWriter : IDisposable
     {
         _plan = plan;
         _layoutOverride = layoutOverride;
+        _outputDir = outputDirectory;
         Directory.CreateDirectory(outputDirectory);
-        _pack = File.Create(Path.Combine(outputDirectory, FileName));
+        _tempPath = Path.Combine(outputDirectory, FileName + ".tmp");
+        _pack = File.Create(_tempPath);
     }
 
     /// <summary>Encodes one level's companion into the pack. <paramref name="markCounts"/> gives each tile's
@@ -162,7 +186,7 @@ internal sealed class SlabCompanionWriter : IDisposable
             for (int c = 0; c < cells; c++)
             {
                 CellRowBytes(plane, c, markCount, isInt, rowBytes);
-                lens[c] = AppendRaw(rowBytes);
+                lens[c] = AppendRaw(rowBytes, rowBytes.Length);
             }
             planes[p.Name] = [planeStart, _pack.Position - planeStart];
             slices[p.Name] = lens;
@@ -181,12 +205,24 @@ internal sealed class SlabCompanionWriter : IDisposable
         }
     }
 
-    // Append one raw (non-Arrow) block, gzip-compressed like the plane blocks; returns its compressed length.
-    private int AppendRaw(byte[] raw)
+    // Append one raw (non-Arrow) cell-row block to the scratch file uncompressed; returns its raw length.
+    // Finish transcodes it to zstd+dict. Pass a fresh copy to Sample — `raw` is a reused buffer.
+    private int AppendRaw(byte[] raw, int len)
     {
-        long offset = _pack.Position;
-        using (var gz = new GZipStream(_pack, CompressionLevel.Optimal, leaveOpen: true)) gz.Write(raw);
-        return checked((int)(_pack.Position - offset));
+        Sample(raw, len);
+        _pack.Write(raw, 0, len);
+        return len;
+    }
+
+    // Reservoir-sample small blocks for dictionary training (SLAB-FORMAT §5): unbiased across every level,
+    // memory bounded, and biased to the small blocks the dictionary actually helps.
+    private void Sample(byte[] raw, int len)
+    {
+        if (len > MaxSampleBlock) return;
+        _sampleSeen++;
+        var copy = raw[..len];
+        if (_samples.Count < MaxSamples) _samples.Add(copy);
+        else { int j = _rng.Next(_sampleSeen); if (j < MaxSamples) _samples[j] = copy; }
     }
 
     // Prefix-sum each cell along the cumulative ordered axis: cell c gains cell (c - stride) whenever its
@@ -202,33 +238,128 @@ internal sealed class SlabCompanionWriter : IDisposable
         }
     }
 
+    // Sparse Arrow block, written raw to the scratch file (Finish transcodes to zstd+dict); returns its raw
+    // [offset, length].
     private long[] AppendBlock(Schema schema, IArrowArray[] arrays)
     {
         using var batch = new RecordBatch(schema, arrays, 1);
         using var mem = new MemoryStream();
         using (var w = new ArrowStreamWriter(mem, schema, leaveOpen: true)) { w.WriteRecordBatch(batch); w.WriteEnd(); }
-        mem.Position = 0;
+        byte[] bytes = mem.ToArray();
+        Sample(bytes, bytes.Length);
         long offset = _pack.Position;
-        using (var gz = new GZipStream(_pack, CompressionLevel.Optimal, leaveOpen: true)) mem.CopyTo(gz);
-        return [offset, _pack.Position - offset];
+        _pack.Write(bytes, 0, bytes.Length);
+        return [offset, bytes.Length];
     }
 
     public CompanionPack Finish()
     {
         _pack.Flush();
         _pack.Dispose();
+
+        byte[]? dict = TrainDict();
+        using var comp = new Compressor(ZstdLevel);
+        if (dict is not null) comp.LoadDictionary(dict);
+
+        // Pass 2 — transcode the raw scratch blocks into the final pack with zstd+dict, rebuilding the
+        // directory with compressed offsets. Blocks are read a whole tile-region at a time (they are
+        // contiguous in the scratch) and re-emitted tile by tile, plane by plane, so the final layout keeps
+        // per-tile / per-plane grouping (whole-tile and plane-split fetches still range one region).
+        var newEntries = new Dictionary<string, long[]>(StringComparer.Ordinal);
+        var newPlaneEntries = new Dictionary<string, IReadOnlyDictionary<string, long[]>>(StringComparer.Ordinal);
+        var newSliceEntries = new Dictionary<string, IReadOnlyDictionary<string, int[]>>(StringComparer.Ordinal);
+
+        string finalPath = Path.Combine(_outputDir, FileName);
+        using (var temp = File.OpenRead(_tempPath))
+        using (var final = File.Create(finalPath))
+        {
+            foreach (var (tileKey, region) in _entries)
+            {
+                byte[] raw = new byte[region[1]];
+                temp.Position = region[0];
+                temp.ReadExactly(raw);
+                long tileStart = final.Position;
+                var planes = new Dictionary<string, long[]>(StringComparer.Ordinal);
+                var slices = _sliceEntries.TryGetValue(tileKey, out var tileSlices) ? new Dictionary<string, int[]>(StringComparer.Ordinal) : null;
+
+                foreach (var (plane, rawRange) in _planeEntries[tileKey])
+                {
+                    int inRegion = (int)(rawRange[0] - region[0]); // this plane's start within the tile region
+                    long planeStart = final.Position;
+                    if (slices is not null && tileSlices!.TryGetValue(plane, out var rawCellLens))
+                    {
+                        // Dense: one block per cell row. Transcode each; record its compressed length.
+                        var compLens = new int[rawCellLens.Length];
+                        int cellOff = inRegion;
+                        for (int c = 0; c < rawCellLens.Length; c++)
+                        {
+                            compLens[c] = WriteCompressed(final, comp, raw, cellOff, rawCellLens[c]);
+                            cellOff += rawCellLens[c];
+                        }
+                        planes[plane] = [planeStart, final.Position - planeStart];
+                        slices[plane] = compLens;
+                    }
+                    else
+                    {
+                        // Sparse (or @idx): one whole block.
+                        WriteCompressed(final, comp, raw, inRegion, (int)rawRange[1]);
+                        planes[plane] = [planeStart, final.Position - planeStart];
+                    }
+                }
+                newEntries[tileKey] = [tileStart, final.Position - tileStart];
+                newPlaneEntries[tileKey] = planes;
+                if (slices is not null) newSliceEntries[tileKey] = slices;
+            }
+        }
+        File.Delete(_tempPath);
+
+        string? dictPath = null, dictHash = null;
+        if (dict is not null)
+        {
+            File.WriteAllBytes(Path.Combine(_outputDir, DictFileName), dict);
+            dictPath = DictFileName;
+            dictHash = Convert.ToHexStringLower(SHA256.HashData(dict));
+        }
+
         return new CompanionPack
         {
             File = FileName,
             Codec = Codec,
             Format = "slab",
-            Entries = _entries,
-            PlaneEntries = _planeEntries,
-            SliceEntries = _sliceEntries.Count > 0 ? _sliceEntries : null,
+            Entries = newEntries,
+            PlaneEntries = newPlaneEntries,
+            SliceEntries = newSliceEntries.Count > 0 ? newSliceEntries : null,
+            Dict = dictPath,
+            DictHash = dictHash,
         };
     }
 
-    public void Dispose() => _pack.Dispose();
+    // Compress raw[offset..offset+len) with the (dict-loaded) compressor and append it; returns compressed len.
+    private static int WriteCompressed(FileStream final, Compressor comp, byte[] raw, int offset, int len)
+    {
+        byte[] packed = comp.Wrap(raw.AsSpan(offset, len)).ToArray();
+        final.Write(packed, 0, packed.Length);
+        return packed.Length;
+    }
+
+    // Train one dictionary per (view, version) over the sampled small blocks (SLAB-FORMAT §5). Too few
+    // samples (a tiny fixture) ⇒ no dictionary; the codec is still zstd, just plain.
+    private byte[]? TrainDict()
+    {
+        if (_samples.Count < MinSamplesForDict) return null;
+        try
+        {
+            var dict = DictBuilder.TrainFromBuffer(_samples, DictCapacity);
+            return dict.Length > 0 ? dict : null;
+        }
+        catch { return null; } // ZDICT can reject a sample set it deems too small/uniform — fall back to plain zstd
+    }
+
+    public void Dispose()
+    {
+        _pack.Dispose();
+        if (File.Exists(_tempPath)) File.Delete(_tempPath);
+    }
 
     // ── Arrow construction (single-row List columns; the child buffer is the plane's typed array) ──────────
     private static Schema One(string name, IArrowType valueType) => new([ListField(name, valueType)], null);

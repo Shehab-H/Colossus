@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Colossus.Domain.Measures;
+using Colossus.Domain.Model;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiles;
 using Xunit;
@@ -70,10 +71,16 @@ public class SlabFormatTests : IDisposable
             writer.AppendLevel(0, db.Connection, sql, new Dictionary<(long, long), long> { [(0, 0)] = 2 });
             var pack = writer.Finish();
             Assert.Equal("slab", pack.Format);
+            Assert.Equal("zstd", pack.Codec);
             Assert.True(pack.PlaneEntries!.ContainsKey("0/0/0"));
-            return SlabCompanionReader.Read(Path.Combine(_dir.FullName, pack.File), pack.PlaneEntries["0/0/0"], plan.ToManifest());
+            return SlabCompanionReader.Read(Path.Combine(_dir.FullName, pack.File), pack.PlaneEntries["0/0/0"],
+                plan.ToManifest(), pack.Codec, DictOf(pack));
         }
     }
+
+    // The pack's trained dictionary bytes, or null (a tiny fixture trains none — plain zstd).
+    private byte[]? DictOf(CompanionPack pack) =>
+        pack.Dict is { } d ? File.ReadAllBytes(Path.Combine(_dir.FullName, d)) : null;
 
     [Fact]
     public void Sparse_CsrEncoding_MatchesFixture()
@@ -145,13 +152,14 @@ public class SlabFormatTests : IDisposable
 
         var manifest = plan.ToManifest() with { TileLayouts = writer.TileLayouts };
         string packPath = Path.Combine(_dir.FullName, pack.File);
+        byte[]? dict = DictOf(pack);
         foreach (var t in mixed.GetProperty("tiles").EnumerateArray())
         {
             string key = t.GetProperty("key").GetString()!;
             string expectLayout = t.GetProperty("expectLayout").GetString()!;
             Assert.Equal(expectLayout, manifest.LayoutOf(key));
 
-            var tile = SlabCompanionReader.Read(packPath, pack.PlaneEntries![key], manifest);
+            var tile = SlabCompanionReader.Read(packPath, pack.PlaneEntries![key], manifest, pack.Codec, dict);
             Assert.Equal(expectLayout == "dense", tile.Dense); // physical layout agrees with the recorded choice
 
             if (expectLayout == "dense")

@@ -15,6 +15,7 @@ public sealed class ArrowTileReader : ITileReader
         return CompanionPackWriter.RowCount(packPath, offset, length);
     }
 
-    public long SlabFacts(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab) =>
-        SlabCompanionReader.Facts(SlabCompanionReader.Read(packPath, planes, slab), slab);
+    public long SlabFacts(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab,
+        string codec, byte[]? dict) =>
+        SlabCompanionReader.Facts(SlabCompanionReader.Read(packPath, planes, slab, codec, dict), slab);
 }
