@@ -12,6 +12,7 @@ internal static class GeometrySqlFactory
     {
         GeometryKind.Xy or GeometryKind.LonLat => new PointGeometrySql(),
         GeometryKind.Quadkey => new QuadkeyGeometrySql(),
+        GeometryKind.Wkt => new WktGeometrySql(),
         _ => throw new NotSupportedException(
             $"ClickHouse adapter: geometry kind '{kind}' is not implemented yet."),
     };

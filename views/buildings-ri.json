@@ -1,0 +1,17 @@
+{
+  "id": "buildings-ri",
+  "title": "Rhode Island building footprints (~393K polygons)",
+  "viewport": "geo",
+  "mark": "polygon",
+  "source": {
+    "adapter": "clickhouse",
+    "query": "SELECT wkt, area_m2, vertices FROM colossus.buildings_ri",
+    "geometry": { "kind": "wkt", "column": "wkt" },
+    "channels": [
+      { "name": "area_m2", "column": "area_m2", "role": "measure", "type": "f32" },
+      { "name": "vertices", "column": "vertices", "role": "measure", "type": "f32" }
+    ]
+  },
+  "encoding": { "color": { "channel": "area_m2" } },
+  "inspect": { "title": "area_m2", "channels": ["area_m2", "vertices"] }
+}

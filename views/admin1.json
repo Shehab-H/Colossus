@@ -1,0 +1,18 @@
+{
+  "id": "admin1",
+  "title": "Natural Earth admin-1 states & provinces",
+  "viewport": "geo",
+  "mark": "polygon",
+  "source": {
+    "adapter": "clickhouse",
+    "query": "SELECT wkt, name, admin, area_km2 FROM colossus.admin1",
+    "geometry": { "kind": "wkt", "column": "wkt" },
+    "channels": [
+      { "name": "name", "column": "name", "role": "identity", "type": "dict" },
+      { "name": "admin", "column": "admin", "role": "dimension", "type": "dict" },
+      { "name": "area_km2", "column": "area_km2", "role": "measure", "type": "f32" }
+    ]
+  },
+  "encoding": { "color": { "channel": "area_km2" } },
+  "inspect": { "title": "name", "channels": ["name", "admin", "area_km2"] }
+}
