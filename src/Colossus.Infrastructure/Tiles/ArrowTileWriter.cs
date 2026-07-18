@@ -17,22 +17,27 @@ public static class ArrowTileWriter
 {
     public static void Write(DuckDBConnection conn, string selectSql, string path,
         IReadOnlySet<string>? dictionaryColumns = null,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null)
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null,
+        int tileFormat = 2)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = selectSql;
         using var reader = cmd.ExecuteReader();
-        var buffer = new TileBuffer(reader, skip: 0, dictionaryColumns, canonicalOrders);
+        var buffer = new TileBuffer(reader, skip: 0, dictionaryColumns, canonicalOrders, tileFormat);
         while (reader.Read()) buffer.AppendRow(reader);
         buffer.Flush(path);
     }
 
     /// <summary>Streams a query ordered by its first two columns (tile x, tile y) and writes one file
-    /// per tile; those two columns are not written. Returns (tx, ty, rows) per tile.</summary>
+    /// per tile; those two columns are not written. Returns (tx, ty, rows) per tile. When
+    /// <paramref name="tileFormat"/> is 3, each polygon tile's geometry is written as the encoded
+    /// <see cref="TileSchema.Geom3"/> payload (see <see cref="GeometryCodec"/>) instead of the format-2
+    /// geometry/part_offsets/triangles/x/y/id columns; measure and dict columns are unchanged.</summary>
     public static List<(long Tx, long Ty, long Rows)> WritePartitioned(
         DuckDBConnection conn, string selectSql, Func<long, long, string> pathFor,
         IReadOnlySet<string>? dictionaryColumns = null,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null)
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null,
+        int tileFormat = 2)
     {
         var written = new List<(long, long, long)>();
         using var cmd = conn.CreateCommand();
@@ -51,7 +56,7 @@ public static class ArrowTileWriter
                     buffer.Flush(pathFor(tx, ty));
                     written.Add((tx, ty, rows));
                 }
-                buffer = new TileBuffer(reader, skip: 2, dictionaryColumns, canonicalOrders);
+                buffer = new TileBuffer(reader, skip: 2, dictionaryColumns, canonicalOrders, tileFormat);
                 (tx, ty, rows) = (rtx, rty, 0);
             }
             buffer.AppendRow(reader);
@@ -78,50 +83,76 @@ public static class ArrowTileWriter
         return count;
     }
 
-    /// <summary>Column builders for one tile's rows, flushed to a single Arrow IPC file. Detects the
-    /// canonical geometry columns by name and, when present, tessellates each row into a triangles list.</summary>
+    // Format-3 polygon tiles drop these columns: x/y are only read for point marks, id is read nowhere in
+    // the client (the group-regime fold joins by mki), and geometry/part_offsets/triangles are all rebuilt
+    // from the encoded geom3 payload. Measure and dict columns are kept exactly as format 2 (zero-copy).
+    private static readonly string[] Format3Dropped =
+        [TileSchema.X, TileSchema.Y, TileSchema.Id, TileSchema.Geometry, TileSchema.PartOffsets];
+
+    // Schema metadata marker: the tile self-describes as carrying an encoded geom3 payload (the codec itself
+    // is in the payload header). Additive — apache-arrow ignores unknown metadata.
+    private const string Format3MetaKey = "colossus.geom3";
+
+    /// <summary>Column builders for one tile's rows, flushed to a single Arrow IPC file. Under format 2 it
+    /// detects the geometry columns and tessellates each row into a triangles list. Under format 3 it drops
+    /// the derivable geometry/x/y/id columns and captures each row's geometry for <see cref="GeometryCodec"/>,
+    /// writing a single self-describing <see cref="TileSchema.Geom3"/> payload instead.</summary>
     private sealed class TileBuffer
     {
         private readonly int _skip;
         private readonly int _fieldCount;
-        private readonly ArrowColumnBuilder[] _cols;
-        private readonly ListArray.Builder? _triangles;
+        private readonly List<(int ReaderIdx, ArrowColumnBuilder Col)> _cols = [];
+        private readonly ListArray.Builder? _triangles;         // format 2 only
+        private readonly List<GeometryCodec.Row>? _geomRows;    // format 3 only
         private readonly int _geometryIdx = -1;
         private readonly int _partOffsetsIdx = -1;
+        private readonly bool _format3;
         // Running tile-global vertex count: each row's triangle indices are rebased by this so the
         // client takes one view over the whole child buffer instead of rebasing per row (format 2).
         private int _vertexBase;
 
         public TileBuffer(DbDataReader reader, int skip, IReadOnlySet<string>? dictionaryColumns,
-            IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders = null)
+            IReadOnlyDictionary<string, IReadOnlyList<string>>? canonicalOrders, int tileFormat)
         {
             _skip = skip;
             _fieldCount = reader.FieldCount;
-            _cols = new ArrowColumnBuilder[_fieldCount - skip];
             for (int i = skip; i < _fieldCount; i++)
             {
                 string name = reader.GetName(i);
-                bool dict = dictionaryColumns?.Contains(name) == true;
-                _cols[i - skip] = ArrowColumnBuilder.For(name, reader.GetFieldType(i), reader.GetDataTypeName(i),
-                    dictionaryEncode: dict,
-                    canonicalOrder: dict ? canonicalOrders?.GetValueOrDefault(name) : null);
                 if (name == TileSchema.Geometry) _geometryIdx = i;
                 else if (name == TileSchema.PartOffsets) _partOffsetsIdx = i;
             }
-            _triangles = _geometryIdx >= 0 ? new ListArray.Builder(Int32Type.Default) : null;
+            _format3 = tileFormat >= 3 && _geometryIdx >= 0;
+
+            for (int i = skip; i < _fieldCount; i++)
+            {
+                string name = reader.GetName(i);
+                if (_format3 && System.Array.IndexOf(Format3Dropped, name) >= 0) continue;
+                bool dict = dictionaryColumns?.Contains(name) == true;
+                _cols.Add((i, ArrowColumnBuilder.For(name, reader.GetFieldType(i), reader.GetDataTypeName(i),
+                    dictionaryEncode: dict,
+                    canonicalOrder: dict ? canonicalOrders?.GetValueOrDefault(name) : null)));
+            }
+
+            if (_format3) _geomRows = [];
+            else _triangles = _geometryIdx >= 0 ? new ListArray.Builder(Int32Type.Default) : null;
         }
 
         public void AppendRow(DbDataReader reader)
         {
-            object? geometry = null, partOffsets = null;
-            for (int i = _skip; i < _fieldCount; i++)
+            object? geometry = _geometryIdx >= 0 && !reader.IsDBNull(_geometryIdx) ? reader.GetValue(_geometryIdx) : null;
+            object? partOffsets = _partOffsetsIdx >= 0 && !reader.IsDBNull(_partOffsetsIdx) ? reader.GetValue(_partOffsetsIdx) : null;
+
+            foreach (var (idx, col) in _cols)
+                col.Append(reader.IsDBNull(idx) ? null : reader.GetValue(idx));
+
+            if (_format3)
             {
-                object? v = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                if (i == _geometryIdx) geometry = v;
-                else if (i == _partOffsetsIdx) partOffsets = v;
-                _cols[i - _skip].Append(v);
+                if (geometry is null)
+                    throw new InvalidOperationException($"format 3: polygon tile row has null '{TileSchema.Geometry}'");
+                _geomRows!.Add(new GeometryCodec.Row(ToFloatArray(geometry), partOffsets is null ? null : ToIntArray(partOffsets)));
             }
-            if (_triangles is not null) AppendTriangles(geometry, partOffsets);
+            else if (_triangles is not null) AppendTriangles(geometry, partOffsets);
         }
 
         // Tessellates one row's ring(s) and appends the indices rebased by the tile's running vertex
@@ -144,20 +175,41 @@ public static class ArrowTileWriter
         public void Flush(string path)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var arrays = _cols.Select(c => c.Build()).ToList();
-            var fields = _cols.Select(c => c.BuildField()).ToList();
-            if (_triangles is not null)
+            var arrays = _cols.Select(c => c.Col.Build()).ToList();
+            var fields = _cols.Select(c => c.Col.BuildField()).ToList();
+            IReadOnlyDictionary<string, string>? metadata = null;
+            int rows = _format3 ? _geomRows!.Count : (arrays.Count > 0 ? arrays[0].Length : 0);
+
+            if (_format3)
+            {
+                byte[] payload = GeometryCodec.Encode(_geomRows!);
+                arrays.Add(BuildGeomBlob(payload, rows));
+                fields.Add(new Field(TileSchema.Geom3, BinaryType.Default, nullable: false));
+                metadata = new Dictionary<string, string> { [Format3MetaKey] = "1" };
+            }
+            else if (_triangles is not null)
             {
                 arrays.Add(_triangles.Build(default));
                 fields.Add(new Field(TileSchema.Triangles, new ListType(new Field("item", Int32Type.Default, false)), nullable: false));
             }
-            var schema = new Schema(fields, null);
-            int rows = arrays.Count > 0 ? arrays[0].Length : 0;
+
+            var schema = new Schema(fields, metadata);
             using var batch = new RecordBatch(schema, arrays, rows);
             using var stream = File.Create(path);
             using var writer = new ArrowStreamWriter(stream, schema);
             writer.WriteRecordBatch(batch);
             writer.WriteEnd();
+        }
+
+        // The whole encoded geometry rides in row 0 of a binary column; rows 1..n-1 are empty (non-null), so
+        // the column is `rows` long like every measure column and the frame stays a single record batch. The
+        // constant offset array compresses to nothing and never hits disk uncompressed.
+        private static BinaryArray BuildGeomBlob(byte[] payload, int rows)
+        {
+            var b = new BinaryArray.Builder();
+            b.Append(payload);
+            for (int i = 1; i < rows; i++) b.Append(ReadOnlySpan<byte>.Empty);
+            return b.Build(default);
         }
     }
 

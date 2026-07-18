@@ -17,7 +17,7 @@ public sealed class RawPassthroughReducer : IReductionStrategy
 
         using (var db = DuckDbSession.InMemory())
             ArrowTileWriter.Write(db.Connection, $"SELECT * FROM read_parquet('{Sql.Path(ctx.StagingParquetPath)}')", path,
-                ctx.View.DictionaryEncodedChannels());
+                ctx.View.DictionaryEncodedChannels(), canonicalOrders: null, tileFormat: ctx.TileFormat);
 
         long count = ArrowTileWriter.RowCount(path);
         return new ReductionResult(new List<TileMeta> { new(0, 0, 0, count, IsLeaf: true) }, count);

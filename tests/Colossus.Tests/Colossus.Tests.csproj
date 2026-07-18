@@ -22,6 +22,7 @@
     <!-- Shared cross-language fixtures; the web Vitest suite reads the same files. -->
     <None Include="..\fixtures\tiling-cases.json" Link="fixtures\tiling-cases.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\measure-cases.json" Link="fixtures\measure-cases.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\geometry-codec-cases.json" Link="fixtures\geometry-codec-cases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

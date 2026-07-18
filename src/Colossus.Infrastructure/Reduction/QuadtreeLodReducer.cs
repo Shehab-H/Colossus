@@ -59,7 +59,7 @@ public sealed class QuadtreeLodReducer : IReductionStrategy
                """;
 
         ArrowTileWriter.Write(db.Connection, subset, Path.Combine(ctx.OutputDirectory, tile.RelativePath),
-            ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+            ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders, ctx.TileFormat);
 
         tiles.Add(new TileMeta(tile.Z, tile.X, tile.Y, isLeaf ? count : cells, isLeaf));
 

@@ -30,6 +30,13 @@ public static class TileSchema
     /// absent on leaf tiles, where every mark is one row).</summary>
     public const string MergedCount = "merged_count";
 
+    /// <summary>Tile format 3 (RULES R3): the single self-describing binary geometry payload carried by a
+    /// polygon tile in place of <see cref="Geometry"/>/<see cref="PartOffsets"/>/<see cref="Triangles"/>/
+    /// <see cref="X"/>/<see cref="Y"/>/<see cref="Id"/>. Held in row 0 of a one-row-populated binary column
+    /// (the rest empty); the client decodes it into the exact format-2 buffers. Measure/dict columns stay
+    /// as-is (single-chunk, non-null, zero-copy). See <c>GeometryCodec</c> for the payload layout.</summary>
+    public const string Geom3 = "geom3";
+
     /// <summary>Grid cells per tile axis. The bake merges sub-pixel marks onto this grid and the client
     /// selects tiles at ≤ this many screen pixels, so one grid cell ≈ one screen pixel. The bake and the
     /// client must use the same value; it lives here so they share one definition.</summary>

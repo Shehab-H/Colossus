@@ -179,6 +179,46 @@ public class ArrowTileWriterTests : IDisposable
         Assert.IsType<StringArray>(ReadSingleBatch(path).Column("label"));
     }
 
+    [Fact]
+    public void Write_Format3_DropsDerivableColumns_AndEncodesGeometry()
+    {
+        string path = TilePath("f3-rect.arrow");
+        using (var db = DuckDbSession.InMemory())
+        {
+            // Grid-cell tile (the aggregate reducer's ring order) written as tile format 3.
+            ArrowTileWriter.Write(db.Connection, """
+                SELECT (x + 0.5)::FLOAT AS x, 0.5::FLOAT AS y, ('id-' || x) AS id,
+                       [x::FLOAT, 0, x+1, 0, x+1, 1, x::FLOAT, 1, x::FLOAT, 0] AS geometry,
+                       [0, 5]::INTEGER[] AS part_offsets,
+                       (x * 10)::FLOAT AS value
+                FROM range(3) r(x)
+                """, path, tileFormat: 3);
+        }
+
+        var batch = ReadSingleBatch(path);
+        var names = batch.Schema.FieldsList.Select(f => f.Name).ToArray();
+        // Derivable/unused columns are gone; the measure stays as a zero-copy column; geom3 carries geometry.
+        Assert.Equal(["value", "geom3"], names);
+        Assert.Equal(3, batch.Length);
+        var value = Assert.IsType<FloatArray>(batch.Column("value"));
+        Assert.Equal([0f, 10f, 20f], Enumerable.Range(0, 3).Select(i => value.GetValue(i)!.Value));
+
+        // The whole geometry payload lives in row 0 of the binary column.
+        var blob = Assert.IsType<BinaryArray>(batch.Column("geom3"));
+        Assert.Equal(GeometryCodec.CodecRect, blob.GetBytes(0)[0]);
+        var decoded = GeometryCodec.Decode(blob.GetBytes(0).ToArray());
+
+        var expected = GeometryCodec.BuildFormat2(
+        [
+            new([0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f, 0f, 0f], [0, 5]),
+            new([1f, 0f, 2f, 0f, 2f, 1f, 1f, 1f, 1f, 0f], [0, 5]),
+            new([2f, 0f, 3f, 0f, 3f, 1f, 2f, 1f, 2f, 0f], [0, 5]),
+        ]);
+        Assert.Equal(expected.Positions, decoded.Positions);
+        Assert.Equal(expected.StartIndices, decoded.StartIndices);
+        Assert.Equal(expected.Triangles, decoded.Triangles);
+    }
+
     private static RecordBatch ReadSingleBatch(string path)
     {
         using var stream = File.OpenRead(path);

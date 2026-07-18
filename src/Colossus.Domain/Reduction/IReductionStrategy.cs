@@ -25,6 +25,11 @@ public sealed record ReductionContext
     public required int MaxZoom { get; init; }
     public required ViewConfig View { get; init; }
 
+    /// <summary>Tile format the reducer's Arrow writer emits (RULES R3). 2 = the zero-copy format-2 columns;
+    /// 3 = polygon geometry replaced by the encoded <c>geom3</c> payload (tile-transfer Phase 2). Points stay
+    /// format 2 regardless (the encoder only fires when a tile has geometry).</summary>
+    public int TileFormat { get; init; } = 2;
+
     /// <summary>Group regime: <see cref="View"/> is the effective marks view and the
     /// staging is the grouped marks table, so tiles also carry the mark <c>id</c> and each dict channel
     /// (merged sub-pixel cells take the grid key and the mode). Default false — the row regime is

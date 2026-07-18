@@ -6,6 +6,7 @@ import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
 import type { CompanionData, CompanionDim } from './measures';
 import { assembleDenseSlab, decodeSlab, type SlabData } from './slab';
 import { buildFilterValues, canonicalCodeLut, dayNumber, MISSING_CODE, type FilterSlots } from './gpuFilter';
+import { decodeGeometry } from './geometryCodec';
 import { TileColumns } from './schema';
 import { timedSync } from './perf';
 
@@ -254,6 +255,7 @@ export function decodeTile(
   tileFormat?: number,
   buffer?: ArrayBuffer,
 ): TileData {
+  if ((tileFormat ?? 1) >= 3 && buffer && table.getChild(TileColumns.geom3)) return decodeTileV3(view, table, slots, buffer);
   if ((tileFormat ?? 1) >= 2 && buffer) return decodeTileV2(view, table, slots, buffer);
 
   const values = readFields(view, table);
@@ -299,6 +301,32 @@ function decodeTileV2(view: ViewConfig, table: Table, slots: FilterSlots | null 
   }
   const filterValues = buildSlotValues(table, slots, n);
   return { count: n, positions, values, filterValues, buffer };
+}
+
+/** Format-3 decode (polygon tiles). Measure/dict columns are viewed exactly as format 2 (zero-copy); the
+ *  geometry — dropped from the Arrow columns and carried as one self-describing payload in the geom3 blob —
+ *  is synthesized back into the identical polyPositions / polyStartIndices / polyTriangles buffers the
+ *  format-2 decode produces (bit-for-bit; see geometryCodec). x/y/id are not present: unused by polygon
+ *  marks and re-derivable, so the bake never wrote them. */
+function decodeTileV3(view: ViewConfig, table: Table, slots: FilterSlots | null | undefined, buffer: ArrayBuffer): TileData {
+  const values = readFieldsView(view, table);
+
+  const gv = table.getChild(TileColumns.geom3);
+  if (!gv) throw new Error('format 3: polygon tile has no geom3 column');
+  const g = decodeGeometry(gv.get(0) as Uint8Array); // the whole payload lives in row 0
+  const count = table.numRows;
+  const vertexCount = g.positions.length >> 1;
+  const filterValues = buildSlotValues(table, slots, count, g.startIndices, vertexCount);
+  return {
+    count,
+    polyPositions: g.positions,
+    polyStartIndices: g.startIndices,
+    polyTriangles: g.triangles,
+    vertexCount,
+    values,
+    filterValues,
+    buffer,
+  };
 }
 
 /** Per-tile GPU filter attribute: one float slot per filterable channel per mark (points) or vertex

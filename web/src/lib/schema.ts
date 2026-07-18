@@ -10,6 +10,7 @@ export const TileColumns = {
   triangles: 'triangles',
   id: 'id',
   mergedCount: 'merged_count', // internal LOD tiles only: rows each merged mark stands for
+  geom3: 'geom3', // tile format 3: the self-describing encoded-geometry payload (see geometryCodec)
 } as const;
 
 /** Grid cells per tile axis — the bake merges sub-pixel marks onto this grid; the client selects tiles

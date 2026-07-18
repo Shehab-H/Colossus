@@ -165,7 +165,7 @@ public sealed class AggregateReducer : IReductionStrategy
                     """);
                 written = ArrowTileWriter.WritePartitioned(db.Connection,
                     "SELECT * EXCLUDE (mki) FROM content ORDER BY tx, ty, mki", tilePath,
-                    ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+                    ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders, ctx.TileFormat);
 
                 // Companions ride the same active tiles (facts share their marks' (tx,ty)). Each tile's
                 // slab — CSR or dense cumulative planes at grain, keyed by mki — is appended to facts.pack.
@@ -175,7 +175,7 @@ public sealed class AggregateReducer : IReductionStrategy
             else
             {
                 written = ArrowTileWriter.WritePartitioned(db.Connection, contentSql, tilePath,
-                    ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders);
+                    ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders, ctx.TileFormat);
             }
 
             foreach (var (wtx, wty, rows) in written)

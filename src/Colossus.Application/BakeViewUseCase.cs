@@ -38,6 +38,10 @@ public sealed class BakeViewUseCase(
         string version = NewVersion();
         string outputDir = store.VersionDirectory(view.Id, version);
 
+        // Area marks carry geometry, so they bake as tile format 3 (geometry replaced by the encoded geom3
+        // payload, RULES R3 / tile-transfer Phase 2). Point marks have no geometry and stay format 2.
+        int tileFormat = view.Mark is Mark.Polygon or Mark.Rect or Mark.Heat ? 3 : 2;
+
         // The group regime groups the facts to marks first; the reducer then tiles the marks and writes
         // fact companions. Domains, canonical orders, and the reduction view all come from the group
         // artifacts. The row regime is exactly as before: reduce the staging directly.
@@ -50,6 +54,7 @@ public sealed class BakeViewUseCase(
             TilePointBudget = plan.TilePointBudget,
             MaxZoom = plan.MaxZoom,
             View = view,
+            TileFormat = tileFormat,
         };
         IReadOnlyDictionary<string, ChannelDomain> channelDomains;
 
@@ -99,7 +104,7 @@ public sealed class BakeViewUseCase(
         await store.WriteManifestAsync(new Manifest
         {
             Version = version,
-            TileFormat = 2,
+            TileFormat = tileFormat,
             View = view,
             Reduction = plan.Reduction,
             Regime = "large",

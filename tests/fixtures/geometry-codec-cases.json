@@ -1,0 +1,160 @@
+{
+  "cases": [
+    {
+      "name": "rect-grid",
+      "codec": 1,
+      "payloadBase64": "AQEDAAAADwAAAAUGAwABAQIDAAEBAAAAAAEBAAMAAAAAAAAAgD8AAABAAwAAAAAAAACAPwAAAEAAAAEAAAABAAEAAgAAAAEAAAABAAEAAgA=",
+      "positions": [
+        0,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        2,
+        0,
+        2,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        2,
+        0,
+        2,
+        0,
+        1
+      ],
+      "startIndices": [
+        0,
+        5,
+        10,
+        15
+      ],
+      "triangles": [
+        3,
+        0,
+        1,
+        1,
+        2,
+        3,
+        8,
+        5,
+        6,
+        6,
+        7,
+        8,
+        13,
+        10,
+        11,
+        11,
+        12,
+        13
+      ]
+    },
+    {
+      "name": "delta-triangle",
+      "codec": 2,
+      "payloadBase64": "AgEBAAAABAAAAAECAAAAAAAEAAAAAwAAAAABAgAA//8AAP//AAD//wCBAH8AAAD/AAAA/wAAgH8AAICA",
+      "positions": [
+        0,
+        0,
+        4,
+        0,
+        2,
+        3,
+        0,
+        0
+      ],
+      "startIndices": [
+        0,
+        4
+      ],
+      "triangles": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "name": "delta-multipart",
+      "codec": 2,
+      "payloadBase64": "AgEBAAAACgAAAAEDAAAAAAAFAAAACgAAAAwAAAADAAEBAgMIBQYGBwgAAAD/AAAAAP8AAAAA/wAAAAD/AACAAH8AAAAA/wAAgQCBAIABAAAAAAAAAP8AAAAA/wAAAAD/AAAAAP8AAIAAfwAAAAD/AACBAIGAAAEAAA==",
+      "positions": [
+        0,
+        0,
+        6,
+        0,
+        6,
+        6,
+        0,
+        6,
+        0,
+        0,
+        2,
+        2,
+        4,
+        2,
+        4,
+        4,
+        2,
+        4,
+        2,
+        2
+      ],
+      "startIndices": [
+        0,
+        10
+      ],
+      "triangles": [
+        3,
+        0,
+        1,
+        1,
+        2,
+        3,
+        8,
+        5,
+        6,
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "name": "delta-fractional",
+      "codec": 2,
+      "payloadBase64": "AgEBAAAABAAAAAECAAAAAAAEAAAAAwAAAAABAs1nnDNZAAAA4gAAAHoAAAC20gbXlQABAU4AAACEAAAA",
+      "positions": [
+        -71.4123,
+        41.8231,
+        -71.4119,
+        41.8235,
+        -71.4125,
+        41.824,
+        -71.4123,
+        41.8231
+      ],
+      "startIndices": [
+        0,
+        4
+      ],
+      "triangles": [
+        0,
+        1,
+        2
+      ]
+    }
+  ]
+}
