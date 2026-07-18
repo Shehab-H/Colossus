@@ -1,5 +1,6 @@
 using Colossus.Infrastructure.DependencyInjection;
 using Colossus.Infrastructure.Serialization;
+using Colossus.Server;
 using Colossus.Server.Configuration;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
@@ -67,6 +68,12 @@ app.UseSwaggerUI(o =>
 });
 
 Directory.CreateDirectory(server.TilesRoot);
+
+// Serve brotli-precompressed render tiles (tile-transfer initiative, Phase 1) ahead of the plain static
+// handler: a *.arrow request from a br-capable client that has a .arrow.br sibling on disk gets the sibling's
+// bytes + Content-Encoding: br; everything else falls through to the plain file below (the rollback rail).
+app.UsePrecompressedTiles("/tiles", server.TilesRoot);
+
 var contentTypes = new FileExtensionContentTypeProvider();
 contentTypes.Mappings[".arrow"] = "application/vnd.apache.arrow.stream";
 // Companion pack (R2): gzip blocks range-read per tile. Static files honor Range natively; the
@@ -85,6 +92,11 @@ app.UseStaticFiles(new StaticFileOptions
             name is "latest.json" or "manifest.json"
                 ? "public, max-age=60"
                 : "public, max-age=31536000, immutable";
+        // A tile has two on-the-wire representations (plain here, Content-Encoding: br from the middleware
+        // above), so a shared cache must key on Accept-Encoding. Harmless in the browser (identical decoded
+        // bytes either way); correct for any intermediary.
+        if (name.EndsWith(".arrow", StringComparison.OrdinalIgnoreCase))
+            ctx.Context.Response.Headers.Vary = "Accept-Encoding";
         // Without this a cross-origin reader (the SPA on another host, or a CDN tile base) sees
         // transferSize/encodedBodySize zeroed in Resource Timing — the perf dashboard would report a
         // multi-megabyte tile fetch as 0 bytes rather than as unknown. No credentials are involved and

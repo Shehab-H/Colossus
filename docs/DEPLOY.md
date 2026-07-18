@@ -83,15 +83,19 @@ Needs a (free) Cloudflare account. Backblaze B2 works the same way if you prefer
      access_key_id <KEY> secret_access_key <SECRET> `
      endpoint https://<ACCOUNT_ID>.r2.cloudflarestorage.com
 
-   # immutable data: long cache
+   # immutable data EXCEPT render tiles: long cache. .arrow is uploaded separately (br, below); .arrow.br
+   # is never its own key (the client only ever requests .arrow). facts.pack / facts.dict / facts.parquet /
+   # manifest.json go up plain here — the pack is range-read, so it must NOT carry Content-Encoding.
    rclone copy tiles r2:colossus-tiles --transfers 16 --checkers 16 `
      --header-upload "Cache-Control: public, max-age=31536000, immutable" `
-     --exclude "*/latest.json"
+     --exclude "*/latest.json" --exclude "*.arrow" --exclude "*.arrow.br"
 
    # pointer files: short cache (they change on every rebake)
    rclone copy tiles r2:colossus-tiles --include "*/latest.json" `
      --header-upload "Cache-Control: public, max-age=60"
    ```
+
+   Then publish the **render tiles as always-br** — see "Transport compression" below.
 
 3. **Make it publicly reachable** (R2 → bucket → Settings):
    - Quick start: enable the **r2.dev** public subdomain → `https://pub-xxxx.r2.dev`. (Rate-limited;
@@ -115,6 +119,64 @@ Needs a (free) Cloudflare account. Backblaze B2 works the same way if you prefer
 Note the public base URL — call it `R2_BASE` (e.g. `https://pub-xxxx.r2.dev`). The client builds
 `R2_BASE/{view}/latest.json`, so if you nested the tree under a `tiles/` prefix instead of the root,
 append `/tiles` to `R2_BASE`.
+
+### Transport compression (brotli render tiles)
+
+Render tiles are Arrow IPC (`application/vnd.apache.arrow.stream`), which is **not** on Cloudflare's
+compressible-MIME list — served as-is they never compress, so a viewport moves several MB uncompressed.
+The bake fixes this at rest: every `z/x/y.arrow` is written with a **brotli** sibling `z/x/y.arrow.br`
+(quality 11 — ~5.1–5.5x on the large views, beating whole-file zstd-19). Nothing else changes — the plain
+`.arrow` is still written (the rollback rail), and the client is untouched: a browser decodes
+`Content-Encoding` in the network stack, so `fetch → arrayBuffer()` yields the identical `.arrow` bytes and
+the zero-copy decode path never sees compression.
+
+Backfill any already-baked version (no re-bake — tiles are immutable per version, so adding a sibling is
+identity-safe) before uploading:
+
+```powershell
+dotnet run --project src/Colossus.Bake -- compress          # all views; add view ids to scope it
+```
+
+Object storage can't content-negotiate, so the client's `.arrow` request must resolve to a single, br
+representation: **upload the `.br` bytes under the plain `.arrow` key, tagged `Content-Encoding: br`.** Stage
+the br files under their plain names (hardlinks — no byte copy), then one `rclone` copy carries the header:
+
+```powershell
+$stage = "tiles-br"
+Get-ChildItem tiles -Recurse -Filter *.arrow.br | ForEach-Object {
+  $rel  = $_.FullName.Substring((Resolve-Path tiles).Path.Length + 1)   # view/ver/z/x/y.arrow.br
+  $dest = Join-Path $stage ($rel -replace '\.br$', '')                  # view/ver/z/x/y.arrow
+  New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+  New-Item -ItemType HardLink -Path $dest -Target $_.FullName | Out-Null  # Copy-Item if $stage is another volume
+}
+# The .arrow keys: br bytes + the header that tells browsers to decode them.
+rclone copy $stage r2:colossus-tiles --transfers 16 --checkers 16 `
+  --header-upload "Content-Encoding: br" `
+  --header-upload "Cache-Control: public, max-age=31536000, immutable"
+Remove-Item -Recurse -Force $stage
+```
+
+These objects are **always-br** — there is no uncompressed representation at the `.arrow` key. That is exactly
+what a browser wants (it always sends `Accept-Encoding: br` and decodes transparently), but it **breaks a bare
+`curl`**, which will dump raw brotli: use `curl --compressed <url>/….arrow` to inspect one by hand. `facts.pack`
+is deliberately left plain (excluded above): it is read by HTTP **Range**, and `Content-Encoding` does not
+compose with ranged requests.
+
+**Rollback** is a plain re-upload over the same keys — the local `.arrow` files always exist because the bake
+never stops writing them:
+
+```powershell
+rclone copy tiles r2:colossus-tiles --transfers 16 --checkers 16 --include "*.arrow" `
+  --header-upload "Cache-Control: public, max-age=31536000, immutable"
+```
+
+The plain body differs in size from the br object, so rclone re-uploads, and a fresh PUT **replaces the
+object's metadata** — the `Content-Encoding: br` tag is gone and the tiles serve uncompressed again. No client
+change either way.
+
+> The dev server (`src/Colossus.Server`) mirrors this: it answers a `*.arrow` request with the `.arrow.br`
+> sibling + `Content-Encoding: br` when the client accepts br and the sibling exists, else the plain file. So
+> `npm run dev` against a local bake exercises the same compressed path the browser sees in production.
 
 ---
 
@@ -218,6 +280,7 @@ The publish output is a self-contained ASP.NET Core app: `Colossus.Server.exe`, 
 
 ## Rebaking later
 
-A new bake writes a new `v…Z` version folder and updates `latest.json`. To publish it: re-run the
-Phase 1 rclone upload (new version dir with immutable cache + `latest.json` with short cache). The
-version flip invalidates cleanly; no server redeploy needed unless the frontend changed.
+A new bake writes a new `v…Z` version folder (with its `.arrow.br` siblings already in place) and updates
+`latest.json`. To publish it: re-run the Phase 1 uploads — the plain immutable copy, the always-br `.arrow`
+staging + copy ("Transport compression"), and the short-cache `latest.json`. The version flip invalidates
+cleanly; no server redeploy needed unless the frontend changed.

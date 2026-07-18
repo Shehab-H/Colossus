@@ -35,6 +35,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IViewCatalog>(_ => new ViewRegistry());
         services.AddSingleton<IChannelDomainScanner, DuckDbChannelDomainScanner>();
         services.AddSingleton<IFactGrouper, DuckDbFactGrouper>();
+        // Transport precompression of render tiles (tile-transfer initiative, Phase 1): writes a .br sibling
+        // per tile that the serve layer answers with Content-Encoding. Additive; the plain tile stays.
+        services.AddSingleton<ITileCompressor, BrotliTileCompressor>();
 
         // R4 fold routing: a plain options record read from the FoldRouting config section (documented
         // default in docs/DEPLOY.md), plus env override for the force flag so a bake/CI can flip it.

@@ -20,7 +20,7 @@ public sealed record BakeOutcome(
 /// plan (reduction, depth, budget, root) comes from <see cref="BakePlanner"/>.</summary>
 public sealed class BakeViewUseCase(
     ISourceAdapterCatalog sources, IReductionCatalog reductions, IBakeStore store, BakePlanner planner,
-    IChannelDomainScanner domains, IFactGrouper grouper, FoldRoutingOptions foldRouting)
+    IChannelDomainScanner domains, IFactGrouper grouper, FoldRoutingOptions foldRouting, ITileCompressor compressor)
 {
     public async Task<BakeOutcome> BakeAsync(ViewConfig view, CancellationToken ct = default)
     {
@@ -77,6 +77,16 @@ public sealed class BakeViewUseCase(
         }
 
         var result = reductions.Resolve(plan.Reduction).Reduce(rc);
+
+        // Tile-transfer initiative (Phase 1): precompress the render tiles just written into .br siblings, so
+        // the static serve answers *.arrow with Content-Encoding (RULES R7 — no on-the-fly compression). Done
+        // before publishing latest.json, so a published version already carries its siblings. Additive: the
+        // plain tiles are untouched, and a per-tile failure is non-fatal (they stay the rollback rail).
+        var compression = compressor.CompressVersionTiles(outputDir);
+        if (compression.Files > 0)
+            Console.WriteLine($"  {view.Id}: brotli {compression.Files} tiles, " +
+                $"{compression.OriginalBytes / 1_048_576.0:N1} → {compression.CompressedBytes / 1_048_576.0:N1} MB " +
+                $"({compression.Ratio:0.00}x)");
 
         // R4: a group-regime reduction retains the facts the server fold reads (per version, beside the
         // tiles) and the planner prices the fold route from the companion bytes it just measured. Additive
