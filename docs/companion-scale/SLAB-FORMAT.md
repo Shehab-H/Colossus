@@ -1,10 +1,17 @@
-# Slab companion format (v1) — cross-language authority
+# Slab companion format (v2) — cross-language authority
 
 Normative spec for the R1 fact-companion slab. This is the **fourth cross-language authority** alongside
 tiling, schema, and the measure grammar: the C# bake writer
 ([`SlabCompanionWriter`](../../src/Colossus.Infrastructure/Tiles/SlabCompanionWriter.cs)) and the TS
 client reader/fold ([`web/src/lib/slab.ts`](../../web/src/lib/slab.ts)) both implement exactly what is
 below, and both are pinned by the shared fixture [`tests/fixtures/slab-cases.json`](../../tests/fixtures/slab-cases.json).
+
+> **v2 (2026-07-18, companion-scale R5 second half).** The dense/sparse gate is **per leaf tile**, not per
+> view (§3, `companionSlab.tileLayouts`); a dense plane is stored as **one compressed block per cell row** so
+> the client fetches only the rows a context reads (§4b/§5, `companionPack.sliceEntries`); and the pack codec
+> is **zstd + a trained shared dictionary** (§5, `companionPack.codec`/`dict`/`dictHash`). All three are
+> manifest-gated — absence selects the v1 behaviour (per-view layout, whole-plane fetch, gzip), so v1 bakes
+> still load. Fold results are byte-identical across versions.
 
 Fold semantics and the measure grammar are **unchanged** (VIEW_CONFIG §1/§4). The slab is a *physical*
 re-encoding of the same fact partials; a fold over it produces byte-identical results to the row-form fold.

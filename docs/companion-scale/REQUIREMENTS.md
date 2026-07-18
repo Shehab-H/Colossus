@@ -149,6 +149,18 @@ assume folds are client-side.
 
 ## Requirement 5 — Context-sliced companion fetch (added 2026-07-16)
 
+**Status: BUILT + VERIFIED 2026-07-18** — measured before/after in [R5-BUILD.md](R5-BUILD.md). Plane splitting +
+fetch-optimal cell order shipped with R1; this delivers the **second half** — the second-level cell-run slice
+directory and the client slice fetch — plus two supporting format changes it rests on: the dense/sparse gate
+moved **per leaf tile** (SLAB-FORMAT §3, was per view) so skewed density sends a tile-level minority dense, and
+a **zstd + trained shared-dictionary** pack codec (Work Item C) so the small sliced cell-row blocks compress
+well. A dense tile stores one compressed block per cell row; the client compiles the active context to the
+exact rows the fold reads and fetches only those, caching them under the tile key and merging incrementally.
+Fold results stay byte-identical to whole-slab folds (shared fixture, both languages). Measured on the worst
+dense tile of the reference bakes, a single-select + date-range interaction fetches **≥5× less** than the
+plane-split whole-plane fetch (the acceptance target). Sparse tiles opt out (whole-block fetch); row-form and
+older slab bakes are manifest-gated and unchanged. Nothing here adds runtime compute — R7 static serve intact.
+
 Requirement 1 fixes bytes at rest and fold cost; Requirement 4 moves the fold. Neither changes
 the interaction scaling law: a filter change still transfers the whole cell space
 (`cells × marks × planes × 4 B` per tile) when the active context reads only a sliver of it.

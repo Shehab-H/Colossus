@@ -31,16 +31,21 @@ const int DictSampleTiles = 12;
 const string IdxPlane = "@idx";    // SLAB-FORMAT §5 (SlabCompanionWriter.IdxPlane, which is internal)
 
 var views = args.Where(a => !a.StartsWith('-')).ToArray();
+// --after reads a re-baked (zstd+dict) pack's directory only — actual at-rest bytes and the worst dense
+// tile's cell-run interaction fetch — with no block decompression (the "before" path reconstructs dense from
+// the old sparse gzip bakes and needs to read blocks; the "after" bake is already dense with a slice
+// directory, so the manifest carries the measured numbers).
+bool after = args.Contains("--after");
 if (views.Length == 0)
 {
-    Console.WriteLine("usage: dotnet run --project tools/Colossus.CompanionBench -- <viewId> [<viewId> ...]");
+    Console.WriteLine("usage: dotnet run --project tools/Colossus.CompanionBench -- [--after] <viewId> [<viewId> ...]");
     return 1;
 }
 
 var report = new List<object>();
 foreach (var viewId in views)
 {
-    try { report.Add(Bench(viewId)); }
+    try { report.Add(after ? AfterBench(viewId) : Bench(viewId)); }
     catch (Exception ex) { Console.Error.WriteLine($"[{viewId}] {ex.Message}"); }
 }
 
@@ -159,6 +164,87 @@ object Bench(string viewId)
             planeSplitToday = interaction.PlaneSplitTodayBytes,
             contexts = interaction.Rows,
         },
+    };
+}
+
+// ── after mode: directory-only analysis of a re-baked zstd+dict pack ───────────────────────────────────
+object AfterBench(string viewId)
+{
+    string viewDir = Path.Combine(RepoPaths.TilesDir, viewId);
+    string version = ColossusJson.Deserialize<LatestPointer>(File.ReadAllText(Path.Combine(viewDir, "latest.json"))).Version;
+    string dir = Path.Combine(viewDir, version);
+    var manifest = ColossusJson.Deserialize<Manifest>(File.ReadAllText(Path.Combine(dir, "manifest.json")));
+    var slab = manifest.CompanionSlab ?? throw new InvalidOperationException("no companionSlab");
+    var pack = manifest.CompanionPack ?? throw new InvalidOperationException("no companionPack");
+    int cells = slab.Cells;
+    var axisStrides = Strides(slab.Axes);
+    int cumIdx = LastIndex(slab.Axes, a => a.Cumulative);
+    int cumCard = cumIdx >= 0 ? slab.Axes[cumIdx].Cardinality : 1;
+    int catCount = cells / cumCard;
+
+    var leaves = manifest.Tiles.Where(t => t.IsLeaf).Select(t => $"{t.Z}/{t.X}/{t.Y}").ToList();
+    var dense = leaves.Where(k => slab.LayoutOf(k) == "dense").ToList();
+    long leafPackBytes = leaves.Where(k => pack.Entries.ContainsKey(k)).Sum(k => pack.Entries[k][1]);
+    long dictBytes = pack.Dict is { } d && File.Exists(Path.Combine(dir, d)) ? new FileInfo(Path.Combine(dir, d)).Length : 0;
+
+    Console.WriteLine($"\n═══ {viewId}  {version}  (codec={pack.Codec}, dict={dictBytes:N0} B) ═══");
+    Console.WriteLine($"  dense-gated leaf tiles: {dense.Count}/{leaves.Count}   leaf pack bytes: {Mb(leafPackBytes)}");
+
+    if (dense.Count == 0) return new { view = viewId, version, codec = pack.Codec, dense = 0, leafPackBytes, dictBytes };
+
+    // Worst dense tile = the dense leaf with the largest whole-tile region.
+    string worst = dense.OrderByDescending(k => pack.Entries[k][1]).First();
+    var planeDir = pack.PlaneEntries![worst];
+    var sliceDir = pack.SliceEntries![worst];
+    var colorPlanes = ColorMeasurePlanes(manifest);
+    var active = colorPlanes.Append("cnt").Distinct().Where(sliceDir.ContainsKey).ToArray(); // + cnt survival
+
+    long planeSplitToday = colorPlanes.Where(planeDir.ContainsKey).Sum(p => planeDir[p][1]);
+    Console.WriteLine($"\n  ── worst dense tile {worst}: interaction fetch (actual sliceEntries) ──");
+    Console.WriteLine($"     color planes [{string.Join(", ", colorPlanes)}]   plane-split (whole planes): {Mb(planeSplitToday)}");
+
+    var contexts = new (string Name, int Positions, int Rows)[]
+    {
+        ("single operator + date window (2 bins)", 1, 2),
+        ("single operator + full range (cumulative from start)", 1, 1),
+        ("single operator + single quarter", 1, 2),
+        ("date-range window (2 bins), all operators", catCount, 2),
+    };
+    var rows = new List<object>();
+    foreach (var (name, positions, r) in contexts)
+    {
+        long bytes = 0;
+        foreach (var p in active)
+        {
+            bool scan = p.StartsWith("min__", StringComparison.Ordinal) || p.StartsWith("max__", StringComparison.Ordinal);
+            int rowsNeeded = scan ? 2 : r;
+            var lens = sliceDir[p];
+            for (int cat = 0; cat < Math.Min(positions, catCount); cat++)
+                for (int k = 0; k < Math.Min(rowsNeeded, cumCard); k++)
+                {
+                    int cell = cat * cumCard + (cumCard - 1 - k);
+                    if (cell >= 0 && cell < lens.Length) bytes += lens[cell];
+                }
+        }
+        double ratio = bytes > 0 ? (double)planeSplitToday / bytes : 0;
+        Console.WriteLine($"     {name,-52}  {Mb(bytes),12}  {ratio,10:0.0}×");
+        rows.Add(new { context = name, cellRunBytes = bytes, vsPlaneSplit = ratio });
+    }
+
+    return new
+    {
+        view = viewId,
+        version,
+        codec = pack.Codec,
+        denseTiles = dense.Count,
+        leafTiles = leaves.Count,
+        leafPackBytes,
+        dictBytes,
+        worstDenseTile = worst,
+        worstMarks = manifest.Tiles.First(t => $"{t.Z}/{t.X}/{t.Y}" == worst).Count,
+        colorPlanes,
+        planeSplitToday,
+        interaction = rows,
     };
 }
 

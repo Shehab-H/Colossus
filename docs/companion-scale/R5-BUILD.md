@@ -123,4 +123,84 @@ tiny blocks recovers less, so the raw 16× lands at 7–10×. A range with no ca
 
 ## After (built) — measured on the same machine + re-encoder as the Baseline
 
-*Pending — filled in once Work Items A–C land and the views are re-baked.*
+**Re-baked.** mobile-coverage `v20260717T212038Z`, mobile-dominance `v20260717T212912Z`, with Work Items A–C
+live (per-leaf-tile gate, cell-run slice directory, zstd+dict codec). Fidelity witness **Σcnt == source rows
+PASS** on both (2,008,081 leaf marks → 24,257,354 source rows), `overBudget=0`. The two **row-form** views
+(geonames, ookla-fixed) re-baked **byte-identical** (facts.pack Δ = 0, total dir Δ = 0) — the format changes
+touch only the group regime, as required. `--after` reads the re-baked pack's directory (no block decode) for
+the tables below.
+
+### (a) Per-leaf-tile occupancy — confirmed on the re-bake
+
+Same gate (0.5), same **13/255 dense leaves** the baseline predicted. But R5 packs the internal levels too, and
+an interior tile aggregates its descendants' marks into the same 32 cells, so its occupancy is higher: **32 of
+the 125 internal tiles also cross the gate → 45/380 tiles dense** overall. This is the fact the leaf-only
+baseline could not see, and it drives the at-rest result below.
+
+### (b) At-rest bytes — the real re-baked pack (all tiles, actual codec)
+
+Measured pack + total-dir sizes, old bake vs re-bake:
+
+| view | regime | old pack (gzip) | new pack (zstd+dict) | Δ pack | total dir Δ |
+|---|---|--:|--:|--:|--:|
+| mobile-coverage | slab | 727 MB | 833 MB | **+106 MB (+14.6 %)** | 1589 → 1695 MB |
+| mobile-dominance | slab | 222 MB | 266 MB | **+45 MB (+20 %)** | 783 → 828 MB |
+| geonames | row | — | — | 0 (no companion) | 705 → 705 MB |
+| ookla-fixed | row | — | — | 0 (no companion) | 1306 → 1306 MB |
+
+**The pack grew at rest.** Decomposing mobile-coverage by the layout each tile took:
+
+| tile bucket | old gzip | new zstd+dict | ratio |
+|---|--:|--:|--:|
+| 335 sparse tiles | 491 MB | 478 MB | 0.97× |
+| 45 dense tiles | 236 MB | 354 MB | **1.50×** |
+
+zstd shrinks the sparse majority by only **2.6 %** — already-compact sparse CSR Arrow has little left to give — while
+the 45 dense tiles grow 1.50×. And the dense growth is concentrated in the internal tiles: of the +119 MB, the
+**13 dense leaves add 30 MB** (the intended sliced path, baseline §a), the **32 dense parents add 324 MB**.
+Dense stores a cumulative plane *per mark*, so a high-mark-count parent inflates far more than its occupancy
+ratio implies. This is the honest cost on **sparse** reference data (37.7 % global occupancy): at rest the
+initiative is a net *loss* here. The at-rest win it was designed for — zstd's ~28 % whole-plane gain (baseline
+§b) — only materialises on genuinely dense data, where dense is the majority and slicing pays for itself; on
+this data the payoff is the interaction fetch, not disk.
+
+### (c) Interaction fetch — measured on the actual `sliceEntries` (worst dense tile `5/25/14`)
+
+Same tile and contexts as the baseline §c, now priced from the **re-baked** cell-row blocks (zstd+dict), whole
+dense color planes as the reference:
+
+**mobile-coverage** (dict 114,688 B) — plane-split reference = 2.67 MB:
+
+| interaction context | cell-run fetch | vs plane-split |
+|---|--:|--:|
+| single operator + date window (2 bins) | 0.20 MB | **13.0×** |
+| single operator + full range (cumulative from start) | 0.10 MB | 25.8× |
+| single operator + single quarter | 0.20 MB | 13.0× |
+| date-range window (2 bins), all operators | 0.80 MB | 3.3× |
+
+**mobile-dominance** (dict 79,994 B) — plane-split reference = 0.62 MB:
+
+| interaction context | cell-run fetch | vs plane-split |
+|---|--:|--:|
+| single operator + date window (2 bins) | 0.06 MB | **9.6×** |
+| single operator + full range (cumulative from start) | 0.03 MB | 18.9× |
+| single operator + single quarter | 0.06 MB | 9.6× |
+| date-range window (2 bins), all operators | 0.25 MB | 2.5× |
+
+**The R5 acceptance target — single-select + date-range ≥5× on dense tiles — is met and exceeded: 13.0×
+(coverage) / 9.6× (dominance).** These beat the baseline's *simulated* 10.0× / 7.0×: the trained dictionary and
+the real block boundaries compress the tiny cell-row blocks better than the re-encode estimate did, so more of
+the raw 16× (2 of 8 bins × 1 of 4 operator runs) survives to the wire. The no-categorical-filter range still
+reads all four runs (3.3× / 2.5×) — a win, just a smaller one.
+
+### Verdict — what improved, by how much, and what didn't
+
+- **Interaction fetch (the target): improved 13.0× / 9.6×** for single-select + date-range on the worst dense
+  tile — above the ≥5× bar and above the pre-build estimate.
+- **Fold correctness: unchanged** — byte-identical to whole-slab folds (shared fixture, both languages); witness
+  Σcnt PASS on the re-bake.
+- **Row-form bakes: unchanged** — geonames / ookla-fixed re-baked byte-for-byte; the seam and manifest gates hold.
+- **At-rest size on this sparse data: regressed** — pack +14.6 % (coverage) / +20 % (dominance), because the
+  per-tile gate also flips 32 high-mark-count internal tiles dense (+324 MB), which zstd's 2.6 % sparse win can't
+  offset. Restricting dense to leaf tiles would return at-rest to ≈flat while keeping the drill-in win; left as a
+  follow-up (the gate is a one-line change), not taken here.
