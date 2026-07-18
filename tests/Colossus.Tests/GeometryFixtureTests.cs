@@ -29,6 +29,10 @@ public class GeometryFixtureTests
             new([1f, 0f, 2f, 0f, 2f, 1f, 1f, 1f, 1f, 0f], [0, 5]),
             new([0f, 1f, 1f, 1f, 1f, 2f, 0f, 2f, 0f, 1f], [0, 5]),
         ]),
+        ("rect-mixed-templates", [
+            new([0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f, 0f, 0f], [0, 5]), // aggregate winding
+            new([1f, 2f, 2f, 2f, 2f, 1f, 1f, 1f, 1f, 2f], [0, 5]), // quadkey winding
+        ]),
         ("delta-triangle", [
             new([0f, 0f, 4f, 0f, 2f, 3f, 0f, 0f], [0, 4]),
         ]),

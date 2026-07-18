@@ -45,6 +45,16 @@ public class GeometryCodecTests
     }
 
     [Fact]
+    public void Mixed_rectangle_windings_stay_rect_via_per_row_templates()
+    {
+        // Aggregate-order and quadkey-order rectangles in one tile (the internal-tile mix): different vertex
+        // templates, but every row is still a rectangle, so the tile stays rect-encoded.
+        var aggregate = new GeometryCodec.Row([0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f, 0f, 0f], [0, 5]);
+        var quadkey = new GeometryCodec.Row([1f, 2f, 2f, 2f, 2f, 1f, 1f, 1f, 1f, 2f], [0, 5]);
+        AssertRoundTrips([aggregate, quadkey, aggregate], GeometryCodec.CodecRect);
+    }
+
+    [Fact]
     public void Degenerate_rectangle_falls_to_delta()
     {
         // Zero-height "rect" is not a 2×2 rectangle → not rect-encodable.

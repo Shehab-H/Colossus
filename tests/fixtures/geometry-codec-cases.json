@@ -3,7 +3,7 @@
     {
       "name": "rect-grid",
       "codec": 1,
-      "payloadBase64": "AQEDAAAADwAAAAUGAwABAQIDAAEBAAAAAAEBAAMAAAAAAAAAgD8AAABAAwAAAAAAAACAPwAAAEAAAAEAAAABAAEAAgAAAAEAAAABAAEAAgA=",
+      "payloadBase64": "AQEDAAAADwAAAAUBBgMAAQECAwABAQAAAAABAQADAAAAAAAAAIA/AAAAQAMAAAAAAAAAgD8AAABAAAABAAAAAQABAAIAAAABAAAAAQABAAIA",
       "positions": [
         0,
         0,
@@ -61,6 +61,52 @@
         11,
         12,
         13
+      ]
+    },
+    {
+      "name": "rect-mixed-templates",
+      "codec": 1,
+      "payloadBase64": "AQECAAAACgAAAAUCBgMAAQECAwABAQAAAAABAQAGAwABAQIDAAEBAAABAQAAAQMAAAAAAAAAgD8AAABAAwAAAAAAAACAPwAAAEAAAAABAAAAAQABAQACAAEAAgA=",
+      "positions": [
+        0,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        2
+      ],
+      "startIndices": [
+        0,
+        5,
+        10
+      ],
+      "triangles": [
+        3,
+        0,
+        1,
+        1,
+        2,
+        3,
+        8,
+        5,
+        6,
+        6,
+        7,
+        8
       ]
     },
     {

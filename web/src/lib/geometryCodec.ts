@@ -25,41 +25,55 @@ export function decodeGeometry(blob: Uint8Array): DecodedGeometry {
   throw new Error(`format 3: unknown geometry codec ${codec}`);
 }
 
-// rect: every row is a congruent axis-aligned rectangle — four u16 corner-table indices per row, a shared
-// per-vertex template, and a derived triangle pattern. Geometry, offsets and triangles are all synthesized.
+// rect: every row is an axis-aligned rectangle — a 1-byte template id (its vertex order) + four u16
+// corner-table indices per row. A tile may carry a few templates (mixed source/aggregate windings). The
+// triangle pattern is per template. Geometry, offsets and triangles are all synthesized.
 function decodeRect(r: Reader): DecodedGeometry {
   const count = r.u32();
   const vertexCount = r.u32();
   const vertsPerRect = r.u8();
-  const triLen = r.u8();
-  const pat = new Int32Array(triLen);
-  for (let i = 0; i < triLen; i++) pat[i] = r.u8();
-  const xSel = new Uint8Array(vertsPerRect);
-  for (let v = 0; v < vertsPerRect; v++) xSel[v] = r.u8();
-  const ySel = new Uint8Array(vertsPerRect);
-  for (let v = 0; v < vertsPerRect; v++) ySel[v] = r.u8();
+  const templateCount = r.u8();
+  const triPat: Int32Array[] = new Array(templateCount);
+  const xSel: Uint8Array[] = new Array(templateCount);
+  const ySel: Uint8Array[] = new Array(templateCount);
+  for (let t = 0; t < templateCount; t++) {
+    const triLen = r.u8();
+    const pat = new Int32Array(triLen);
+    for (let i = 0; i < triLen; i++) pat[i] = r.u8();
+    triPat[t] = pat;
+    const xs = new Uint8Array(vertsPerRect);
+    for (let v = 0; v < vertsPerRect; v++) xs[v] = r.u8();
+    xSel[t] = xs;
+    const ys = new Uint8Array(vertsPerRect);
+    for (let v = 0; v < vertsPerRect; v++) ys[v] = r.u8();
+    ySel[t] = ys;
+  }
   const xTable = r.f32Array(r.u16());
   const yTable = r.f32Array(r.u16());
 
+  const perRowTemplate = templateCount > 1;
   const positions = new Float32Array(2 * vertexCount);
   const start = new Uint32Array(count + 1);
-  const triangles = new Uint32Array(count * triLen);
+  const tris: number[] = [];
   let fo = 0;
-  let to = 0;
   for (let i = 0; i < count; i++) {
+    const tid = perRowTemplate ? r.u8() : 0;
     const loX = xTable[r.u16()];
     const hiX = xTable[r.u16()];
     const loY = yTable[r.u16()];
     const hiY = yTable[r.u16()];
     const vb = i * vertsPerRect;
+    const xs = xSel[tid];
+    const ys = ySel[tid];
     for (let v = 0; v < vertsPerRect; v++) {
-      positions[fo++] = xSel[v] === 0 ? loX : hiX;
-      positions[fo++] = ySel[v] === 0 ? loY : hiY;
+      positions[fo++] = xs[v] === 0 ? loX : hiX;
+      positions[fo++] = ys[v] === 0 ? loY : hiY;
     }
-    for (let t = 0; t < triLen; t++) triangles[to++] = pat[t] + vb;
+    const pat = triPat[tid];
+    for (let t = 0; t < pat.length; t++) tris.push(pat[t] + vb);
     start[i + 1] = vb + vertsPerRect;
   }
-  return { positions, startIndices: start, triangles };
+  return { positions, startIndices: start, triangles: Uint32Array.from(tris) };
 }
 
 // delta: de-interleaved x/y f32-bit streams, integer-delta + zigzag + byte-transposed; row-local triangle

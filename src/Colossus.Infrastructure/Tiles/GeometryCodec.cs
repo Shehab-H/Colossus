@@ -77,12 +77,13 @@ public static class GeometryCodec
         int vertsPerRect = rows[0].Coords.Length / 2;
         if (vertsPerRect is < 4 or > 8) return false; // a rectangle ring is 4 corners (+optional closure)
 
-        // The per-vertex template (which of the row's two distinct x/y each vertex uses) is read from row 0,
-        // then every row must carry the identical template with each vertex exactly on a corner — which makes
-        // reconstruction bit-for-bit and rejects any non-rectangular or differently-wound row.
-        if (!RectRow(rows[0], out byte[] xSel, out byte[] ySel, out _, out _, out _, out _)) return false;
-
-        // Pass 1: validate every row and collect its corner floats + the distinct values per axis.
+        // A tile may mix rectangle vertex orders (winding / start corner) — e.g. an aggregate internal tile
+        // holds source-order quadkey cells beside aggregate-order merged cells. Each distinct (xSel, ySel)
+        // order is a template; rows carry a 1-byte template id. Because each vertex is verified == one of the
+        // row's two exact corner floats, reconstructing from the row's template is bit-for-bit.
+        var templates = new List<(byte[] XSel, byte[] YSel)>();
+        var templateKey = new Dictionary<string, int>();
+        var rowTemplate = new int[rows.Count];
         var rowCorners = new (float LoX, float HiX, float LoY, float HiY)[rows.Count];
         var xTable = new CornerTable();
         var yTable = new CornerTable();
@@ -90,30 +91,39 @@ public static class GeometryCodec
         {
             if (rows[i].Coords.Length / 2 != vertsPerRect) return false;
             if (!RectRow(rows[i], out byte[] xs, out byte[] ys, out float loX, out float hiX, out float loY, out float hiY)) return false;
-            if (!xs.AsSpan().SequenceEqual(xSel) || !ys.AsSpan().SequenceEqual(ySel)) return false;
+            string key = Convert.ToBase64String(xs) + "|" + Convert.ToBase64String(ys);
+            if (!templateKey.TryGetValue(key, out int tid))
+            {
+                tid = templates.Count;
+                if (tid > byte.MaxValue) return false;
+                templateKey[key] = tid;
+                templates.Add((xs, ys));
+            }
+            rowTemplate[i] = tid;
             rowCorners[i] = (loX, hiX, loY, hiY);
             xTable.Add(loX); xTable.Add(hiX); yTable.Add(loY); yTable.Add(hiY);
         }
         if (xTable.Count > ushort.MaxValue || yTable.Count > ushort.MaxValue) return false;
         xTable.Finish(); yTable.Finish();
 
-        // Pass 2: map each row's corner floats to their table indices.
-        var rowIdx = new (int X0, int X1, int Y0, int Y1)[rows.Count];
+        // The derived triangle pattern is per template (winding decides it). Compute each from a representative
+        // row, then verify every row reproduces its template's pattern — the lossless guarantee for triangles.
+        var patterns = new List<int>[templates.Count];
         for (int i = 0; i < rows.Count; i++)
         {
-            var (loX, hiX, loY, hiY) = rowCorners[i];
-            rowIdx[i] = (xTable.IndexOf(loX), xTable.IndexOf(hiX), yTable.IndexOf(loY), yTable.IndexOf(hiY));
-        }
-
-        // The derived triangle pattern must be identical across rows (congruent rectangles) — capture row 0's.
-        var pat = PolygonTriangulator.Triangulate(rows[0].Coords, rows[0].PartOffsets);
-        if (pat.Count > byte.MaxValue) return false;
-        foreach (int idx in pat) if (idx >= vertsPerRect) return false;
-        for (int i = 1; i < rows.Count; i++)
-        {
             var p = PolygonTriangulator.Triangulate(rows[i].Coords, rows[i].PartOffsets);
-            if (p.Count != pat.Count) return false;
-            for (int k = 0; k < p.Count; k++) if (p[k] != pat[k]) return false;
+            int tid = rowTemplate[i];
+            if (patterns[tid] is null)
+            {
+                if (p.Count > byte.MaxValue) return false;
+                foreach (int idx in p) if (idx >= vertsPerRect) return false;
+                patterns[tid] = p;
+            }
+            else
+            {
+                if (p.Count != patterns[tid].Count) return false;
+                for (int k = 0; k < p.Count; k++) if (p[k] != patterns[tid][k]) return false;
+            }
         }
 
         var w = new Writer();
@@ -122,15 +132,31 @@ public static class GeometryCodec
         w.U32((uint)rows.Count);
         w.U32((uint)(rows.Count * vertsPerRect));
         w.U8((byte)vertsPerRect);
-        w.U8((byte)pat.Count);
-        foreach (int t in pat) w.U8((byte)t);
-        for (int v = 0; v < vertsPerRect; v++) w.U8(xSel[v]);
-        for (int v = 0; v < vertsPerRect; v++) w.U8(ySel[v]);
+        w.U8((byte)templates.Count);
+        for (int t = 0; t < templates.Count; t++)
+        {
+            var pat = patterns[t] ?? [];
+            w.U8((byte)pat.Count);
+            foreach (int idx in pat) w.U8((byte)idx);
+            for (int v = 0; v < vertsPerRect; v++) w.U8(templates[t].XSel[v]);
+            for (int v = 0; v < vertsPerRect; v++) w.U8(templates[t].YSel[v]);
+        }
         w.U16((ushort)xTable.Count);
         foreach (float f in xTable.Values) w.F32(f);
         w.U16((ushort)yTable.Count);
         foreach (float f in yTable.Values) w.F32(f);
-        foreach (var (x0, x1, y0, y1) in rowIdx) { w.U16((ushort)x0); w.U16((ushort)x1); w.U16((ushort)y0); w.U16((ushort)y1); }
+        // Single-template tiles (the common grid case) skip the per-row template id entirely — it would be a
+        // constant 0 byte per row. Only a genuinely mixed tile pays it.
+        bool perRowTemplate = templates.Count > 1;
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var (loX, hiX, loY, hiY) = rowCorners[i];
+            if (perRowTemplate) w.U8((byte)rowTemplate[i]);
+            w.U16((ushort)xTable.IndexOf(loX));
+            w.U16((ushort)xTable.IndexOf(hiX));
+            w.U16((ushort)yTable.IndexOf(loY));
+            w.U16((ushort)yTable.IndexOf(hiY));
+        }
         payload = w.ToArray();
         return true;
     }
@@ -290,13 +316,20 @@ public static class GeometryCodec
         int count = (int)r.U32();
         int vertexCount = (int)r.U32();
         int vertsPerRect = r.U8();
-        int triLen = r.U8();
-        var pat = new int[triLen];
-        for (int i = 0; i < triLen; i++) pat[i] = r.U8();
-        var xSel = new byte[vertsPerRect];
-        for (int v = 0; v < vertsPerRect; v++) xSel[v] = r.U8();
-        var ySel = new byte[vertsPerRect];
-        for (int v = 0; v < vertsPerRect; v++) ySel[v] = r.U8();
+        int templateCount = r.U8();
+        var triPat = new int[templateCount][];
+        var xSel = new byte[templateCount][];
+        var ySel = new byte[templateCount][];
+        for (int t = 0; t < templateCount; t++)
+        {
+            int triLen = r.U8();
+            triPat[t] = new int[triLen];
+            for (int i = 0; i < triLen; i++) triPat[t][i] = r.U8();
+            xSel[t] = new byte[vertsPerRect];
+            for (int v = 0; v < vertsPerRect; v++) xSel[t][v] = r.U8();
+            ySel[t] = new byte[vertsPerRect];
+            for (int v = 0; v < vertsPerRect; v++) ySel[t][v] = r.U8();
+        }
         int xTableLen = r.U16();
         var xTable = new float[xTableLen];
         for (int i = 0; i < xTableLen; i++) xTable[i] = r.F32();
@@ -304,23 +337,26 @@ public static class GeometryCodec
         var yTable = new float[yTableLen];
         for (int i = 0; i < yTableLen; i++) yTable[i] = r.F32();
 
+        bool perRowTemplate = templateCount > 1;
         var positions = new float[2 * vertexCount];
         var start = new int[count + 1];
-        var tris = new int[count * triLen];
-        int fo = 0, to = 0;
+        var tris = new List<int>(count * 6);
+        int fo = 0;
         for (int i = 0; i < count; i++)
         {
+            int tid = perRowTemplate ? r.U8() : 0;
             float loX = xTable[r.U16()], hiX = xTable[r.U16()], loY = yTable[r.U16()], hiY = yTable[r.U16()];
             int vb = i * vertsPerRect;
+            byte[] xs = xSel[tid], ys = ySel[tid];
             for (int v = 0; v < vertsPerRect; v++)
             {
-                positions[fo++] = xSel[v] == 0 ? loX : hiX;
-                positions[fo++] = ySel[v] == 0 ? loY : hiY;
+                positions[fo++] = xs[v] == 0 ? loX : hiX;
+                positions[fo++] = ys[v] == 0 ? loY : hiY;
             }
-            for (int t = 0; t < triLen; t++) tris[to++] = pat[t] + vb;
+            foreach (int t in triPat[tid]) tris.Add(t + vb);
             start[i + 1] = vb + vertsPerRect;
         }
-        return new Decoded(positions, start, tris);
+        return new Decoded(positions, start, [.. tris]);
     }
 
     private static Decoded DecodeDelta(Reader r)
