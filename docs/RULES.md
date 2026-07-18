@@ -62,6 +62,19 @@ canonical domain order (tile codes are the client's canonical codes — no remap
 Float32 (the stored buffer *is* the render buffer). The schema is unchanged; format 1 (older bakes) stays
 readable via the client's copy path until every view is re-baked.
 
+**Tile format 3** (`manifest.tileFormat: 3`, area marks only) is format 2 with the geometry *encoded*. In a
+polygon tile, `geometry`/`part_offsets`/`triangles`/`x`/`y`/`id` are ~69–99% of the bytes and mechanically
+derivable, so the bake drops them and writes one self-describing binary payload (the `geom3` column, in row 0
+of a binary column). The client's worker decodes it back into the *exact* format-2 buffers — `polyPositions`,
+`polyStartIndices`, tile-global `polyTriangles` — **bit-for-bit** (`decodeTileV3`; the codec is the
+cross-language authority `GeometryCodec` ↔ `web/src/lib/geometryCodec.ts`, pinned by
+`tests/fixtures/geometry-codec-cases.json`). Two per-tile codecs, chosen from the data: **rect** (every row a
+closed axis-aligned rectangle → u16 corner-table indices + a derived triangle pattern; the grid/quadkey case)
+and **delta** (real rings → de-interleaved, integer-delta, zigzag, byte-transposed f32 coordinate streams with
+row-local triangles). Measure and dict columns are untouched — still single-chunk, non-null, zero-copy views.
+`id` is dropped because the client reads it nowhere (the group-regime fold joins by `mki`, not `id`); `x`/`y`
+are read only for point marks, so points stay format 2. Formats 1 and 2 stay readable forever; the manifest gates.
+
 Canonical tile schema (target):
 
 | Column         | Type                 | When            | Purpose                                                        |
