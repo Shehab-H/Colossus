@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Manifest } from '../lib/manifest';
 import { renderFetch } from '../lib/tileData';
 import { renderDecodeView } from '../lib/channels';
@@ -41,10 +41,11 @@ export function useTiles(
   camera: CameraState | null,
   size: { width: number; height: number },
   slots: FilterSlots | null,
-  /** Channels the render needs beyond the tile's first paint — today the active colour channel and the
-   *  inspect channels. On a packed bake these arrive as separate blocks, so a resident tile missing one
-   *  tops it up in place rather than refetching (see the effect below). Ignored on unpacked bakes. */
-  lazyChannels: readonly string[] = [],
+  /** Channels the RENDER needs beyond a tile's first paint — in practice the active colour channel. On a
+   *  packed bake these arrive as separate blocks, so a resident tile missing one tops it up in place
+   *  rather than refetching. Inspect channels do not belong here; they load per click via ensureColumns.
+   *  Ignored on unpacked bakes. */
+  renderChannels: readonly string[] = [],
 ) {
   const cache = useRef(new TileCache()).current;
   const topUp = useRef(new Set<string>()).current; // (tileKey, channel) already requested
@@ -122,30 +123,47 @@ export function useTiles(
     };
   }, [manifest, decodeView, selKeys, slots, snapshot, cache]);
 
-  // Render-pack top-up: a resident tile carries only the groups its first paint fetched, so switching the
-  // colour channel (or inspecting) needs that channel's block for the tiles already on screen. Fetch it
-  // per (tile, channel) once and merge it under the SAME cache entry — identity stays (version, tileKey),
-  // and deckData's per-tile WeakMap turns the replaced TileData into exactly one attribute rebuild.
-  useEffect(() => {
-    const pack = manifest?.renderPack;
-    if (!pack || !decodeView || lazyChannels.length === 0) return;
-    for (const [ck, tile] of snapshot.tiles) {
-      const key = ck.slice(ck.indexOf('|') + 1);
-      const want = lazyChannels.filter(
+  // Render-pack top-up: a resident tile carries only the groups its first paint fetched, so a column the
+  // render newly needs is ranged out of the pack and merged under the SAME cache entry — identity stays
+  // (version, tileKey), and deckData's per-tile WeakMap turns the replaced TileData into exactly one
+  // attribute rebuild. Each (tile, channel) is requested once; the marker is released on failure so a
+  // transient error can retry. Returns the merged tile so a caller that already holds the old object
+  // (the inspect click) reads the fetched values rather than the pre-merge snapshot.
+  const ensureColumns = useCallback(
+    async (key: string, channels: readonly string[]): Promise<TileData | undefined> => {
+      const pack = manifest?.renderPack;
+      if (!pack || !decodeView) return undefined;
+      const ck = compositeKey(manifest.version, key);
+      const tile = cache.getSnapshot().tiles.get(ck);
+      if (!tile) return undefined;
+      const want = channels.filter(
         (c) => c && tile.values[c] === undefined && pack.entries[key]?.[c] && !topUp.has(`${ck}|${c}`),
       );
-      if (want.length === 0) continue;
+      if (want.length === 0) return tile;
       for (const c of want) topUp.add(`${ck}|${c}`);
       const spec = renderFetch(pack, decodeView.id, manifest.version, key, want);
-      if (!spec || spec.want.length === 0) continue;
-      tileLoader
-        .loadColumns(decodeView, spec)
-        .then((cols) => cache.mergeColumns(ck, cols.values, cols.buffers))
-        .catch(() => {
-          for (const c of want) topUp.delete(`${ck}|${c}`); // transient failure — allow a retry
-        });
+      if (!spec || spec.want.length === 0) return tile;
+      try {
+        const cols = await tileLoader.loadColumns(decodeView, spec);
+        cache.mergeColumns(ck, cols.values, cols.buffers);
+        return cache.getSnapshot().tiles.get(ck);
+      } catch {
+        for (const c of want) topUp.delete(`${ck}|${c}`);
+        return tile;
+      }
+    },
+    [manifest, decodeView, cache, topUp],
+  );
+
+  // The render itself only ever needs the active colour channel beyond first paint. Inspect channels are
+  // deliberately NOT topped up here — they are read on a click, for one tile, via ensureColumns; fetching
+  // them for every resident tile would defeat the pack (geonames' `name` alone is ~44% of its bytes).
+  useEffect(() => {
+    if (!manifest?.renderPack || renderChannels.length === 0) return;
+    for (const ck of snapshot.tiles.keys()) {
+      void ensureColumns(ck.slice(ck.indexOf('|') + 1), renderChannels);
     }
-  }, [manifest, decodeView, snapshot, lazyChannels, cache, topUp]);
+  }, [manifest, snapshot, renderChannels, ensureColumns]);
 
   // Draw the cover, not the raw selection, with each tile's loaded data attached.
   const rendered = useMemo<RenderedTile[]>(() => {
@@ -181,5 +199,5 @@ export function useTiles(
     [cache, snapshot],
   );
 
-  return { selKeys, rendered, marksLoaded, atFullFidelity, loadError: snapshot.error, cacheGauge };
+  return { selKeys, rendered, marksLoaded, atFullFidelity, loadError: snapshot.error, cacheGauge, ensureColumns };
 }

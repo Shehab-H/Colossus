@@ -114,13 +114,12 @@ export default function App() {
   // or its options change, so it stays a stable object across filter changes.
   const slots = useMemo(() => (manifest ? filterSlots(manifest, options) : null), [manifest, options]);
 
-  // Packed bakes fetch these per tile on demand: the active colour channel plus the inspect channels
-  // (read only on a click). Derived from the view's declared roles, never named here.
-  const lazyChannels = useMemo(
-    () => [renderChannel, ...(manifest?.view.inspect?.channels ?? []), manifest?.view.inspect?.title ?? ''].filter(Boolean),
-    [renderChannel, manifest],
-  );
-  const { selKeys, rendered: loaded, marksLoaded, atFullFidelity, loadError, cacheGauge } = useTiles(manifest, camera, size, slots, lazyChannels);
+  // On a packed bake the render needs one column beyond first paint: the active colour channel. Inspect
+  // channels stay lazy and load per click (see onPick) — fetching them for every resident tile would
+  // defeat the pack.
+  const renderChannels = useMemo(() => (renderChannel ? [renderChannel] : []), [renderChannel]);
+  const { selKeys, rendered: loaded, marksLoaded, atFullFidelity, loadError, cacheGauge, ensureColumns } =
+    useTiles(manifest, camera, size, slots, renderChannels);
 
   // deck publishes its own metrics once a second (GPU buffer/texture residency, GPU vs CPU frame time,
   // attribute-upload cost). Passed only when armed: the prop is what makes deck collect them at all, so
@@ -237,9 +236,13 @@ export default function App() {
       // on demand (foldInspect); older paths read the whole-tile fold as before.
       const cols =
         manifest && isSlab(manifest) && contextActive ? await foldInspect(hit.key) : folded?.byTile.get(hit.key);
+      // Packed bake: the inspect columns were never fetched for this tile (that is the point — geonames'
+      // `name` is ~44% of its bytes). Range them now, for this one tile, and read the merged result.
+      const names = [...inspect.channels, ...(inspect.title ? [inspect.title] : [])];
+      const data = (await ensureColumns(hit.key, names)) ?? hit.data;
       const valueAt = (name: string) => {
         const fc = cols?.[name];
-        if (!fc) return inspectValue(columnValue(hit.data.values[name], i));
+        if (!fc) return inspectValue(columnValue(data.values[name], i));
         const v = fc[i];
         if (fc instanceof Uint16Array) {
           const cats = manifest?.channelDomains?.[name]?.values;
@@ -252,7 +255,7 @@ export default function App() {
         rows: inspect.channels.map((name) => ({ name, value: valueAt(name) })),
       });
     },
-    [inspect, dataByLayerId, folded, manifest, contextActive, foldInspect],
+    [inspect, dataByLayerId, folded, manifest, contextActive, foldInspect, ensureColumns],
   );
 
   const orthographicView = useMemo(
