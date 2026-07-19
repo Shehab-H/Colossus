@@ -1,7 +1,8 @@
 import { Type, type Table, type Vector } from 'apache-arrow';
 import type { CompanionPack, CompanionSlab, Manifest, PackCodec, ViewConfig } from './manifest';
-import { factsUrl, packBlockUrl, tileUrl } from './manifest';
-import { fetchArrowBlock, fetchArrowTable, fetchSlabCellRows, fetchSlabPlanes } from './arrow';
+import type { ChannelSpec, RenderPack } from './manifest';
+import { factsUrl, packBlockUrl, packDictUrl, tileUrl } from './manifest';
+import { fetchArrowBlock, fetchArrowTable, fetchPackBlocks, fetchSlabCellRows, fetchSlabPlanes, tableFromBlock } from './arrow';
 import { isGroupRegime, measureChannels, NUMERIC_TYPES } from './channels';
 import type { CompanionData, CompanionDim } from './measures';
 import { assembleDenseSlab, decodeSlab, type SlabData } from './slab';
@@ -41,6 +42,10 @@ export interface TileData {
   // Format 2 only: the single fetched ArrayBuffer every heavy column above is a view into. Held as the
   // retention anchor (and transferred once) so the tile's bytes flow network → worker → GPU with no copy.
   buffer?: ArrayBuffer;
+  // Packed tiles (render pack): one inflated buffer per fetched group rather than one per tile, each the
+  // retention anchor for the columns viewed out of it. A lazily fetched column adds an entry here; the
+  // zero-copy discipline is unchanged, there is simply more than one anchor to keep alive.
+  blocks?: Record<string, ArrayBuffer>;
 }
 
 const utf8Decoder = new TextDecoder();
@@ -54,14 +59,25 @@ export function columnValue(col: TileColumn | undefined, i: number): number | st
   return utf8Decoder.decode(col.bytes.subarray(col.offsets[i], col.offsets[i + 1]));
 }
 
-/** Approximate resident bytes of a tile — what the cache budgets against (see TileCache). For a
- *  format-2 tile the retained `buffer` is counted once; columns that are views into it (their
- *  `.buffer === d.buffer`) are already inside that total, so only separately-built arrays add to it. */
+/** Every ArrayBuffer this tile retains: the format-2 whole-tile anchor, or one per fetched block for a
+ *  packed tile. Columns viewed out of any of them are already inside that total. */
+function anchors(d: TileData): Set<ArrayBuffer> {
+  const keep = new Set<ArrayBuffer>();
+  if (d.buffer) keep.add(d.buffer);
+  if (d.blocks) for (const b of Object.values(d.blocks)) keep.add(b);
+  return keep;
+}
+
+/** Approximate resident bytes of a tile — what the cache budgets against (see TileCache). Retained
+ *  buffers are counted once each; columns that are views into one of them are already inside that total,
+ *  so only separately-built arrays add to it. A packed tile has one anchor per fetched group, so this is
+ *  the same accounting generalized from "the buffer" to "the retained set" — no double counting when a
+ *  lazily merged column is a view into a block already held. */
 export function tileBytes(d: TileData): number {
-  const anchor = d.buffer;
-  let b = anchor?.byteLength ?? 0;
-  // Count an array's bytes unless it's a view already inside the retained buffer (format 2).
-  const own = (v?: ArrayBufferView) => (!v || (anchor && v.buffer === anchor) ? 0 : v.byteLength);
+  const keep = anchors(d);
+  let b = 0;
+  for (const buf of keep) b += buf.byteLength;
+  const own = (v?: ArrayBufferView) => (!v || keep.has(v.buffer as ArrayBuffer) ? 0 : v.byteLength);
   b += own(d.positions) + own(d.polyPositions) + own(d.polyStartIndices) + own(d.polyTriangles) + own(d.filterValues);
   for (const col of Object.values(d.values)) {
     if (col instanceof Float32Array) b += own(col);
@@ -83,6 +99,125 @@ export async function loadTile(
   const [z, x, y] = key.split('/').map(Number);
   const { table, buffer } = await fetchArrowTable(tileUrl(view.id, version, z, x, y), signal);
   return timedSync('decode.tile', () => decodeTile(view, table, slots, tileFormat, buffer), (d) => ({ n: d.count, bytes: tileBytes(d), key }));
+}
+
+/** How to fetch a packed tile's blocks, resolved on the main thread (the manifest lives there) and
+ *  shipped to the worker per request — the render-pack counterpart of CompanionFetch. `want` is the group
+ *  set to range: the manifest's firstPaint run for an initial load, or a single channel for a lazy fetch. */
+export interface RenderFetch {
+  baseUrl: string;
+  codec: PackCodec;
+  dictUrl?: string;
+  /** This tile's group directory: group -> [offset, length]. */
+  dir: Record<string, [number, number]>;
+  want: string[];
+}
+
+/** Resolve a tile's render-pack fetch spec, or null when this bake is not packed (older bakes, formats
+ *  1/2) — null routes to the per-tile file path. `want` defaults to the manifest's first-paint run, which
+ *  the writer laid down contiguously, so the fetch is one coalesced range request. */
+export function renderFetch(
+  pack: RenderPack | undefined,
+  viewId: string,
+  version: string,
+  key: string,
+  want?: string[],
+): RenderFetch | null {
+  const dir = pack?.entries[key];
+  if (!pack || !dir) return null;
+  return {
+    baseUrl: packBlockUrl(viewId, version, pack.file, key),
+    codec: pack.codec,
+    dictUrl: packDictUrl(viewId, version, pack),
+    dir,
+    want: (want ?? pack.firstPaint).filter((g) => g in dir),
+  };
+}
+
+/** Fetch + inflate + parse a packed tile's requested groups. Adjacent blocks coalesce into one range
+ *  request, so the default first-paint set costs a single HTTP request per tile. */
+async function fetchBlocks(
+  spec: RenderFetch,
+  signal?: AbortSignal,
+): Promise<{ tables: Record<string, Table>; buffers: Record<string, ArrayBuffer> }> {
+  const raw = await fetchPackBlocks(spec.baseUrl, spec.codec, spec.dir, spec.want, {
+    signal,
+    dictUrl: spec.dictUrl,
+    stage: 'net.tile',
+  });
+  const tables: Record<string, Table> = {};
+  const buffers: Record<string, ArrayBuffer> = {};
+  for (const [group, buf] of Object.entries(raw)) {
+    tables[group] = tableFromBlock(buf).table;
+    buffers[group] = buf;
+  }
+  return { tables, buffers };
+}
+
+/** Load a packed tile's first paint: geometry + the active colour channel + the filter slots. */
+export async function loadPackedTile(
+  view: ViewConfig,
+  spec: RenderFetch,
+  slots: FilterSlots | null,
+  key: string,
+  signal?: AbortSignal,
+): Promise<TileData> {
+  const { tables, buffers } = await fetchBlocks(spec, signal);
+  return timedSync('decode.tile', () => decodeTileBlocks(view, tables, buffers, slots), (d) => ({
+    n: d.count,
+    bytes: tileBytes(d),
+    key,
+  }));
+}
+
+/** One resident tile's extra columns, fetched on demand — a colour switch away from the default, or an
+ *  inspect click. Returns just the decoded columns plus the buffers backing them, so the caller merges
+ *  them into the existing tile entry rather than replacing it (cache identity stays (version, tileKey)). */
+export interface LazyColumns {
+  values: Record<string, TileColumn>;
+  buffers: Record<string, ArrayBuffer>;
+}
+
+export async function loadColumns(
+  view: ViewConfig,
+  spec: RenderFetch,
+  signal?: AbortSignal,
+): Promise<LazyColumns> {
+  const { tables, buffers } = await fetchBlocks(spec, signal);
+  const src = fromBlocks(tables);
+  const specByName = new Map(view.source.channels.map((c) => [c.name, c] as const));
+  const values: Record<string, TileColumn> = {};
+  for (const group of Object.keys(tables)) {
+    const col = src.column(group);
+    if (col) values[group] = viewColumn(col, group, specByName.get(group), src.numRows);
+  }
+  return { values, buffers };
+}
+
+/** Where a decode reads its columns from: one whole-tile Arrow table (the per-tile file) or a set of
+ *  per-column blocks (the render pack). Every column read below goes through this, so a single decode
+ *  path serves both layouts and the packed path inherits the zero-copy views unchanged. */
+export interface ColumnSource {
+  numRows: number;
+  column(name: string): Vector | null;
+}
+
+const fromTable = (t: Table): ColumnSource => ({ numRows: t.numRows, column: (n) => t.getChild(n) });
+
+/** Flatten a tile's fetched blocks into one column lookup. A group is normally one column of the same
+ *  name, but `@geom` carries whatever the mark needs (the geom3 payload, or the x/y pair for points), so
+ *  the index is built from each block's actual schema rather than from its group name. */
+function fromBlocks(blocks: Record<string, Table>): ColumnSource {
+  const cols = new Map<string, Vector>();
+  let numRows = 0;
+  for (const t of Object.values(blocks)) {
+    numRows = Math.max(numRows, t.numRows);
+    for (const f of t.schema.fields) {
+      const c = t.getChild(f.name);
+      if (c) cols.set(f.name, c);
+    }
+  }
+  return { numRows, column: (n) => cols.get(n) ?? null };
 }
 
 /** Which companion columns are grain (and their temporality) — the minimal, structured-clone-friendly
@@ -259,10 +394,11 @@ export function decodeTile(
   if ((tileFormat ?? 1) >= 2 && buffer) return decodeTileV2(view, table, slots, buffer);
 
   const values = readFields(view, table);
+  const src = fromTable(table);
 
   if (view.mark === 'polygon') {
     const poly = readPolygons(table);
-    const filterValues = buildSlotValues(table, slots, poly.count, poly.polyStartIndices, poly.vertexCount);
+    const filterValues = buildSlotValues(src, slots, poly.count, poly.polyStartIndices, poly.vertexCount);
     return { ...poly, values, filterValues };
   }
 
@@ -274,7 +410,7 @@ export function decodeTile(
     positions[i * 2] = xs[i];
     positions[i * 2 + 1] = ys[i];
   }
-  const filterValues = buildSlotValues(table, slots, n);
+  const filterValues = buildSlotValues(src, slots, n);
   return { count: n, positions, values, filterValues };
 }
 
@@ -283,24 +419,33 @@ export function decodeTile(
  *  the tile-global triangle indices viewed with no rebase. Only the small derived arrays are built:
  *  point positions (interleaved x/y), polyStartIndices, per-utf8 offsets, and filterValues. */
 function decodeTileV2(view: ViewConfig, table: Table, slots: FilterSlots | null | undefined, buffer: ArrayBuffer): TileData {
-  const values = readFieldsView(view, table);
+  const src = fromTable(table);
+  const values = readFieldsView(view, src);
 
   if (view.mark === 'polygon') {
     const poly = readPolygonsView(table);
-    const filterValues = buildSlotValues(table, slots, poly.count, poly.polyStartIndices, poly.vertexCount);
+    const filterValues = buildSlotValues(src, slots, poly.count, poly.polyStartIndices, poly.vertexCount);
     return { ...poly, values, filterValues, buffer };
   }
+  return { ...decodePoints(src, slots, values), buffer };
+}
 
-  const xs = viewFloat32(table.getChild(TileColumns.x)!, TileColumns.x);
-  const ys = viewFloat32(table.getChild(TileColumns.y)!, TileColumns.y);
-  const n = table.numRows;
+/** Point marks from any column source: the representative x/y interleaved into deck's positions buffer.
+ *  Identical work whether x/y came from a whole-tile file or the pack's `@geom` block. */
+function decodePoints(
+  src: ColumnSource,
+  slots: FilterSlots | null | undefined,
+  values: Record<string, TileColumn>,
+): TileData {
+  const xs = viewFloat32(src.column(TileColumns.x)!, TileColumns.x);
+  const ys = viewFloat32(src.column(TileColumns.y)!, TileColumns.y);
+  const n = src.numRows;
   const positions = new Float32Array(n * 2);
   for (let i = 0; i < n; i++) {
     positions[i * 2] = xs[i];
     positions[i * 2 + 1] = ys[i];
   }
-  const filterValues = buildSlotValues(table, slots, n);
-  return { count: n, positions, values, filterValues, buffer };
+  return { count: n, positions, values, filterValues: buildSlotValues(src, slots, n) };
 }
 
 /** Format-3 decode (polygon tiles). Measure/dict columns are viewed exactly as format 2 (zero-copy); the
@@ -309,14 +454,18 @@ function decodeTileV2(view: ViewConfig, table: Table, slots: FilterSlots | null 
  *  format-2 decode produces (bit-for-bit; see geometryCodec). x/y/id are not present: unused by polygon
  *  marks and re-derivable, so the bake never wrote them. */
 function decodeTileV3(view: ViewConfig, table: Table, slots: FilterSlots | null | undefined, buffer: ArrayBuffer): TileData {
-  const values = readFieldsView(view, table);
+  return { ...decodeGeom3(view, fromTable(table), slots), buffer };
+}
 
-  const gv = table.getChild(TileColumns.geom3);
+/** Format-3 area marks from any column source: the encoded payload in the geom3 column synthesized back
+ *  into the identical polyPositions / polyStartIndices / polyTriangles buffers (bit-for-bit). */
+function decodeGeom3(view: ViewConfig, src: ColumnSource, slots: FilterSlots | null | undefined): TileData {
+  const values = readFieldsView(view, src);
+  const gv = src.column(TileColumns.geom3);
   if (!gv) throw new Error('format 3: polygon tile has no geom3 column');
   const g = decodeGeometry(gv.get(0) as Uint8Array); // the whole payload lives in row 0
-  const count = table.numRows;
+  const count = src.numRows;
   const vertexCount = g.positions.length >> 1;
-  const filterValues = buildSlotValues(table, slots, count, g.startIndices, vertexCount);
   return {
     count,
     polyPositions: g.positions,
@@ -324,25 +473,40 @@ function decodeTileV3(view: ViewConfig, table: Table, slots: FilterSlots | null 
     polyTriangles: g.triangles,
     vertexCount,
     values,
-    filterValues,
-    buffer,
+    filterValues: buildSlotValues(src, slots, count, g.startIndices, vertexCount),
   };
+}
+
+/** Build a tile from its fetched pack blocks — the packed counterpart of decodeTile. Area marks decode
+ *  through geom3, point marks through the x/y pair the `@geom` block carries; either way every column not
+ *  in `blocks` is simply absent from `values` until an interaction fetches it. */
+export function decodeTileBlocks(
+  view: ViewConfig,
+  blocks: Record<string, Table>,
+  buffers: Record<string, ArrayBuffer>,
+  slots?: FilterSlots | null,
+): TileData {
+  const src = fromBlocks(blocks);
+  const tile = src.column(TileColumns.geom3)
+    ? decodeGeom3(view, src, slots)
+    : decodePoints(src, slots, readFieldsView(view, src));
+  return { ...tile, blocks: buffers };
 }
 
 /** Per-tile GPU filter attribute: one float slot per filterable channel per mark (points) or vertex
  *  (polygons). Temporal slots hold day numbers; dimension slots hold canonical category codes, remapped
  *  from the tile-local dictionary so the code space is one per (view, version). */
 function buildSlotValues(
-  table: Table,
+  src: ColumnSource,
   slots: FilterSlots | null | undefined,
   count: number,
   polyStartIndices?: Uint32Array,
   vertexCount?: number,
 ): Float32Array | undefined {
   if (!slots) return undefined;
-  const n = table.numRows;
+  const n = src.numRows;
   const perMark = slots.specs.map((spec) => {
-    const col = table.getChild(spec.name);
+    const col = src.column(spec.name);
     if (!col) return new Float32Array(n).fill(MISSING_CODE); // tile lacks the column → kept by (all), matched by nothing
     return spec.kind === 'temporal' ? slotDayNumbers(col, n) : slotCanonicalCodes(col, n, spec.categories);
   });
@@ -436,19 +600,24 @@ function fieldSelection(view: ViewConfig) {
 
 /** Format-2 counterpart of readFields: each column is a view into the tile buffer — measures viewed as
  *  f32, dict codes reinterpreted in place, identity UTF-8 viewed. No gather, no per-row string work. */
-function readFieldsView(view: ViewConfig, table: Table): Record<string, TileColumn> {
+function readFieldsView(view: ViewConfig, src: ColumnSource): Record<string, TileColumn> {
   const { specByName, names } = fieldSelection(view);
   const values: Record<string, TileColumn> = {};
   for (const name of names) {
-    const col = table.getChild(name);
-    if (!col) continue;
-    const spec = specByName.get(name);
-    const temporal = spec?.role === 'temporal' || spec?.type === 'date';
-    values[name] = NUMERIC_TYPES.has(spec?.type ?? '')
-      ? viewFloat32(col, name)
-      : stringColumnView(col, spec?.role === 'identity', table.numRows, temporal ? isoDate : plainString);
+    const col = src.column(name);
+    if (!col) continue; // not fetched yet (packed tile, lazy column) — simply absent from `values`
+    values[name] = viewColumn(col, name, specByName.get(name), src.numRows);
   }
   return values;
+}
+
+/** One column in its zero-copy view form, typed by its declared spec. Split out of readFieldsView so a
+ *  lazily fetched block decodes into the exact same shape before being merged into a resident tile. */
+export function viewColumn(col: Vector, name: string, spec: ChannelSpec | undefined, n: number): TileColumn {
+  const temporal = spec?.role === 'temporal' || spec?.type === 'date';
+  return NUMERIC_TYPES.has(spec?.type ?? '')
+    ? viewFloat32(col, name)
+    : stringColumnView(col, spec?.role === 'identity', n, temporal ? isoDate : plainString);
 }
 
 /** A single-chunk f32 Arrow column as a view over the tile buffer, bounded to its logical rows (Arrow

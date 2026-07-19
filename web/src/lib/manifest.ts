@@ -154,7 +154,29 @@ export interface Manifest {
    *  client folds locally over companion planes when `client`, or posts to /api/views/{id}/fold when
    *  `remote` (behind the same seam). A `?fold=remote|client` query override wins over this. */
   foldRoute?: FoldRoute;
+  /** Render-tile packaging (tile-transfer Phase 3): every tile's columns live as independently compressed
+   *  blocks in one per-version archive, range-read per (tile, group), so a first paint ships geometry plus
+   *  the active colour channel and never the measure planes it will not read. Absent selects the per-tile
+   *  `z/x/y.arrow` path (formats 1/2, older bakes). Present ⇒ NO per-tile .arrow or .arrow.br exists. */
+  renderPack?: RenderPack;
 }
+
+/** The render archive and its directory (mirror of Colossus.Domain.Model.RenderPack). `entries` maps a tile
+ *  key (`z/x/y`) to each group's `[offset, length]`; a group is one column, except `@geom` which carries the
+ *  encoded geometry payload (area marks) or the x/y pair (point marks). `firstPaint` is the group run a
+ *  default paint needs, in pack order — the writer lays those blocks down adjacently at the head of each
+ *  tile's span, so fetching exactly that set is ONE coalesced range request per tile. */
+export interface RenderPack {
+  file: string;
+  codec: PackCodec;
+  entries: Record<string, Record<string, [number, number]>>;
+  firstPaint: string[];
+  dict?: string;
+  dictHash?: string;
+}
+
+/** The geometry group's reserved name — not a channel name (mirrors RenderPack.GeomGroup). */
+export const GEOM_GROUP = '@geom';
 
 /** The bake-priced fold-execution route (companion-scale R4). The client obeys `execution`; the rest are
  *  diagnostics (measured per-interaction bytes vs the budget). */
@@ -247,7 +269,7 @@ export function packBlockUrl(viewId: string, version: string, file: string, key:
 
 /** The trained zstd dictionary URL for a (view, version) pack, or undefined when the bake trained none
  *  (gzip, or too few blocks). The client fetches it once and loads it into the worker's zstd decoder. */
-export function packDictUrl(viewId: string, version: string, pack: CompanionPack | undefined): string | undefined {
+export function packDictUrl(viewId: string, version: string, pack: { dict?: string } | undefined): string | undefined {
   return pack?.dict ? `${TILES_BASE}/${viewId}/${version}/${pack.dict}` : undefined;
 }
 

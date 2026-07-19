@@ -92,14 +92,28 @@ const inflate = async (block: ArrayBuffer, codec: PackCodec, dictUrl?: string): 
  *  it must carry the length — a subset run and a superset run can start at the same offset (a tile first
  *  fetched under different colour measures), so offset alone would alias them to one cached body. Each gzip
  *  block within a run inflates independently. Returns `planeName → decompressed Arrow IPC bytes`. */
-export async function fetchSlabPlanes(
+export const fetchSlabPlanes = (
   baseUrl: string,
   codec: PackCodec,
   dir: Record<string, [number, number]>,
   want: string[],
   signal?: AbortSignal,
   dictUrl?: string,
+): Promise<Record<string, ArrayBuffer>> =>
+  fetchPackBlocks(baseUrl, codec, dir, want, { signal, dictUrl, stage: 'net.facts' });
+
+/** One tile's requested blocks out of a pack archive, coalesced into contiguous runs. Shared by the
+ *  companion planes (above) and the render pack: both are "range these named blocks out of one archive and
+ *  inflate each independently". `stage` picks which network budget the bytes are reported against —
+ *  render-tile bytes reported as `net.facts` would silently vanish from the tile budget (see perf.ts). */
+export async function fetchPackBlocks(
+  baseUrl: string,
+  codec: PackCodec,
+  dir: Record<string, [number, number]>,
+  want: string[],
+  opts?: { signal?: AbortSignal; dictUrl?: string; stage?: 'net.tile' | 'net.facts' },
 ): Promise<Record<string, ArrayBuffer>> {
+  const { signal, dictUrl, stage = 'net.facts' } = opts ?? {};
   const members = want
     .filter((p) => dir[p])
     .map((p) => ({ p, off: dir[p][0], len: dir[p][1] }))
@@ -126,7 +140,7 @@ export async function fetchSlabPlanes(
       // (still compressed; the inflate stage reports what they expand to); `wire`/`cached` come from
       // Resource Timing, so a service-worker hit on a warm pan reports 0 rather than the run length.
       record({
-        stage: 'net.facts',
+        stage,
         ms: performance.now() - t0,
         t: performance.now(),
         bytes: body.byteLength,
@@ -143,6 +157,17 @@ export async function fetchSlabPlanes(
     }),
   );
   return out;
+}
+
+/** One inflated pack block parsed as its own single-batch Arrow table. The returned `buffer` IS that
+ *  block's inflated buffer — the retention anchor for any column viewed out of this table, since a packed
+ *  tile has one buffer per column rather than one per tile. */
+export function tableFromBlock(buffer: ArrayBuffer): FetchedArrow {
+  const table = timedSync('decode.ipc', () => tableFromIPC(new Uint8Array(buffer)), (tb) => ({
+    n: tb.numRows,
+    bytes: buffer.byteLength,
+  }));
+  return { table, buffer };
 }
 
 /** Fetch a **dense** tile's requested cell rows (companion-scale R5 cell-run slicing). `needs` names the cell
