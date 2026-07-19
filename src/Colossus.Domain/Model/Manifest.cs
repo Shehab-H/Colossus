@@ -188,11 +188,18 @@ public sealed record RenderPack
     public const string GeomGroup = "@geom";
 
     /// <summary>The channels a first paint needs, in block order, derived purely from the view's declared
-    /// roles: the colour channel (what the default paint reads) followed by the filter-slot channels (the
-    /// GPU filter attribute is built per tile at decode, so its columns must be resident too). Everything
+    /// roles: the colour channel (what the default paint reads) followed by the GPU filter-slot channels
+    /// (the filter attribute is built per tile at decode, so its columns must be resident too). Everything
     /// else — the other measures, the identity/inspect channels — is lazy. No channel name and no dataset
-    /// shape appears here; a view that declares neither role simply has a geometry-only first paint.</summary>
-    public static IReadOnlyList<string> FirstPaintChannels(ViewConfig view)
+    /// shape appears here.
+    ///
+    /// <para>The slot rule must match the client's <c>predicateChannels</c> exactly, because a slot column
+    /// the client cannot find reads as <c>MISSING_CODE</c> — matched by nothing — so an omission here does
+    /// not fail loudly, it silently blanks the view on the first filter selection. Slots come from channel
+    /// <b>roles</b> (dimension/temporal), not from the authored <c>filters</c> list, which is routinely null
+    /// even for views with live filter controls.</para></summary>
+    public static IReadOnlyList<string> FirstPaintChannels(
+        ViewConfig view, ReductionKind reduction, IReadOnlyList<string>? perFactChannels = null)
     {
         var ordered = new List<string>();
         void Add(string? name)
@@ -200,9 +207,28 @@ public sealed record RenderPack
             if (!string.IsNullOrEmpty(name) && !ordered.Contains(name, StringComparer.Ordinal)) ordered.Add(name);
         }
         Add(view.Encoding?.Color?.Channel);
-        foreach (var f in view.Filters ?? []) Add(f.Channel);
+
+        // Row regime + aggregate: the reducer drops dimension/temporal columns (each cell averages every
+        // slice), so the view carries no filter slots at all — mirrors carriedFilterableChannels.
+        bool groupRegime = view.HasMeasures;
+        if (!groupRegime && reduction == ReductionKind.Aggregate) return ordered;
+
+        // Group regime: a perFact selection is fold context, never a GPU predicate, so those columns are
+        // not slots and stay lazy.
+        var perFact = groupRegime && perFactChannels is not null
+            ? new HashSet<string>(perFactChannels, StringComparer.Ordinal)
+            : [];
+        foreach (var c in view.Source.Channels
+                     .Where(c => c.Role is ChannelRole.Dimension or ChannelRole.Temporal)
+                     .Where(c => !perFact.Contains(c.Name))
+                     .Take(GpuFilterSlots))
+            Add(c.Name);
         return ordered;
     }
+
+    /// <summary>DataFilterExtension slot count — the client builds at most this many, so later filterable
+    /// channels are not slots and need not be resident at first paint.</summary>
+    private const int GpuFilterSlots = 4;
 }
 
 /// <summary>The derived channel split of a group-regime view.</summary>

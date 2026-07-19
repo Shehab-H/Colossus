@@ -1,4 +1,4 @@
-import { type Companion, type CompanionFetch, loadCompanion, loadTile, type TileData } from './tileData';
+import { type Companion, type CompanionFetch, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
 import { emitAll, isPerfOn, type PerfEvent } from './perf';
@@ -74,17 +74,27 @@ class TileLoader {
     for (const p of inflight) p.reject(new Error('tile worker failed'));
   }
 
-  load(view: ViewConfig, version: string, key: string, slots: FilterSlots | null, tileFormat: number): TileLoad {
+  load(
+    view: ViewConfig,
+    version: string,
+    key: string,
+    slots: FilterSlots | null,
+    tileFormat: number,
+    render?: RenderFetch | null,
+  ): TileLoad {
     this.ensure();
     if (!this.workers.length) {
       const ac = new AbortController();
-      return { promise: loadTile(view, version, key, slots, tileFormat, ac.signal), cancel: () => ac.abort() };
+      const promise = render
+        ? loadPackedTile(view, render, slots, key, ac.signal)
+        : loadTile(view, version, key, slots, tileFormat, ac.signal);
+      return { promise, cancel: () => ac.abort() };
     }
     const id = this.nextId++;
     const worker = this.workers[this.rr++ % this.workers.length];
     const promise = new Promise<LoadResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, view, version, key, slots, tileFormat, perf: isPerfOn() });
+      worker.postMessage({ id, view, version, key, slots, tileFormat, render, perf: isPerfOn() });
     }).then((r) => r.tile as TileData);
     // postMessage on a terminated worker is a silent no-op, so a late cancel is always safe.
     return { promise, cancel: () => worker.postMessage({ cancel: id }) };

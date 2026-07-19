@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Manifest } from '../lib/manifest';
+import { renderFetch } from '../lib/tileData';
 import { renderDecodeView } from '../lib/channels';
 import type { FilterSlots } from '../lib/gpuFilter';
 import { TileCache, TILE_BUDGET_BYTES } from '../lib/tileCache';
@@ -71,7 +72,12 @@ export function useTiles(
     cache.abortStale(new Set([...keys, ...prefetchCandidates(manifest, keys)].map(ck)));
     const tileFormat = manifest.tileFormat ?? 1;
     for (const key of keys) {
-      cache.ensure(ck(key), () => tileLoader.load(decodeView!, manifest.version, key, slots, tileFormat), keepActive);
+      cache.ensure(
+        ck(key),
+        () => tileLoader.load(decodeView!, manifest.version, key, slots, tileFormat,
+          renderFetch(manifest.renderPack, decodeView!.id, manifest.version, key)),
+        keepActive,
+      );
     }
     // `snapshot` is a dep so a resolved/failed load re-runs selection (and any retry) against fresh data.
   }, [manifest, decodeView, camera, size, slots, snapshot, cache]);
@@ -92,7 +98,12 @@ export function useTiles(
     const keepActive = () => new Set([...selKeys, ...candidates].map(ck));
     const run = () => {
       for (const key of candidates)
-        cache.ensure(ck(key), () => tileLoader.load(decodeView, manifest.version, key, slots, tileFormat), keepActive);
+        cache.ensure(
+          ck(key),
+          () => tileLoader.load(decodeView, manifest.version, key, slots, tileFormat,
+            renderFetch(manifest.renderPack, decodeView.id, manifest.version, key)),
+          keepActive,
+        );
     };
     // This effect re-runs on every load (snapshot dep), so the timer keeps resetting until the demand set
     // has settled — the ~300ms "stable selection" gate.

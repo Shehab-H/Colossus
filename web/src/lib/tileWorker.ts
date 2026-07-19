@@ -3,7 +3,7 @@
 // and every column is (or rides in) a typed array, so results transfer back zero-copy — the main thread
 // never deserializes row-wise strings. A cancel message aborts the fetch; a tile already past fetch is
 // decoded and kept (the bytes are paid for, and it may be wanted again on zoom-back).
-import { type Companion, type CompanionFetch, loadCompanion, loadTile, type TileData } from './tileData';
+import { type Companion, type CompanionFetch, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
 import { initResourceTiming, setPerfEnabled, takeEvents } from './perf';
@@ -15,6 +15,9 @@ interface LoadRequest {
   key: string;
   slots: FilterSlots | null;
   tileFormat: number;
+  /** Present when the bake is packed: range this tile's first-paint blocks out of the archive instead of
+   *  fetching a per-tile file (which a packed version does not have). */
+  render?: RenderFetch | null;
   perf?: boolean;
 }
 
@@ -46,6 +49,8 @@ function transferable(tile: TileData): Transferable[] {
   };
   // Format 2: the retained buffer; every view into it dedups against this entry in the Set.
   if (tile.buffer) buffers.add(tile.buffer);
+  // Packed tiles hold one buffer per fetched block; every column viewed out of one dedups against it.
+  if (tile.blocks) for (const b of Object.values(tile.blocks)) buffers.add(b);
   add(tile.positions);
   add(tile.polyPositions);
   add(tile.polyStartIndices);
@@ -105,8 +110,10 @@ ctx.onmessage = async (e) => {
       const companion = await loadCompanion(e.data.companion, ac.signal);
       ctx.postMessage({ id, companion, perf: takeEvents() }, companionTransferable(companion));
     } else {
-      const { view, version, key, slots, tileFormat } = e.data;
-      const tile = await loadTile(view, version, key, slots, tileFormat, ac.signal);
+      const { view, version, key, slots, tileFormat, render } = e.data;
+      const tile = render
+        ? await loadPackedTile(view, render, slots, key, ac.signal)
+        : await loadTile(view, version, key, slots, tileFormat, ac.signal);
       ctx.postMessage({ id, tile, perf: takeEvents() }, transferable(tile));
     }
   } catch (err) {

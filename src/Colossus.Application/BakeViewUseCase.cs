@@ -89,7 +89,8 @@ public sealed class BakeViewUseCase(
         // read. This supersedes Phase 1's per-tile .br siblings — the pack compresses per block internally
         // (Content-Encoding does not compose with Range), so brotli would only compress files the pack is
         // about to delete. Phase 1 stays the path for already-published versions, which the manifest gates.
-        var renderPack = packer.PackVersion(outputDir, result.Tiles, RenderPack.FirstPaintChannels(view));
+        var renderPack = packer.PackVersion(outputDir, result.Tiles,
+            RenderPack.FirstPaintChannels(view, plan.Reduction, group?.FactChannels.PerFact));
         if (renderPack is null)
         {
             var compression = compressor.CompressVersionTiles(outputDir);
