@@ -75,6 +75,14 @@ row-local triangles). Measure and dict columns are untouched — still single-ch
 `id` is dropped because the client reads it nowhere (the group-regime fold joins by `mki`, not `id`); `x`/`y`
 are read only for point marks, so points stay format 2. Formats 1 and 2 stay readable forever; the manifest gates.
 
+**Packaging is separate from the tile format.** A bake may write its tiles as per-tile files or pack them into
+one per-version archive (`manifest.renderPack`, tile-transfer Phase 3) — the *schema* above is unchanged either
+way. In a packed version every column is an independently compressed block, so a first paint ranges geometry
+plus the active colour channel and never the measure planes it will not read; the block order within a tile
+(`@geom`, colour channel, filter slots, everything else) is a load-bearing invariant, not a layout detail —
+see [render-pack/PACK-FORMAT.md](render-pack/PACK-FORMAT.md). Absence of `renderPack` selects the per-tile
+path, so older bakes and formats 1/2 are unaffected.
+
 Canonical tile schema (target):
 
 | Column         | Type                 | When            | Purpose                                                        |
@@ -125,6 +133,13 @@ binary attributes → GPU`. Tiles are immutable and content-addressed by version
 fresh `<version>/` dir and **atomically flips `latest.json`** (temp + rename) — readers never see a
 half-written version. On-prem only: **no cloud, no CDN spend.**
 
+A tile's *bytes on disk* may be a per-tile file or a block inside a per-version archive; either way the serve
+layer stays a **static file serve**. The archive path needs only HTTP Range (which the static serve already
+answers for `facts.pack`), never on-the-fly compression: blocks are compressed at bake, inside the archive,
+because `Content-Encoding` does not compose with ranged requests. A packed version keeps no per-tile file —
+neither the plain `.arrow` nor a `.br` sibling — so "immutable static files" means the archive plus its
+manifest directory.
+
 ---
 
 ## Current conformance
@@ -143,6 +158,10 @@ Honest status so this file stays truthful as the slices land:
   - R3: tiles are **Arrow IPC** carrying `x, y` + every declared channel, and for area marks also
     `geometry` / `part_offsets` + a bake-time `triangles` column. Quadkey geometry ships (S3);
     WKT/geohash/H3 are still adapter TODOs.
+  - R3 packaging (`renderPack`): the **bake writes the pack and `verify` reads through it, but the client
+    does not read it yet** — the browser still takes the per-tile path. No view is baked packed, so nothing
+    is broken; but a view re-baked today would not render until the client half lands. See
+    [render-pack/PACK-FORMAT.md](render-pack/PACK-FORMAT.md).
   - R4: tiles are Hilbert-sorted, but the Parquet queryable-store sidecar, the DuckDB-WASM client, and
     deliberate zone-map / dictionary / bloom tuning are all pending (S4). Interactive `filters` are
     honored **client-side on the GPU**: each filterable channel is a `DataFilterExtension` float slot
