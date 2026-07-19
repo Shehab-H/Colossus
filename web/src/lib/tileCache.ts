@@ -1,4 +1,4 @@
-import { tileBytes, type TileData } from './tileData';
+import { tileBytes, type TileColumn, type TileData } from './tileData';
 
 const RETRY_MS = 2000;
 // Resident-tile budget. Byte-based, not count-based: tile weight varies ~100× across datasets (a
@@ -94,6 +94,26 @@ export class TileCache {
    *  from decoding every intermediate level's tiles after they've already left the screen. */
   abortStale(active: Set<string>): void {
     for (const [key, cancel] of this.loading) if (!active.has(key)) cancel();
+  }
+
+  /** Merge lazily fetched columns into a resident tile (render pack: a colour switch or an inspect click
+   *  fetches a block the first paint skipped). The entry is REPLACED with a new TileData rather than
+   *  mutated: the snapshot contract useSyncExternalStore depends on stays immutable, and deckData's
+   *  per-tile WeakMap keys off the object, so exactly one attribute rebuild+upload happens per tile.
+   *  Cache identity is untouched — same key, same (version, tileKey); blocks ride underneath it.
+   *  A tile evicted or replaced while its block was in flight is simply skipped. */
+  mergeColumns(key: string, values: Record<string, TileColumn>, buffers: Record<string, ArrayBuffer>): void {
+    const tile = this.snapshot.tiles.get(key);
+    if (!tile) return; // evicted mid-flight — the refetch will carry the column
+    const merged: TileData = {
+      ...tile,
+      values: { ...tile.values, ...values },
+      blocks: { ...tile.blocks, ...buffers },
+    };
+    const next = new Map(this.snapshot.tiles);
+    next.set(key, merged);
+    this.sizes.set(key, tileBytes(merged));
+    this.commit(next, this.snapshot.error);
   }
 
   private commit(tiles: ReadonlyMap<string, TileData>, error: string | null): void {

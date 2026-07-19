@@ -114,7 +114,13 @@ export default function App() {
   // or its options change, so it stays a stable object across filter changes.
   const slots = useMemo(() => (manifest ? filterSlots(manifest, options) : null), [manifest, options]);
 
-  const { selKeys, rendered: loaded, marksLoaded, atFullFidelity, loadError, cacheGauge } = useTiles(manifest, camera, size, slots);
+  // Packed bakes fetch these per tile on demand: the active colour channel plus the inspect channels
+  // (read only on a click). Derived from the view's declared roles, never named here.
+  const lazyChannels = useMemo(
+    () => [renderChannel, ...(manifest?.view.inspect?.channels ?? []), manifest?.view.inspect?.title ?? ''].filter(Boolean),
+    [renderChannel, manifest],
+  );
+  const { selKeys, rendered: loaded, marksLoaded, atFullFidelity, loadError, cacheGauge } = useTiles(manifest, camera, size, slots, lazyChannels);
 
   // deck publishes its own metrics once a second (GPU buffer/texture residency, GPU vs CPU frame time,
   // attribute-upload cost). Passed only when armed: the prop is what makes deck collect them at all, so

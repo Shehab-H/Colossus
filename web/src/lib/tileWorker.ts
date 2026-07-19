@@ -3,7 +3,7 @@
 // and every column is (or rides in) a typed array, so results transfer back zero-copy — the main thread
 // never deserializes row-wise strings. A cancel message aborts the fetch; a tile already past fetch is
 // decoded and kept (the bytes are paid for, and it may be wanted again on zoom-back).
-import { type Companion, type CompanionFetch, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
+import { type Companion, type CompanionFetch, loadColumns, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
 import { initResourceTiming, setPerfEnabled, takeEvents } from './perf';
@@ -30,13 +30,21 @@ interface CompanionRequest {
   perf?: boolean;
 }
 
+/** Fetch one resident tile's extra column blocks (a colour switch away from the default, or an inspect
+ *  click). Returns just the decoded columns so the caller merges them into the existing cache entry. */
+interface ColumnsRequest {
+  id: number;
+  columns: { view: ViewConfig; render: RenderFetch };
+  perf?: boolean;
+}
+
 interface CancelRequest {
   cancel: number;
 }
 
 // Typed as a minimal dedicated-worker surface so the app tsconfig needn't pull in the webworker lib.
 const ctx = self as unknown as {
-  onmessage: ((e: MessageEvent<LoadRequest | CompanionRequest | CancelRequest>) => void) | null;
+  onmessage: ((e: MessageEvent<LoadRequest | CompanionRequest | ColumnsRequest | CancelRequest>) => void) | null;
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
 };
 
@@ -106,7 +114,11 @@ ctx.onmessage = async (e) => {
   // on the main thread, where the dashboard lives.
   setPerfEnabled(e.data.perf === true);
   try {
-    if ('companion' in e.data) {
+    if ('columns' in e.data) {
+      const { view, render } = e.data.columns;
+      const columns = await loadColumns(view, render, ac.signal);
+      ctx.postMessage({ id, columns, perf: takeEvents() }, Object.values(columns.buffers));
+    } else if ('companion' in e.data) {
       const companion = await loadCompanion(e.data.companion, ac.signal);
       ctx.postMessage({ id, companion, perf: takeEvents() }, companionTransferable(companion));
     } else {

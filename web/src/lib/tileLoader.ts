@@ -1,4 +1,4 @@
-import { type Companion, type CompanionFetch, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
+import { type Companion, type CompanionFetch, type LazyColumns, loadColumns, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
 import { emitAll, isPerfOn, type PerfEvent } from './perf';
@@ -7,6 +7,7 @@ interface LoadResponse {
   id: number;
   tile?: TileData;
   companion?: Companion;
+  columns?: LazyColumns;
   error?: string;
   aborted?: boolean;
   /** Stage timings measured in the worker (fetch, inflate, decode) — re-emitted into the main-thread bus. */
@@ -98,6 +99,19 @@ class TileLoader {
     }).then((r) => r.tile as TileData);
     // postMessage on a terminated worker is a silent no-op, so a late cancel is always safe.
     return { promise, cancel: () => worker.postMessage({ cancel: id }) };
+  }
+
+  /** Fetch one resident tile's extra column blocks off the main thread (render pack). The decoded
+   *  columns transfer back and the caller merges them into the existing cache entry. */
+  loadColumns(view: ViewConfig, render: RenderFetch): Promise<LazyColumns> {
+    this.ensure();
+    if (!this.workers.length) return loadColumns(view, render);
+    const id = this.nextId++;
+    const worker = this.workers[this.rr++ % this.workers.length];
+    return new Promise<LoadResponse>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      worker.postMessage({ id, columns: { view, render }, perf: isPerfOn() });
+    }).then((r) => r.columns as LazyColumns);
   }
 
   /** Fetch + decode a tile's fact companion on the worker pool (main-thread fallback when workers are
