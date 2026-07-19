@@ -42,9 +42,17 @@ public sealed class VerifyFidelityUseCase(
         int overBudget = 0;
         // Internal tiles merged on the ~1px grid are bounded by its capacity, which may exceed the leaf budget.
         long internalCap = Math.Max(manifest.TilePointBudget, (long)TileSchema.GridPerTile * TileSchema.GridPerTile);
+        // A packed bake (tile-transfer Phase 3) keeps no per-tile render file, so the row count reads through
+        // the pack's geometry block — the same directory the client fetches, which is what makes this a
+        // witness of the artifact actually served rather than of a staging leftover.
+        var renderPack = manifest.RenderPack;
+        string renderVersionDir = renderPack is null ? "" : store.VersionDirectory(viewId, version);
+        string renderPackPath = renderPack is null ? "" : Path.Combine(renderVersionDir, renderPack.File);
+        byte[]? renderDict = renderPack?.Dict is { } rd ? File.ReadAllBytes(Path.Combine(renderVersionDir, rd)) : null;
+
         foreach (var tile in manifest.Tiles)
         {
-            long rows = tiles.RowCount(store.TilePath(viewId, version, tile.Id));
+            long rows = RenderRowCount(viewId, version, tile, renderPack, renderPackPath, renderDict);
             if (rows != tile.Count)
                 return FidelityReport.Failed(viewId, $"tile {tile.Id.RelativePath} has {rows} rows, manifest says {tile.Count}");
             if (tile.IsLeaf) leafRows += rows;
@@ -58,6 +66,21 @@ public sealed class VerifyFidelityUseCase(
         if (Diagnose(viewId, version, manifest, leafRows, overBudget) is { } failure)
             return report with { Passed = false, Message = failure };
         return report;
+    }
+
+    /// <summary>One render tile's rows, through the pack when the bake wrote one and from the per-tile file
+    /// otherwise (formats 1/2 and older bakes — the same gating the client uses). A tile missing from the
+    /// pack directory is a real failure, not a fallback: the file it would fall back to no longer exists.</summary>
+    private long RenderRowCount(string viewId, string version, TileMeta tile,
+        RenderPack? pack, string packPath, byte[]? dict)
+    {
+        if (pack is null)
+            return tiles.RowCount(store.TilePath(viewId, version, tile.Id));
+
+        string key = $"{tile.Z}/{tile.X}/{tile.Y}";
+        if (!pack.Entries.TryGetValue(key, out var groups) || !groups.TryGetValue(RenderPack.GeomGroup, out var geom))
+            throw new InvalidOperationException($"render pack has no '{RenderPack.GeomGroup}' block for tile {key}");
+        return tiles.RenderPackedRowCount(packPath, geom[0], geom[1], pack.Codec, dict);
     }
 
     private string? Diagnose(string viewId, string version, Manifest manifest, long leafRows, int overBudget)

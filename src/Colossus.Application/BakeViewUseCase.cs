@@ -20,7 +20,8 @@ public sealed record BakeOutcome(
 /// plan (reduction, depth, budget, root) comes from <see cref="BakePlanner"/>.</summary>
 public sealed class BakeViewUseCase(
     ISourceAdapterCatalog sources, IReductionCatalog reductions, IBakeStore store, BakePlanner planner,
-    IChannelDomainScanner domains, IFactGrouper grouper, FoldRoutingOptions foldRouting, ITileCompressor compressor)
+    IChannelDomainScanner domains, IFactGrouper grouper, FoldRoutingOptions foldRouting,
+    ITileCompressor compressor, ITilePacker packer)
 {
     public async Task<BakeOutcome> BakeAsync(ViewConfig view, CancellationToken ct = default)
     {
@@ -83,15 +84,26 @@ public sealed class BakeViewUseCase(
 
         var result = reductions.Resolve(plan.Reduction).Reduce(rc);
 
-        // Tile-transfer initiative (Phase 1): precompress the render tiles just written into .br siblings, so
-        // the static serve answers *.arrow with Content-Encoding (RULES R7 — no on-the-fly compression). Done
-        // before publishing latest.json, so a published version already carries its siblings. Additive: the
-        // plain tiles are untouched, and a per-tile failure is non-fatal (they stay the rollback rail).
-        var compression = compressor.CompressVersionTiles(outputDir);
-        if (compression.Files > 0)
-            Console.WriteLine($"  {view.Id}: brotli {compression.Files} tiles, " +
-                $"{compression.OriginalBytes / 1_048_576.0:N1} → {compression.CompressedBytes / 1_048_576.0:N1} MB " +
-                $"({compression.Ratio:0.00}x)");
+        // Tile-transfer initiative (Phase 3): pack every tile's columns into one per-version archive, so a
+        // first paint ships geometry + the active colour channel and never the measure planes it will not
+        // read. This supersedes Phase 1's per-tile .br siblings — the pack compresses per block internally
+        // (Content-Encoding does not compose with Range), so brotli would only compress files the pack is
+        // about to delete. Phase 1 stays the path for already-published versions, which the manifest gates.
+        var renderPack = packer.PackVersion(outputDir, result.Tiles, RenderPack.FirstPaintChannels(view));
+        if (renderPack is null)
+        {
+            var compression = compressor.CompressVersionTiles(outputDir);
+            if (compression.Files > 0)
+                Console.WriteLine($"  {view.Id}: brotli {compression.Files} tiles, " +
+                    $"{compression.OriginalBytes / 1_048_576.0:N1} → {compression.CompressedBytes / 1_048_576.0:N1} MB " +
+                    $"({compression.Ratio:0.00}x)");
+        }
+        else
+        {
+            long packBytes = new FileInfo(Path.Combine(outputDir, renderPack.File)).Length;
+            Console.WriteLine($"  {view.Id}: render pack {renderPack.Entries.Count} tiles, " +
+                $"{packBytes / 1_048_576.0:N1} MB at rest, first paint [{string.Join(", ", renderPack.FirstPaint)}]");
+        }
 
         // R4: a group-regime reduction retains the facts the server fold reads (per version, beside the
         // tiles) and the planner prices the fold route from the companion bytes it just measured. Additive
@@ -123,6 +135,7 @@ public sealed class BakeViewUseCase(
             GrainChannels = group?.GrainChannels,
             CompanionPack = result.CompanionPack,
             CompanionSlab = result.CompanionSlab,
+            RenderPack = renderPack,
             FactsParquet = result.FactsParquet,
             FoldRoute = foldRoute,
         }, ct);

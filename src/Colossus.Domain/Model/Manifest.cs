@@ -186,6 +186,23 @@ public sealed record RenderPack
     /// <summary>The geometry group's reserved name. Not a channel name — the one group whose contents are
     /// decided by the mark, not by the view's channel list.</summary>
     public const string GeomGroup = "@geom";
+
+    /// <summary>The channels a first paint needs, in block order, derived purely from the view's declared
+    /// roles: the colour channel (what the default paint reads) followed by the filter-slot channels (the
+    /// GPU filter attribute is built per tile at decode, so its columns must be resident too). Everything
+    /// else — the other measures, the identity/inspect channels — is lazy. No channel name and no dataset
+    /// shape appears here; a view that declares neither role simply has a geometry-only first paint.</summary>
+    public static IReadOnlyList<string> FirstPaintChannels(ViewConfig view)
+    {
+        var ordered = new List<string>();
+        void Add(string? name)
+        {
+            if (!string.IsNullOrEmpty(name) && !ordered.Contains(name, StringComparer.Ordinal)) ordered.Add(name);
+        }
+        Add(view.Encoding?.Color?.Channel);
+        foreach (var f in view.Filters ?? []) Add(f.Channel);
+        return ordered;
+    }
 }
 
 /// <summary>The derived channel split of a group-regime view.</summary>

@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
+using Colossus.Domain.Baking;
 using Colossus.Domain.Model;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiles;
@@ -126,6 +127,24 @@ public class RenderPackWriterTests : IDisposable
         var geom = pack.Entries["3/1/2"][RenderPack.GeomGroup];
 
         Assert.Equal(6, RenderPackWriter.RowCount(packPath, geom[0], geom[1], dict));
+    }
+
+    [Fact]
+    public void Reader_seam_counts_rows_through_the_pack()
+    {
+        // The path VerifyFidelityUseCase takes on a packed bake: no per-tile file exists, so the row count
+        // must come through ITileReader's pack seam or fidelity cannot be witnessed at all.
+        var tile = new TileMeta(3, 1, 2, 6, true);
+        WriteTile(tile, rows: 6);
+        var pack = RenderPackWriter.Pack(_dir.FullName, [tile], ["value"])!;
+        string packPath = Path.Combine(_dir.FullName, pack.File);
+        byte[]? dict = pack.Dict is null ? null : File.ReadAllBytes(Path.Combine(_dir.FullName, pack.Dict));
+        var geom = pack.Entries["3/1/2"][RenderPack.GeomGroup];
+
+        ITileReader reader = new ArrowTileReader();
+        Assert.Equal(6, reader.RenderPackedRowCount(packPath, geom[0], geom[1], pack.Codec, dict));
+        Assert.Throws<NotSupportedException>(() =>
+            reader.RenderPackedRowCount(packPath, geom[0], geom[1], "gzip", dict));
     }
 
     [Fact]

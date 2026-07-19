@@ -18,4 +18,11 @@ public sealed class ArrowTileReader : ITileReader
     public long SlabFacts(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab,
         string codec, byte[]? dict) =>
         SlabCompanionReader.Facts(SlabCompanionReader.Read(packPath, planes, slab, codec, dict), slab);
+
+    public long RenderPackedRowCount(string packPath, long offset, long length, string codec, byte[]? dict)
+    {
+        if (codec != RenderPackWriter.Codec)
+            throw new NotSupportedException($"render pack codec '{codec}' (this build reads '{RenderPackWriter.Codec}')");
+        return RenderPackWriter.RowCount(packPath, offset, length, dict);
+    }
 }

@@ -15,4 +15,9 @@ public interface ITileReader
     /// and the optional trained <paramref name="dict"/> decode its blocks (Work Item C).</summary>
     long SlabFacts(string packPath, IReadOnlyDictionary<string, long[]> planes, CompanionSlab slab,
         string codec, byte[]? dict);
+    /// <summary>Rows in one packed render tile (tile-transfer Phase 3) — the block at
+    /// <c>[offset, offset+length)</c> decompressed per <paramref name="codec"/> (with the trained
+    /// <paramref name="dict"/>) and row-counted. Every block in a tile's span carries the same row count, so
+    /// the caller passes the geometry block and never inflates the measure planes.</summary>
+    long RenderPackedRowCount(string packPath, long offset, long length, string codec, byte[]? dict);
 }
