@@ -60,6 +60,13 @@ public sealed record Manifest
     /// client keeps the row-form decode/fold. Present ⇒ the pack's blocks are slab planes.</summary>
     public CompanionSlab? CompanionSlab { get; init; }
 
+    /// <summary>Render-tile packaging (tile-transfer Phase 3). Every tile's columns live as independently
+    /// compressed blocks in one per-version archive, fetched by HTTP range, so a first paint ships geometry
+    /// and the active colour channel alone and never the measure planes it will not read. Null selects the
+    /// per-tile file layout (formats 1/2 and older bakes) — the same gating pattern
+    /// <see cref="CompanionPack"/> uses. Present ⇒ no per-tile <c>.arrow</c>/<c>.arrow.br</c> exists.</summary>
+    public RenderPack? RenderPack { get; init; }
+
     /// <summary>Group-regime only (companion-scale R4): the baked facts Parquet, relative to the version
     /// directory, that the server fold reads (DuckDB over the baked artifact, never the source DB — RULES
     /// R5). Retained per version so a fold is reproducible against exactly the bake it prices. Null in the
@@ -134,6 +141,51 @@ public sealed record CompanionPack
     /// fetch. Blocks are raw little-endian typed-array bytes (f32/i32 per the partial), not Arrow — per-row
     /// Arrow framing would swamp a small tile's payload.</summary>
     public IReadOnlyDictionary<string, IReadOnlyDictionary<string, int[]>>? SliceEntries { get; init; }
+}
+
+/// <summary>The render-tile archive and its directory (tile-transfer Phase 3). One archive per (view,
+/// version) replacing the per-tile render files; <see cref="File"/> is relative to the version directory.
+/// Compression lives inside the archive, per block, because <c>Content-Encoding</c> does not compose with
+/// Range requests.
+///
+/// <para><b>Block order is the design.</b> A tile's blocks are laid down in first-paint order — the
+/// geometry group, then the default colour channel, then the filter-slot channels, then everything else —
+/// so the default first paint is ONE contiguous byte range per tile and a whole-tile read is one range over
+/// the tile's full span. The order is derived from the view's declared channel roles at bake time, never
+/// authored and never keyed on channel names. Future formats must preserve this property the way the slab
+/// format's cell order is preserved.</para></summary>
+public sealed record RenderPack
+{
+    public required string File { get; init; }
+
+    /// <summary>Block codec: "zstd" (with the trained shared <see cref="Dict"/>) or "gzip" (browser-native
+    /// <c>DecompressionStream</c>).</summary>
+    public required string Codec { get; init; }
+
+    /// <summary><c>tileKey → (group → [offset, length])</c>. A group is one column, except the geometry
+    /// group (<see cref="GeomGroup"/>) which carries the encoded geom3 payload for area marks or the
+    /// representative x/y columns for point marks. Each block is a standalone single-batch Arrow IPC
+    /// stream, so a column decodes alone and stays a zero-copy view over its own inflated buffer.</summary>
+    public required IReadOnlyDictionary<string, IReadOnlyDictionary<string, long[]>> Entries { get; init; }
+
+    /// <summary>The groups a first paint needs, in pack order: geometry, the default colour channel, and the
+    /// filter-slot channels. Recorded rather than re-derived so the client's request set is exactly the run
+    /// the writer laid out contiguously. Every other group is fetched lazily — on a colour switch or a
+    /// click.</summary>
+    public required IReadOnlyList<string> FirstPaint { get; init; }
+
+    /// <summary>Trained shared dictionary path (relative to the version directory), for the "zstd" codec —
+    /// one per (view, version) over sampled blocks, so small per-column blocks still compress well. Null
+    /// when the codec needs none (gzip, or too few blocks to train one).</summary>
+    public string? Dict { get; init; }
+
+    /// <summary>SHA-256 (hex) of the dictionary file, so the client can key/verify it. Null with
+    /// <see cref="Dict"/>.</summary>
+    public string? DictHash { get; init; }
+
+    /// <summary>The geometry group's reserved name. Not a channel name — the one group whose contents are
+    /// decided by the mark, not by the view's channel list.</summary>
+    public const string GeomGroup = "@geom";
 }
 
 /// <summary>The derived channel split of a group-regime view.</summary>
