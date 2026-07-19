@@ -134,4 +134,17 @@ public class GeometryCodecTests
 
         AssertRoundTrips(rows, GeometryCodec.CodecDelta);
     }
+
+    [Fact]
+    public void Part_offset_overrunning_the_row_is_clamped_identically_on_both_sides()
+    {
+        // A malformed intermediate offset (6 > the row's 4 vertices) with a correct final offset. The encoder
+        // and PolygonTriangulator clamp the part end to the row's vertex count; the decoder must clamp the
+        // same way or it slices the triangle stream differently and corrupts the tile.
+        var rows = new List<GeometryCodec.Row>
+        {
+            new([0f, 0f, 4f, 0f, 2f, 3f, 0f, 0f], [0, 6, 4]),
+        };
+        AssertRoundTrips(rows, GeometryCodec.CodecDelta);
+    }
 }

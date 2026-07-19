@@ -201,6 +201,30 @@
         1,
         2
       ]
+    },
+    {
+      "name": "delta-part-offset-overrun",
+      "codec": 2,
+      "payloadBase64": "AgEBAAAABAAAAAEDAAAAAAAGAAAABAAAAAMAAAAAAQIAAP//AAD//wAA//8AgQB/AAAA/wAAAP8AAIB/AACAgA==",
+      "positions": [
+        0,
+        0,
+        4,
+        0,
+        2,
+        3,
+        0,
+        0
+      ],
+      "startIndices": [
+        0,
+        4
+      ],
+      "triangles": [
+        0,
+        1,
+        2
+      ]
     }
   ]
 }

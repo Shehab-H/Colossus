@@ -115,29 +115,43 @@ function decodeDelta(r: Reader): DecodedGeometry {
     const rowVerts = numParts[i] >= 2 ? parts[i][numParts[i] - 1] : 0;
     start[i + 1] = start[i] + rowVerts;
   }
+  if (start[count] !== vertexCount)
+    throw new Error(`format 3: part offsets span ${start[count]} vertices != declared ${vertexCount}`);
+
   const tris: number[] = [];
   let cursor = 0;
   for (let i = 0; i < count; i++) {
-    const rowTriIdx = 3 * rowTriangleCount(parts[i], positions, start[i]);
+    const rowTriIdx = 3 * rowTriangleCount(parts[i], positions, start[i], start[i + 1] - start[i]);
     for (let t = 0; t < rowTriIdx; t++) tris.push(triLocal[cursor + t] + start[i]);
     cursor += rowTriIdx;
   }
+  if (cursor !== triTotal)
+    throw new Error(`format 3: derived triangle count ${cursor} != stored ${triTotal}`);
   return { positions, startIndices: start, triangles: Uint32Array.from(tris) };
 }
 
 // Mirror of the C# ear-clipper's deterministic per-row triangle count: a simple ring of m unique vertices
 // yields m−2 triangles (0 if m < 3), summed over the row's parts. The closure test reads the reconstructed
-// (bit-exact) positions, so it agrees with what the bake saw.
-function rowTriangleCount(parts: Int32Array, positions: Float32Array, vertexStart: number): number {
+// (bit-exact) positions, so it agrees with what the bake saw. The part end is clamped to the row's vertex
+// count exactly as the encoder (and PolygonTriangulator) clamp it, so malformed offsets can never make the
+// two sides slice the triangle stream differently.
+function rowTriangleCount(
+  parts: Int32Array,
+  positions: Float32Array,
+  vertexStart: number,
+  rowVerts: number,
+): number {
   if (parts.length < 2) return 0;
   let tris = 0;
   for (let q = 0; q + 1 < parts.length; q++) {
     const s = parts[q];
-    const e = parts[q + 1];
+    const e = Math.min(parts[q + 1], rowVerts);
     let m = e - s;
-    const a = 2 * (vertexStart + s);
-    const b = 2 * (vertexStart + e - 1);
-    if (m >= 2 && positions[a] === positions[b] && positions[a + 1] === positions[b + 1]) m--;
+    if (m >= 2) {
+      const a = 2 * (vertexStart + s);
+      const b = 2 * (vertexStart + e - 1);
+      if (positions[a] === positions[b] && positions[a + 1] === positions[b + 1]) m--;
+    }
     if (m >= 3) tris += m - 2;
   }
   return tris;

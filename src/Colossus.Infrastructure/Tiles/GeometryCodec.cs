@@ -408,29 +408,39 @@ public static class GeometryCodec
             int rowVerts = numParts[i] >= 2 ? parts[i][^1] : 0;
             start[i + 1] = start[i] + rowVerts;
         }
+        if (start[count] != vertexCount)
+            throw new InvalidOperationException($"format 3: part offsets span {start[count]} vertices != declared {vertexCount}");
+
         var tris = new List<int>(triTotal);
         int cursor = 0;
         for (int i = 0; i < count; i++)
         {
-            int rowTriIdx = 3 * RowTriangleCountFromParts(parts[i], positions, start[i]);
+            int rowTriIdx = 3 * RowTriangleCountFromParts(parts[i], positions, start[i], start[i + 1] - start[i]);
             for (int t = 0; t < rowTriIdx; t++) tris.Add(triLocal[cursor + t] + start[i]);
             cursor += rowTriIdx;
         }
+        if (cursor != triTotal)
+            throw new InvalidOperationException($"format 3: derived triangle count {cursor} != stored {triTotal}");
         return new Decoded(positions, start, [.. tris]);
     }
 
     // Client-side mirror of RowTriangleCount, working from the reconstructed positions + this row's parts and
-    // vertex start (so the closure test reads the same bit-exact floats the encoder saw).
-    private static int RowTriangleCountFromParts(int[] parts, float[] positions, int vertexStart)
+    // vertex start (so the closure test reads the same bit-exact floats the encoder saw). The part end is
+    // clamped to the row's vertex count exactly as the encoder (and PolygonTriangulator) clamp it, so
+    // malformed offsets can never make the two sides slice the triangle stream differently.
+    private static int RowTriangleCountFromParts(int[] parts, float[] positions, int vertexStart, int rowVerts)
     {
         if (parts.Length < 2) return 0;
         int tris = 0;
         for (int q = 0; q + 1 < parts.Length; q++)
         {
-            int s = parts[q], e = parts[q + 1];
+            int s = parts[q], e = Math.Min(parts[q + 1], rowVerts);
             int m = e - s;
-            int a = 2 * (vertexStart + s), b = 2 * (vertexStart + e - 1);
-            if (m >= 2 && positions[a] == positions[b] && positions[a + 1] == positions[b + 1]) m--;
+            if (m >= 2)
+            {
+                int a = 2 * (vertexStart + s), b = 2 * (vertexStart + e - 1);
+                if (positions[a] == positions[b] && positions[a + 1] == positions[b + 1]) m--;
+            }
             if (m >= 3) tris += m - 2;
         }
         return tris;

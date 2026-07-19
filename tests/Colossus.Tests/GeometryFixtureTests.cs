@@ -11,8 +11,17 @@ namespace Colossus.Tests;
 /// fails both suites. Set <c>COLOSSUS_REGEN_FIXTURES=1</c> to regenerate after an intended format change.</summary>
 public class GeometryFixtureTests
 {
+    // The committed fixture, not the build-output copy — the web suite reads this same file, and a regen that
+    // only landed in bin/ would leave the two languages pinned to different bytes.
     private static readonly string FixturePath =
-        Path.Combine(AppContext.BaseDirectory, "fixtures", "geometry-codec-cases.json");
+        Path.Combine(FindRepoRoot(), "tests", "fixtures", "geometry-codec-cases.json");
+
+    private static string FindRepoRoot()
+    {
+        var d = new DirectoryInfo(AppContext.BaseDirectory);
+        while (d is not null && !File.Exists(Path.Combine(d.FullName, "Colossus.slnx"))) d = d.Parent;
+        return d?.FullName ?? throw new DirectoryNotFoundException("repo root (Colossus.slnx) not found");
+    }
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -41,6 +50,12 @@ public class GeometryFixtureTests
         ]),
         ("delta-fractional", [
             new([-71.4123f, 41.8231f, -71.4119f, 41.8235f, -71.4125f, 41.8240f, -71.4123f, 41.8231f], [0, 4]),
+        ]),
+        // A part offset that overruns the row (6 > 4 vertices) with a correct final offset. Both decoders must
+        // clamp the part end to the row's vertex count the way the encoder does, or they slice the triangle
+        // stream differently — this pins the clamp cross-language.
+        ("delta-part-offset-overrun", [
+            new([0f, 0f, 4f, 0f, 2f, 3f, 0f, 0f], [0, 6, 4]),
         ]),
     ];
 
