@@ -105,4 +105,33 @@ public class GeometryCodecTests
         };
         AssertRoundTrips(rows, GeometryCodec.CodecDelta);
     }
+
+    [Fact]
+    public void Row_wider_than_u16_uses_the_u32_triangle_width()
+    {
+        // A row whose local triangle indices exceed 65,535 — the width the codec picks must widen with the
+        // data rather than truncate (admin1's largest ring is already 38,527). Built as many small closed
+        // rings so the ear clipper stays linear; only the index magnitude is under test.
+        const int parts = 16_385; // × 4 vertices = 65,540 > ushort.MaxValue
+        var coords = new float[parts * 4 * 2];
+        var offsets = new int[parts + 1];
+        for (int p = 0; p < parts; p++)
+        {
+            float x = p * 0.5f, y = p * 0.25f;
+            int b = p * 8;
+            coords[b + 0] = x; coords[b + 1] = y;
+            coords[b + 2] = x + 1f; coords[b + 3] = y;
+            coords[b + 4] = x; coords[b + 5] = y + 1f;
+            coords[b + 6] = x; coords[b + 7] = y; // closure
+            offsets[p] = p * 4;
+        }
+        offsets[parts] = parts * 4;
+
+        var rows = new List<GeometryCodec.Row> { new(coords, offsets) };
+        byte[] payload = GeometryCodec.Encode(rows);
+        Assert.Equal(GeometryCodec.CodecDelta, payload[0]);
+        Assert.Equal(4, payload[10]); // triWidth, after codec/version/count/vertexCount
+
+        AssertRoundTrips(rows, GeometryCodec.CodecDelta);
+    }
 }

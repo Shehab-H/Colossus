@@ -92,9 +92,12 @@ function decodeDelta(r: Reader): DecodedGeometry {
     parts[i] = p;
   }
 
+  if (triWidth !== 1 && triWidth !== 2 && triWidth !== 4)
+    throw new Error(`format 3: unknown triangle index width ${triWidth}`);
   const triTotal = r.u32();
   const triLocal = new Int32Array(triTotal);
-  for (let t = 0; t < triTotal; t++) triLocal[t] = triWidth === 1 ? r.u8() : r.u16();
+  for (let t = 0; t < triTotal; t++)
+    triLocal[t] = triWidth === 1 ? r.u8() : triWidth === 2 ? r.u16() : r.u32();
 
   const xu = inverseByteTransposedZigzagDelta(r.take(4 * vertexCount), vertexCount);
   const yu = inverseByteTransposedZigzagDelta(r.take(4 * vertexCount), vertexCount);
@@ -112,7 +115,6 @@ function decodeDelta(r: Reader): DecodedGeometry {
     const rowVerts = numParts[i] >= 2 ? parts[i][numParts[i] - 1] : 0;
     start[i + 1] = start[i] + rowVerts;
   }
-
   const tris: number[] = [];
   let cursor = 0;
   for (let i = 0; i < count; i++) {

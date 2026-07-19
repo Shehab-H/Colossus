@@ -231,7 +231,9 @@ public static class GeometryCodec
         }
         if (tOff != f2.Triangles.Length)
             throw new InvalidOperationException($"format 3: derived triangle count {tOff} != actual {f2.Triangles.Length}");
-        byte triWidth = triMax <= byte.MaxValue ? (byte)1 : (byte)2;
+        // Width covers the whole u32 index space: a ring may legitimately carry more than 65,536 vertices
+        // (admin1's largest is already 38,527), and a narrower cast would silently truncate.
+        byte triWidth = triMax <= byte.MaxValue ? (byte)1 : triMax <= ushort.MaxValue ? (byte)2 : (byte)4;
 
         var w = new Writer();
         w.U8(CodecDelta);
@@ -253,7 +255,12 @@ public static class GeometryCodec
         }
 
         w.U32((uint)triLocal.Length);
-        foreach (int t in triLocal) { if (triWidth == 1) w.U8((byte)t); else w.U16((ushort)t); }
+        foreach (int t in triLocal)
+        {
+            if (triWidth == 1) w.U8((byte)t);
+            else if (triWidth == 2) w.U16((ushort)t);
+            else w.U32((uint)t);
+        }
 
         w.Bytes(ByteTransposedZigzagDelta(xu));
         w.Bytes(ByteTransposedZigzagDelta(yu));
@@ -376,7 +383,14 @@ public static class GeometryCodec
 
         int triTotal = (int)r.U32();
         var triLocal = new int[triTotal];
-        for (int t = 0; t < triTotal; t++) triLocal[t] = triWidth == 1 ? r.U8() : r.U16();
+        for (int t = 0; t < triTotal; t++)
+            triLocal[t] = triWidth switch
+            {
+                1 => r.U8(),
+                2 => r.U16(),
+                4 => (int)r.U32(),
+                _ => throw new InvalidOperationException($"format 3: unknown triangle index width {triWidth}"),
+            };
 
         uint[] xu = InverseByteTransposedZigzagDelta(r.Take(4 * vertexCount), vertexCount);
         uint[] yu = InverseByteTransposedZigzagDelta(r.Take(4 * vertexCount), vertexCount);
@@ -394,7 +408,6 @@ public static class GeometryCodec
             int rowVerts = numParts[i] >= 2 ? parts[i][^1] : 0;
             start[i + 1] = start[i] + rowVerts;
         }
-
         var tris = new List<int>(triTotal);
         int cursor = 0;
         for (int i = 0; i < count; i++)
