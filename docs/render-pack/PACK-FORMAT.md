@@ -4,9 +4,11 @@ The render pack (tile-transfer Phase 3) replaces the per-tile render files of a 
 archive. Authority: [`RenderPack`](../../src/Colossus.Domain/Model/Manifest.cs) (contract) and
 [`RenderPackWriter`](../../src/Colossus.Infrastructure/Tiles/RenderPackWriter.cs) (writer + reader).
 
-> **Status.** The bake writes the pack and `verify` reads through it. **The client does not read it yet** —
-> the browser still takes the per-tile path. Until that lands, do not re-bake a view you need to render:
-> a packed version has no per-tile files for the client to fall back to. See "Not yet landed" below.
+> **Status.** The bake can write the pack and `verify` reads through it. **The client does not read it yet** —
+> the browser still takes the per-tile path. Packing is therefore **opt-in behind `COLOSSUS_RENDER_PACK=1`**:
+> a packed version keeps no per-tile files, so a view baked packed today would not render. Use the flag to
+> bake a scratch view to develop the client against; leave it unset for anything you need to look at. Delete
+> the gate (`ArrowTilePacker`) once the client half lands. See "Not yet landed" below.
 
 ## Why
 

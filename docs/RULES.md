@@ -158,10 +158,10 @@ Honest status so this file stays truthful as the slices land:
   - R3: tiles are **Arrow IPC** carrying `x, y` + every declared channel, and for area marks also
     `geometry` / `part_offsets` + a bake-time `triangles` column. Quadkey geometry ships (S3);
     WKT/geohash/H3 are still adapter TODOs.
-  - R3 packaging (`renderPack`): the **bake writes the pack and `verify` reads through it, but the client
-    does not read it yet** — the browser still takes the per-tile path. No view is baked packed, so nothing
-    is broken; but a view re-baked today would not render until the client half lands. See
-    [render-pack/PACK-FORMAT.md](render-pack/PACK-FORMAT.md).
+  - R3 packaging (`renderPack`): the **bake can write the pack and `verify` reads through it, but the client
+    does not read it yet** — the browser still takes the per-tile path. Packing is gated opt-in behind
+    `COLOSSUS_RENDER_PACK=1` precisely because a packed version keeps no per-tile fallback, so no view is
+    baked packed and nothing is broken. See [render-pack/PACK-FORMAT.md](render-pack/PACK-FORMAT.md).
   - R4: tiles are Hilbert-sorted, but the Parquet queryable-store sidecar, the DuckDB-WASM client, and
     deliberate zone-map / dictionary / bloom tuning are all pending (S4). Interactive `filters` are
     honored **client-side on the GPU**: each filterable channel is a `DataFilterExtension` float slot
