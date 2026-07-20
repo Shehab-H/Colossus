@@ -12,7 +12,7 @@
 
 ### Slide 1 — Title
 - **Colossus** — a code tour.
-- "Render 10M–100M+ raw marks with zero aggregation, over one engine."
+- "Render 10M–Billions of raw marks with zero aggregation, over one engine."
 - We'll follow a row of data from a SQL query all the way to a GPU vertex.
 
 ### Slide 2 — The repo at a glance
