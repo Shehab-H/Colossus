@@ -1,256 +1,223 @@
-# Colossus — Technical Introduction (Code-Grounded Deck Outline)
+# Colossus — Technical Introduction (Deck Outline, v3)
 
 **Audience:** mixed technical team (engineers + PM/design)
-**Length:** ~18 slides, deep-dive
-**Principle:** every claim points at a real file + function. Open the code live where you can.
-
-> Legend: `path:line` references are clickable in the repo. Snippets are copied verbatim (trimmed).
-
----
-
-## Section A — Orientation (slides 1–3)
-
-### Slide 1 — Title
-- **Colossus** — a code tour.
-- "Render 10M–Billions of raw marks with zero aggregation, over one engine."
-- We'll follow a row of data from a SQL query all the way to a GPU vertex.
-
-### Slide 2 — The repo at a glance
-- Backend: 4 .NET projects, dependencies point inward.
-  - `Colossus.Domain` — models + **ports** (interfaces), zero I/O.
-  - `Colossus.Application` — use cases (`BakeViewUseCase`, `BakePlanner`, `VerifyFidelityUseCase`).
-  - `Colossus.Infrastructure` — adapters (ClickHouse, DuckDB, Arrow writers, file store).
-  - `Colossus.Bake` / `Colossus.Server` — thin hosts.
-- Frontend: `web/src/lib/*` — one config-driven render path (deck.gl + MapLibre).
-- **Talking point:** you can name the layer a change belongs in before you open a file.
-
-### Slide 3 — The one line the whole system is
-- `source query → bake → Arrow IPC tiles → static serve → deck.gl binary → GPU`
-- Two entrypoints, both thin:
-  - `src/Colossus.Bake/Program.cs` — bake a view / `verify`.
-  - `src/Colossus.Server/Program.cs` — serve tiles + view API.
-- The rest of the deck walks this line left → right.
+**Length:** ~18 slides
+**Tone:** down to earth. Real numbers where we have them (marked *measured* when they come from our
+reference bakes), honest about what's live vs. opt-in vs. not built. Code references are footnotes for
+the curious, not slide headlines.
 
 ---
 
-## Section B — The Source Seam (slides 4–5)
+## Section A — The Problem (slides 1–4)
 
-### Slide 4 — A source is just a query behind one interface
-- **File:** `src/Colossus.Domain/Sources/ISourceAdapter.cs`
-```csharp
-// The source seam: the only place that knows a source dialect. It probes bounds + count and
-// extracts the canonical, spatially sorted staging table. Everything after the extract is source-agnostic.
-public interface ISourceAdapter
-{
-    Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default);
-    Task ExtractAsync(ViewConfig view, Bbox bounds, string destinationParquet, CancellationToken ct = default);
-}
-```
-- `SourceBounds(Bbox, Count, DistinctGeometries)` — rows vs. distinct *shapes*. That ratio drives planning (next slide but one).
-- ClickHouse is the only adapter today; Postgres/warehouse/files are new classes, not new pipelines.
+### Slide 1 — The problem
+- You have tens of millions to billions of rows — speed tests, coverage cells, buildings, events —
+  and people who need to *see* them and *interact* with them: pan, zoom, filter, click a mark, ask "why
+  is this one red?"
+- Every mark on screen should be a real row. Filtering should feel instant. Serving it shouldn't
+  require a compute cluster per viewer.
+- Those three wants pull against each other. This talk is about how we resolve the tension.
 
-### Slide 5 — Geometry normalization is a plugin switch
-- **File:** `src/Colossus.Infrastructure/ClickHouse/Geometry/GeometrySqlFactory.cs`
-```csharp
-private static IGeometrySql Resolve(GeometryKind kind) => kind switch
-{
-    GeometryKind.Xy or GeometryKind.LonLat => new PointGeometrySql(),
-    GeometryKind.Quadkey                    => new QuadkeyGeometrySql(),
-    GeometryKind.Wkt                        => new WktGeometrySql(),
-    _ => throw new NotSupportedException(...),
-};
-```
-- `IGeometrySql` normalizes any source geometry into canonical `(x, y[, geometry, part_offsets])`.
-- **The takeaway:** adding H3 or geohash = one more `case` + one class. Nothing downstream of extract changes.
+### Slide 2 — Why the sizes are brutal (back-of-envelope)
+- 100M marks × ~30–40 bytes each (position + a few channels) ≈ **3–4 GB** — before geometry.
+  Polygon geometry multiplies that; in our tiles it's 69–99% of a polygon tile's bytes.
+- A browser tab will not hold that. A network will not ship it per page load. And even if it could,
+  a naive draw of 100M anything is not interactive.
+- So *something* must give: either what you show, when you ship it, or how much work each
+  interaction costs. The whole design is about choosing carefully what gives.
+
+### Slide 3 — What existing tools give up (and why that's fair, but not enough)
+Each of these is good at its job. None gives "every real mark, interactive, cheap to serve":
+- **Live BI charts (Superset/Tableau/Grafana-style):** every pan/filter is a `GROUP BY` round-trip
+  to the database. You see aggregates, not marks; latency is a query; cost scales with viewers.
+- **Vector map tiles (Mapbox-style):** built for cartography — they *simplify and drop* features
+  per zoom to hit tile budgets. Great for roads; wrong when each feature is a data point someone
+  will filter and inspect.
+- **Server-rendered rasters (datashader-style):** the server draws an image of the data. Faithful
+  density, but marks are gone — no client-side filter, no click-to-inspect, and every interaction
+  is a server render.
+- **Sampling:** fast and simple, but unlabeled samples quietly lie, and most tools' samples can't
+  be resolved to the full data by zooming.
+
+### Slide 4 — The bet Colossus makes (and what it costs)
+- **Do the heavy work once, at bake.** Reduce, sort, tile, precompress — batch cost, paid per
+  dataset version, not per viewer or per interaction.
+- **Serve static bytes.** After a bake there is no compute on the render path — a static file
+  server (with HTTP Range support) is the whole backend. One deliberate exception exists for
+  oversized fold workloads (slide 15).
+- **Make interaction GPU state.** Filters and recolors change uniforms and small textures, not data.
+- **The honest costs:** data is a snapshot (re-bake to update — this is not a live-query system);
+  bakes take real time (compression alone is minutes of CPU, parallelized); storage is spent
+  deliberately to save wire and compute later.
 
 ---
 
-## Section C — The Bake: Where the Work Happens (slides 6–8)
+## Section B — From query to pyramid (slides 5–7)
 
-### Slide 6 — The reduction is chosen from data shape, not the chart name
-- **File:** `src/Colossus.Application/BakePlanner.cs` → `SelectReduction`
+### Slide 5 — Ingest: a source is a query
+- A view names an adapter and arbitrary SQL. The engine probes it — bounding box, row count,
+  **distinct geometries** — then extracts once into a spatially sorted Parquet staging table.
+- Geometry is normalized at extract: lon/lat and x/y points, quadkeys (→ cell polygons), WKT today;
+  each kind is one small SQL-generating class, so a new geometry type touches nothing downstream.
+- After extract, nothing in the system knows or cares what database the data came from.
+  *(Code: `ISourceAdapter`, `GeometrySqlFactory`.)*
+
+### Slide 6 — Planning: the data's shape picks the strategy
+- Nobody authors "this is a heatmap pipeline." The planner reads the probe:
 ```csharp
-if (probe.Count <= _tilePointBudget)
-    return ReductionKind.RawPassthrough;            // fits in one tile → ship as-is
-
-bool areaMark = view.Mark is Mark.Polygon or Mark.Rect or Mark.Heat;
-double rowsPerShape = (double)probe.Count / probe.DistinctGeometries;
-
-if (areaMark || rowsPerShape >= CubeRowsPerShape)   // few shapes, many facts → aggregate
+if (probe.Count <= _tilePointBudget)          // fits in one tile
+    return ReductionKind.RawPassthrough;
+if (areaMark || rowsPerShape >= 4.0)          // area marks, or a fact cube over few shapes
     return ReductionKind.Aggregate;
-
-return ReductionKind.QuadtreeLod;                   // genuine point cloud → spatial pyramid
+return ReductionKind.QuadtreeLod;             // a genuine point cloud
 ```
-- No `if (view.type == "map")` anywhere. The planner reads the probe.
-- `DefaultTilePointBudget = 250_000` marks per leaf tile; depth cap comes from distinct-shape count.
+- Concrete budgets: **250k marks per leaf tile**, a **512×512 grid** per tile (≈1 grid cell per
+  screen pixel at selection size), depth derived from distinct-shape count.
+  *(Code: `BakePlanner`.)*
 
-### Slide 7 — One reduction interface, swappable strategies
-- **File:** `src/Colossus.Domain/Reduction/IReductionStrategy.cs`
-```csharp
-// Turns a sorted staging table into tiles. One implementation per ReductionKind;
-// a strategy chooses which real rows land in which tile — never the schema, never the mark.
-public interface IReductionStrategy
-{
-    ReductionKind Kind { get; }
-    ReductionResult Reduce(ReductionContext context);
-}
-```
-- Implementations: `RawPassthroughReducer`, `QuadtreeLodReducer`, `AggregateReducer` (in `Infrastructure/Reduction/`).
-- Resolved by `ReductionCatalog` — dispatch, never a hardcoded branch.
-- **Key line in the comment:** "which real rows land in which tile — never the schema, never the mark." That's the fidelity contract, in code.
-
-### Slide 8 — The canonical schema is a single C# authority
-- **File:** `src/Colossus.Domain/Tiling/TileSchema.cs`
-```csharp
-public static class TileSchema
-{
-    public const string X = "x";           // representative point — drives sort/LOD/query
-    public const string Y = "y";
-    public const string Geometry = "geometry";       // absent for points
-    public const string PartOffsets = "part_offsets";
-    public const string Triangles = "triangles";     // bake-time, tile-global — client never tessellates
-    public const int    GridPerTile = 512;           // bake & client share this one value
-}
-```
-- Referenced through the constant everywhere (adapter emit, Arrow writer, client read) — never a string literal.
-- A rename is one edit + a compile error, not a silent runtime break.
-- Mirror on the client: `web/src/lib/schema.ts` (`TileColumns`, `GRID_PER_TILE`).
+### Slide 7 — The pyramid keeps every row, honestly
+- **Leaves are complete**: every source row lands in exactly one leaf, once. A verifier asserts
+  `Σ tiles == source` against every bake — fidelity is a test, not a hope.
+- Coarse levels are honest about what they are: the aggregate pyramid's cells are true means of
+  children; the point pyramid's coarse tiles are a labeled preview that resolves as you zoom.
+- Tile membership uses exact edge math — a power-of-two grid where a tile's max edge is bit-for-bit
+  its neighbour's min edge, so a point on a seam lands in exactly one tile. The same math exists in
+  C#, in generated DuckDB SQL, and in TypeScript, pinned together by one shared test fixture.
 
 ---
 
-## Section D — The Two Cross-Language Authorities (slides 9–10)
+## Section C — What a baked version actually is (slides 8–11)
 
-### Slide 9 — Tile math: the C# source of truth
-- **File:** `src/Colossus.Domain/Tiling/TileMath.cs`
-```csharp
-// Data-space coordinate of grid line i of n equal divisions of [min, max].
-// n is a power of two, so (max-min)/n is exact and a tile's max edge == its neighbour's min edge,
-// bit for bit — a point on a seam lands in exactly one tile, never two, never zero.
-public static double Edge(double min, double max, long n, long i) =>
-    i >= n ? max : min + i * ((max - min) / n);
+### Slide 8 — A version directory on disk (the real contents)
+Not "a folder of Arrow files" — a layered storage design, all gated by one manifest:
 ```
-- The whole tiling scheme (edges, `CellIndex`, `Contains`, `PointToTile`) lives here.
-- `TileSql.cs` renders the *same* math as DuckDB SQL for the reducers.
+<version>/
+  manifest.json          # gates every format choice below; client branches on this, never guesses
+  z/x/y.arrow            # render tiles — Arrow IPC, format 2 or 3
+  z/x/y.arrow.br         # brotli siblings for the wire (~5× smaller, measured)
+  render.pack + .dict    # (opt-in) per-column archive replacing the per-tile files
+  facts.pack + .dict     # (group regime) the measures' fact companions, packed
+  facts.parquet          # (group regime) retained facts for the server-side fold
+latest.json              # atomic flip — readers never see a half-written version
+```
+- Immutable and content-addressed: a bake writes a fresh version, then renames `latest.json`.
 
-### Slide 10 — …and its TypeScript mirror, pinned by a shared fixture
-- **File:** `web/src/lib/tiling.ts` → `pointToTile`
-```ts
-/** Point → tile index at zoom z — the forward map and mirror of the C# tiling authority
- *  (TileMath.PointToTile / TileSql). Pinned to it by tiling.test.ts against the shared fixture. */
-export function pointToTile(root, z, px, py): [number, number] { ... }
-```
-- Contract kept honest by `tests/fixtures/tiling-cases.json`: the C# `TilingConformanceTests` **and** the web `tiling.test.ts` both run it.
-- Change the scheme → regenerate the fixture → both languages must still pass. This is how the system doesn't silently drift.
+### Slide 9 — Render tiles: format matters down to the byte
+- **Format 2 — zero-copy contract:** one record batch, no nulls, dictionary columns in canonical
+  order, f32 measures, triangle indices rebased at bake. The client reads columns as typed-array
+  views over the one fetched buffer — no per-cell decode, no tessellation, no remap.
+- **Format 3 — geometry encoded:** polygon geometry + triangles are 69–99% of tile bytes and
+  mechanically derivable, so the bake replaces them with one binary payload; a worker decodes it
+  back to the exact format-2 buffers, bit-for-bit (two codecs, chosen per tile from the data:
+  rectangle corner-tables for grid cells, delta-zigzag coordinate streams for real rings).
+- **On the wire:** every tile gets a brotli sibling at max settings (quality 11, 16 MB window —
+  ~5.5× on large tiles, *measured*; ~23 s for the worst tile, a batch cost). Served via
+  `Content-Encoding: br`, so the browser's network stack decodes and the client code sees identical
+  bytes. Older formats stay readable forever; the manifest gates.
+
+### Slide 10 — The render pack: don't ship columns nobody is reading
+- The lossless floor: real-valued f32 measure planes barely compress. The remaining win is **not
+  sending them until an interaction reads them**.
+- So (opt-in, per bake) tiles are split into per-column blocks inside one archive, each block
+  independently zstd-compressed with a **trained shared dictionary** (small blocks compress poorly
+  alone). Block order is deliberate: geometry → default colour channel → filter slots → the rest —
+  a first paint is one contiguous HTTP Range read.
+- Why compression lives *inside* archives: `Content-Encoding` doesn't compose with Range requests.
+  This rule shapes both packs.
+  *(Code: `RenderPackWriter`; client `fetchPackBlocks`.)*
+
+### Slide 11 — Companions: the second dataset hiding inside the first
+- Group-regime views (e.g. coverage: many facts per cell across operator × quarter) need per-mark
+  **measures** recomputed under the active filters. The raw ingredients — partial aggregates per
+  `(mark, grain cell)` — are their own dataset, and at scale it dwarfs the render tiles.
+- **v1, row form:** one Arrow file of key columns + partials per tile. Honest but ~28–36 B/fact;
+  a dense tile could be tens of MB, and half of every row was key material.
+- **v2, slabs:** keys vanish into array indexing — per tile, one plane per partial over
+  `cells × marks`. Dense tiles store cumulative (prefix-summed) planes, so a date-range fold is
+  two slice subtractions; sparse tiles store CSR. The choice is **measured per tile from occupancy**,
+  recorded in the manifest — never authored.
+- **Fetch is selection-shaped:** a per-plane + per-cell-row directory means a filter interaction
+  fetches only the rows the fold will read. *Measured on our worst reference tile: 50.5 MB →
+  7.8 MB per interaction from plane splitting, ≥5× further from cell-run slicing.*
 
 ---
 
-## Section E — Serve & the Client Render Path (slides 11–13)
+## Section D — The client (slides 12–15)
 
-### Slide 11 — Tiles flow network → worker → GPU with no copy
-- **File:** `web/src/lib/tileData.ts` → the `TileData` interface
-```ts
-// Format 2 only: the single fetched ArrayBuffer every heavy column is a view into. Held as the
-// retention anchor (and transferred once) so the tile's bytes flow network → worker → GPU with no copy.
-buffer?: ArrayBuffer;
-polyTriangles?: Uint32Array;  // bake-time triangle indices — deck skips earcut entirely
-```
-- Arrow's column buffers *are* the typed arrays deck.gl wants — `tableFromIPC` is essentially a memcpy.
-- Strings never cross the worker boundary as JS objects: categorical columns become `{codes, dict}` (see `DictColumn`) — that cloning was the old zoom stutter.
+### Slide 12 — Choosing what to draw is pure math
+- Every camera frame: descend the quadtree, keep tiles intersecting the viewport that are leaves or
+  ≤512 px on screen. While a tile loads, its nearest loaded ancestor covers it — parent and children
+  are pixel-identical at swap size, so refinement is a single-frame, invisible event.
+- Idle time prefetches parents (zoom-out), the neighbor ring (pan), and children (zoom-in), capped
+  so a burst can't flood the loader. A service worker caches tiles by `(version, tileKey)`.
 
-### Slide 12 — Which tiles to draw is pure data-space math
-- **File:** `web/src/lib/tiling.ts` → `selectTiles`
-```ts
-// Quadtree LOD + culling: descend from the root, keep tiles that intersect the viewport and are
-// leaves or small enough on screen. Identical for every mark and viewport.
-const screenPx = (r.cw / vbSpanX) * vb.widthPx;
-if (meta.isLeaf || screenPx <= targetPx) { chosen.push(tileKey(z, x, y)); return; }
-for (let q = 0; q < 4; q++) visit(z + 1, x*2 + (q&1), y*2 + ((q>>1)&1));
-```
-- Companion functions in the same file: `coverTiles` (what to draw while loading — parent covers children, single-frame swap) and `prefetchCandidates` (warm parents/ring/children during idle).
-- **One code path** draws map, scatter, choropleth — the viewport is just numbers.
+### Slide 13 — Decode without copying
+- Tiles decode on a worker pool. Format-2 columns become views over the single fetched buffer —
+  network → worker → GPU, transferred, never copied.
+- The one lesson worth telling as a war story: row-wise JS strings crossing the worker boundary
+  (cloning ~1M strings per tile) *was* the zoom stutter. Now categorical columns cross as integer
+  codes + a small dictionary; identity strings decode lazily, one row, on click.
 
-### Slide 13 — Recolor = a texture upload, not a data touch
-- **File:** `web/src/lib/colorScaleExtension.ts` — a deck `LayerExtension`
-```ts
-// A LayerExtension that colors marks on the GPU from a lookup-table texture. The per-mark `scaleValue`
-// attribute uploads once per (tile, channel); a recolor swaps the LUT texture + a few uniforms,
-// touching no per-mark data.
-'vs:DECKGL_FILTER_COLOR': `
-  colorScale_t = clamp((colorScale_v - colorScale.domain.x) / (domain.y - domain.x), 0.0, 1.0);
-  color.rgb = texture(colorScaleLut, vec2(colorScale_t, 0.5)).rgb;   // color chosen in the vertex shader
-`
-```
-- The value→color transform mirrors the CPU `colorScale.ts` (baked into the LUT by `colorLut.ts`) — the GPU can't disagree with the legend.
-- Changing scale / theme / channel = swap a ~KB texture. No per-mark array moves.
+### Slide 14 — Interaction is GPU state
+- The invariant: **`(version, tileKey)` is the only data identity. Filter, color, and measure are
+  GPU state — never a reason to fetch, decode, or re-upload.**
+- Filters: each filterable channel is one float slot (up to 4) baked into the tile once; a filter
+  change updates `filterRange` uniforms. Zero tile bytes touched.
+- Color: value→color lives in a small lookup-table texture sampled in the vertex shader; the LUT is
+  baked from the same CPU scale the legend uses, so the GPU cannot disagree with the legend.
+  Switching scale/theme/channel is a ~KB texture upload.
+
+### Slide 15 — Folding measures (and the one server exception)
+- Filter a coverage view and every visible cell's measures recompute over the surviving facts —
+  a fold over companion partials, on the worker, vectorized over slab planes.
+- If a view's slab exceeds a **32 MB** client budget, the planner prices the fold as remote: one
+  endpoint runs the same fold in DuckDB **over the baked facts parquet — never the source DB** —
+  and ships folded columns (marks × measures × 4 B). Verified byte-identical to the client fold
+  (708/708 checks on reference views); today's reference views price client-side, so the remote
+  path is exercised by a force flag.
+- This is the engine's single runtime-compute component, added deliberately and priced, not defaulted.
 
 ---
 
-## Section F — Interaction Is GPU State (slide 14)
+## Section E — Authoring, status, wrap (slides 16–18)
 
-### Slide 14 — A filter change is a uniform update, zero bytes moved
-- **File:** `web/src/lib/gpuFilter.ts`
-```ts
-// GPU filtering: every filter is a numeric range on one float slot of a DataFilterExtension. A filter
-// change is then a uniform update (filterRange/filterEnabled) — no fetch, decode, or re-upload.
-export function filterRanges(slots, filters): [number, number][] {
-  // dimension equality → [code, code]; date range → [dayFrom, dayTo]; (all) → wide open
-}
-```
-- Slot values baked into the tile **once** at decode (`buildFilterValues`, per-mark for points / per-vertex for polygons); ranges recomputed per filter change on the main thread.
-- **The invariant, stated in the code:** `(version, tileKey)` is the only data identity. Filter, color, and measure are GPU state — never a reason to refetch. Say this line and let it land.
+### Slide 16 — Adding a visualization is a JSON file
+- A view = viewport + mark + channel mapping + source query. Drop it in `views/`, bake, done —
+  no code, no redeploy. Show a real one from the repo (`views/ookla-fixed.json` or
+  `mobile-coverage.json`) rather than a toy.
+- Every map is fully described by its URL — view, color channel, scale, theme, camera, filters —
+  so an `<iframe>` reproduces it exactly. **Live demo:** change `&scale=`, watch it recolor with
+  zero refetch (that's slide 14 happening).
 
----
+### Slide 17 — Honest status
+- **Live end-to-end:** points + polygons on geo viewports; three reductions; the full color-scale
+  system; GPU filters; click-to-inspect; embeds; group-regime measures with slab companions,
+  packed + sliced fetch; remote fold behind a priced route; brotli tile wire path.
+- **Opt-in / gated:** render pack (bake flag; a packed version keeps no per-tile fallback, so it's
+  deliberate). Per-view choices all ride the manifest — old bakes keep working; nothing breaks on
+  format evolution.
+- **Not built yet (specified):** geohash/H3 geometry, curated filter configs, more marks, the
+  client-side DuckDB query path for extreme-scale full-fidelity viewport queries.
+- **Scale, honestly:** reference bakes today are ~7.6M facts / 627K marks (coverage) with the
+  format designed and measured against a 100M-fact scenario. "Billions" is the direction the
+  storage math points, not a benchmark we've run — say exactly that if asked.
 
-## Section G — Chart-Type-as-Config & Embeds (slides 15–16)
-
-### Slide 15 — A view is a JSON file, not code
-- A view = `viewport + mark + channel mapping + reduction + source`. Drop `views/<id>.json`, bake, live.
-- Show a real minimal view (row regime):
-```json
-{
-  "id": "geo-points", "viewport": "geo", "mark": "point",
-  "source": {
-    "adapter": "clickhouse",
-    "query": "SELECT lon, lat, value, category FROM colossus.points_geo",
-    "geometry": { "kind": "lonLat", "lon": "lon", "lat": "lat" },
-    "channels": [
-      { "name": "value", "column": "value", "role": "measure", "type": "f32" },
-      { "name": "category", "column": "category", "role": "dimension", "type": "dict" }
-    ]
-  }
-}
-```
-- Loaded by `Colossus.Infrastructure/Views/ViewRegistry.cs` + `web/src/lib/views.ts`. No redeploy to add a visualization.
-
-### Slide 16 — Every map is fully described by its URL
-- `web/src/lib/embed.ts` round-trips view state ↔ query params.
-- `/?embed=1&view=ookla-fixed&color=download_mbps&scale=quantize&bins=6&theme=light&lng=10&lat=50&z=3.6`
-- An `<iframe>` reproduces the map exactly; the HUD's **Embed** button copies the snippet.
-- **Live demo:** open the map, change `&scale=` / `&theme=`, watch it recolor with no refetch (ties back to slide 13).
+### Slide 18 — Takeaways
+- **Bake hard, serve static** — per-viewer cost is a file read; the exception (remote fold) is
+  priced, not defaulted.
+- **Fidelity is tested, not promised** — `Σ tiles == source`, cross-language fixtures pin every
+  format contract (tiling, schema, geometry codec, measures, slabs).
+- **Bytes are designed, not emitted** — formats 2/3, brotli siblings, dictionary-trained packs,
+  cumulative slab planes, selection-shaped fetch. Storage structure *is* the performance story.
+- **Interaction is GPU state** — `(version, tileKey)` is the only data identity.
+- Where to start reading: `docs/ARCHITECTURE.md`, then follow one view from `views/` through
+  `BakeViewUseCase` to `App.tsx`.
 
 ---
 
-## Section H — The Active Frontier & Wrap (slides 17–18)
-
-### Slide 17 — Companion-scale: where the current work is
-- Group-regime views fold per-mark **measures** over baked fact partials under the active filter context.
-- The scaling problem + the code that attacks it:
-  - **Slab format** — `src/Colossus.Infrastructure/Tiles/SlabCompanionWriter.cs` + `web/src/lib/slab.ts` (indexed planes, key columns gone).
-  - **Remote fold** (built) — `POST /api/views/{id}/fold` in `Colossus.Server/Controllers/FoldController.cs`, executed by `Fold/DuckDbFoldExecutor.cs`; client route in `web/src/lib/remoteFold.ts`.
-  - **Context-sliced fetch** — fetch only the cell rows the active selection reads.
-- Cross-language parity: remote fold == client fold **byte-for-byte**, pinned by a shared fixture — same discipline as the tiling authority.
-
-### Slide 18 — Takeaways (each is a place in the code)
-- **Seams, not pipelines** — new source / geometry / reduction = a new class at an interface (`ISourceAdapter`, `IGeometrySql`, `IReductionStrategy`).
-- **One schema, one render path** — `TileSchema.cs` ↔ `schema.ts`; `selectTiles` draws everything.
-- **Authorities pinned across languages** — `TileMath.cs` ↔ `tiling.ts`, fold parity, geometry codec, measures — each a shared fixture.
-- **Interaction is GPU state** — `gpuFilter.ts` + `colorScaleExtension.ts`; `(version, tileKey)` is the only identity.
-- Q&A — open the repo and follow a request live.
-
----
-
-## Optional backup / live-demo slides
-- **Run it end to end:** `dotnet run --project src/Colossus.Bake -- <view-id>` → `dotnet run --project src/Colossus.Server` → `cd web && npm run dev`.
-- **Prove fidelity:** `dotnet run --project src/Colossus.Bake -- verify` (asserts `Σ tiles == source`).
-- **Tests as a map of the system:** `dotnet test` (bake logic + cross-language conformance), `web/ npm run test` (tiling mirror, cover/select).
-- **Composition root:** `Colossus.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs` (`AddColossus`) — the one place Application meets Infrastructure.
+## Backup slides
+- Dev quickstart: docker ClickHouse → `Colossus.Bake -- <view-id>` → `Colossus.Server` → `npm run dev`.
+- The verifier: `Colossus.Bake -- verify` (fidelity + companion witnesses through the pack).
+- The four cross-language authorities and their fixtures (tiling, tile schema, geometry codec, measures/slab).
+- Numbers table (all *measured*, reference bakes): brotli ~5.5×; worst-tile interaction fetch
+  50.5/25.3 → 7.8/7.5 MB; internal companions 713.8 → 385.4 MB gzipped; remote fold parity 708/708.
