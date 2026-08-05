@@ -1,6 +1,6 @@
 # Colossus
 
-Render very large datasets (10M–100M+ rows) with **no aggregation or simplification** of raw marks — on a map or in any chart — over a single engine:
+Render very large datasets (10M–1000M+ rows) with **no aggregation or simplification** of raw marks — on a map or in any chart — over a single engine:
 
 ```
 source query (ClickHouse) → bake → Arrow IPC LOD tiles → static immutable serve → deck.gl binary attributes → GPU
