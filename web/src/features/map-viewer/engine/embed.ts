@@ -12,11 +12,6 @@ export interface EmbedCamera {
 }
 
 export interface EmbedParams {
-  embed: boolean;
-  /** Showcase-embed controls: color-by + filter panel (no dataset tabs/chrome). `controls=0` locks the
-   *  map to a static snapshot. Only meaningful when `embed` is set. */
-  controls: boolean;
-  view: string | null;
   color: string | null;
   colorSpec: Partial<ColorSpec> | null;
   theme: Theme | null;
@@ -61,9 +56,6 @@ export function readEmbedParams(search = window.location.search): EmbedParams {
   const filters: Record<string, string> = {};
   for (const [k, v] of q) if (k.startsWith('f_')) filters[k.slice(2)] = v;
   return {
-    embed: q.get('embed') === '1',
-    controls: q.get('controls') !== '0', // controls show by default in an embed; controls=0 locks it
-    view: q.get('view'),
     color,
     colorSpec: readColorSpec(q, color),
     theme: theme === 'dark' || theme === 'light' ? theme : null,
@@ -83,9 +75,11 @@ export interface EmbedState {
 /** Build a shareable embed URL for a view + its current view state. */
 export function buildEmbedUrl(base: string, s: EmbedState): string {
   const url = new URL(base);
+  url.pathname = `/embed/${encodeURIComponent(s.view)}`;
   const q = url.searchParams;
-  q.set('view', s.view);
-  q.set('embed', '1');
+  q.delete('view');
+  q.delete('embed');
+  q.delete('controls');
   if (s.color) q.set('color', s.color);
   if (s.theme) q.set('theme', s.theme);
   if (s.camera) {

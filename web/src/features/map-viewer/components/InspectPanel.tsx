@@ -34,18 +34,13 @@ export default function InspectPanel({ selection, onClose }: { selection: Select
 }
 
 const panel: React.CSSProperties = {
-  position: 'absolute',
-  zIndex: 2, // above the deck canvas (see Hud)
-  top: 56, // clears the theme toggle pinned at the top-right corner
-  right: 12,
   padding: '10px 12px',
   background: 'var(--card-bg)',
   color: 'var(--card-fg)',
   font: '12px system-ui, sans-serif',
   borderRadius: 8,
   border: '1px solid var(--card-border)',
-  boxShadow: 'var(--card-shadow)',
-  minWidth: 180,
+  width: '100%',
 };
 const head: React.CSSProperties = {
   display: 'flex',

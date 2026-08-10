@@ -1,6 +1,6 @@
 # 01 — GPU buffer ownership
 
-- **Status:** Candidate
+- **Status:** Abandoned with the reverted saga
 - **Estimate:** 4–7 engineering days
 
 ## Goal
@@ -18,11 +18,11 @@ the expected pixel. The underlying WebGL buffer implementation supports offset w
 ## Project integration surface
 
 - Replace or extend the typed-array attributes assembled by
-  [`tileDeckData`](../../../web/src/features/map-viewer/engine/deckData.ts).
+  [`tileDeckData`](../../../../web/src/features/map-viewer/engine/deckData.ts).
 - Obtain the luma device for both the React `DeckGL` root and the MapLibre `MapboxOverlay` root in
-  [`MapViewerPage.tsx`](../../../web/src/features/map-viewer/MapViewerPage.tsx).
+  [`MapViewerPage.tsx`](../../../../web/src/features/map-viewer/MapViewerPage.tsx).
 - Add explicit GPU-resource eviction alongside CPU eviction in
-  [`TileCache`](../../../web/src/features/map-viewer/engine/tileCache.ts), or introduce a separate GPU-residency manager with the
+  [`TileCache`](../../../../web/src/features/map-viewer/engine/tileCache.ts), or introduce a separate GPU-residency manager with the
   same tile identity.
 - Preserve raw tile columns needed for lazy color changes, folding, picking, and inspection.
 

@@ -66,7 +66,7 @@ public sealed class CatalogApiTests : IDisposable
 
         Assert.Equal("geonames", view.RootElement.GetProperty("id").GetString());
         Assert.Equal("geonames", url.RootElement.GetProperty("id").GetString());
-        Assert.Contains("view=geonames", url.RootElement.GetProperty("url").GetString());
+        Assert.EndsWith("/maps/geonames", url.RootElement.GetProperty("url").GetString());
     }
 
     private static void AssertSecretFree(string json)

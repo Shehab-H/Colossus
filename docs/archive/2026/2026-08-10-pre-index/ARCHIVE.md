@@ -17,5 +17,5 @@
 - [Presentation material](presentation/LECTURE-MATERIAL.md)
 
 GPU frontier items 1–3 were rewritten as the active
-[GPU rendering stutter saga](../../../sagas/gpu-rendering-stutter/README.md). The archived frontier remains
+[reverted GPU rendering stutter experiment](../2026-08-10-gpu-rendering-stutter-reverted/README.md). The archived frontier remains
 the unmodified historical source and includes ideas that are not active.

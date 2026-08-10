@@ -1,7 +1,8 @@
 # 04 — Staged layer admission
 
-- **Status:** Built and browser-verified
+- **Status:** Reverted at product-owner request
 - **Implemented:** 2026-08-10
+- **Reverted:** 2026-08-10
 
 ## Goal
 
@@ -23,7 +24,7 @@ uploading geometry/value/filter attributes for several newly drawable layers in 
 
 ## Implementation
 
-[`useStagedTileAdmission`](../../../web/src/features/map-viewer/hooks/useStagedTileAdmission.ts) keeps the last complete cover
+The now-removed `useStagedTileAdmission` hook kept the last complete cover
 visible, mounts replacement layers with `visible: false` one per animation frame, and flips the already
 resident replacement cover visible atomically after the final warm-up frame. During an active geographic
 pan or zoom, admission is paused so a completed worker response cannot inject an upload into the gesture.
@@ -72,3 +73,8 @@ Point-path evidence: [geonames parity](evidence/geonames-point-parity.jpg).
 This removes dense attribute admission from active pan/zoom frames; it does not replace deck's buffer
 ownership. Item 1 remains the next escalation only if a later trace shows a single staged tile still
 crossing the hitch threshold, GPU residency leaking, or repeated uploads for stable attributes.
+
+## Revert note
+
+The product owner reported that this behavior felt wrong during pan and zoom. The hook and all renderer
+integration described above were removed. This file and its screenshots remain only as historical evidence.

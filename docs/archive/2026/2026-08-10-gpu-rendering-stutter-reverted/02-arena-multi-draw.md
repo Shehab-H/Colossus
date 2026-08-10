@@ -1,6 +1,6 @@
 # 02 — Arena allocation and multi-draw
 
-- **Status:** Candidate; depends on item 1 resource ownership
+- **Status:** Abandoned with the reverted saga
 - **Estimate:** 10–15 engineering days
 
 ## Goal
@@ -17,11 +17,11 @@ with the expected pixels. luma.gl exposes the WebGL2 context and mutable buffers
 ## Project integration surface
 
 - Replace the per-tile `ScatterplotLayer`/`SolidPolygonLayer` mapping in
-  [`MapViewerPage.tsx`](../../../web/src/features/map-viewer/MapViewerPage.tsx) with custom deck.gl `Layer` implementations.
+  [`MapViewerPage.tsx`](../../../../web/src/features/map-viewer/MapViewerPage.tsx) with custom deck.gl `Layer` implementations.
 - Implement arena allocation, growth, free-list reuse, fragmentation metrics, and deterministic cleanup.
 - Port the existing GPU filter and color-LUT shader behavior from
-  [`gpuFilter.ts`](../../../web/src/features/map-viewer/engine/gpuFilter.ts) and
-  [`colorScaleExtension.ts`](../../../web/src/features/map-viewer/engine/colorScaleExtension.ts).
+  [`gpuFilter.ts`](../../../../web/src/features/map-viewer/engine/gpuFilter.ts) and
+  [`colorScaleExtension.ts`](../../../../web/src/features/map-viewer/engine/colorScaleExtension.ts).
 - Redesign click mapping: picking currently resolves a tile through its unique layer ID, while one arena
   layer must map a global picked mark back to `(tileKey, localMarkIndex)`.
 - Handle point and polygon draw topology, external triangle indices, coordinate systems, MapLibre overlay,

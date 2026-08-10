@@ -34,7 +34,7 @@ export default function PerfDashboard({
   cache: CacheGauge;
 }) {
   useSyncExternalStore(perfStore.subscribe, perfStore.getSnapshot);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
 
   // The rAF sampler runs only while this panel is mounted — a permanent one would keep the compositor
   // awake and skew the idle-time predictive prefetch it is meant to observe.
@@ -58,7 +58,12 @@ export default function PerfDashboard({
     <div style={shell}>
       <div style={head}>
         <span style={{ fontWeight: 700 }}>perf</span>
-        <span style={{ opacity: 0.55, fontSize: 10, flex: 1 }}>{manifest ? `${manifest.view.id} · ${manifest.version}` : '—'}</span>
+        <span
+          style={headContext}
+          title={manifest ? `${manifest.view.id} · ${manifest.version}` : undefined}
+        >
+          {manifest ? `${manifest.view.id} · ${manifest.version}` : '—'}
+        </span>
         <button style={mini} onClick={() => clearPerf()} title="Reset the window — pan somewhere, clear, then measure the thing you care about">
           clear
         </button>
@@ -299,24 +304,31 @@ const bytes = (b: number): string =>
   b >= 1e6 ? `${(b / 1e6).toFixed(2)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(1)} KB` : `${b} B`;
 
 const shell: React.CSSProperties = {
-  position: 'absolute',
-  zIndex: 3, // above the deck canvas and the MapLibre ctrl corners
-  bottom: 12,
-  right: 12,
-  width: 280,
+  width: '100%',
+  minWidth: 0,
+  maxWidth: '100%',
   padding: '8px 10px',
+  overflowX: 'hidden',
   background: 'var(--card-bg)',
   color: 'var(--card-fg)',
   font: '11px ui-monospace, SFMono-Regular, Menlo, monospace',
   borderRadius: 8,
   border: '1px solid var(--card-border)',
-  boxShadow: 'var(--card-shadow)',
   userSelect: 'none',
 };
 
 const collapsed: React.CSSProperties = { width: 'auto', cursor: 'pointer', padding: '4px 10px' };
-const head: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6 };
-const mini: React.CSSProperties = { ...btn, padding: '1px 5px', fontSize: 10, font: 'inherit' };
+const head: React.CSSProperties = { minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 };
+const headContext: React.CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+  overflow: 'hidden',
+  color: 'var(--card-muted)',
+  fontSize: 10,
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+const mini: React.CSSProperties = { ...btn, flexShrink: 0, padding: '1px 5px', fontSize: 10, font: 'inherit' };
 const row: React.CSSProperties = { display: 'flex', alignItems: 'baseline', gap: 6, lineHeight: 1.7 };
 const sub: React.CSSProperties = { opacity: 0.5, fontSize: 10 };
 const cell: React.CSSProperties = { padding: '1px 0', textAlign: 'right', fontWeight: 400 };

@@ -1,5 +1,4 @@
 import type { Manifest } from '@domain/map/manifest';
-import type { ViewSummary } from '@domain/map/view';
 
 const TILES_BASE = import.meta.env.VITE_TILES_BASE ?? 'http://localhost:5174/tiles';
 export const API_BASE = import.meta.env.VITE_API_BASE ?? TILES_BASE.replace(/\/tiles\/?$/, '/api');
@@ -34,10 +33,4 @@ export async function loadManifest(viewId: string): Promise<Manifest> {
   const manifestResponse = await fetch(`${TILES_BASE}/${viewId}/${pointer.version}/manifest.json`);
   if (!manifestResponse.ok) throw new Error(`release manifest ${manifestResponse.status}`);
   return manifestResponse.json();
-}
-
-export async function listViews(): Promise<ViewSummary[]> {
-  const response = await fetch(`${API_BASE}/views`);
-  if (!response.ok) throw new Error(`views API ${response.status}`);
-  return response.json();
 }

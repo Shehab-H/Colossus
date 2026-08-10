@@ -7,7 +7,7 @@ import { TileCache, TILE_BUDGET_BYTES } from '../engine/tileCache';
 import type { CacheGauge } from '@shared/observability/perf';
 import type { TileData } from '../engine/tileData';
 import { tileLoader } from '../engine/tileLoader';
-import { coverTiles, prefetchCandidates, selectTiles, tileKey } from '../engine/tiling';
+import { coverTiles, prefetchCandidates, selectTiles } from '../engine/tiling';
 import { boundsFromViewport, viewportFor, type CameraState } from '../engine/viewport';
 
 // Prefetch never competes with demand loads: it only runs once the cache is below this share of budget.
@@ -176,17 +176,6 @@ export function useTiles(
 
   const marksLoaded = rendered.reduce((s, t) => s + t.data.count, 0);
 
-  // Are all on-screen tiles leaves (every real cell), or are some coarse aggregates? That's the line
-  // between full fidelity and a "zoom in to resolve" preview (RULES R2).
-  const tileIndex = useMemo(
-    () => new Map((manifest?.tiles ?? []).map((t) => [tileKey(t.z, t.x, t.y), t])),
-    [manifest],
-  );
-  const atFullFidelity =
-    !!manifest &&
-    rendered.length > 0 &&
-    selKeys.every((k) => tileIndex.get(k)?.isLeaf && snapshot.tiles.has(compositeKey(manifest.version, k)));
-
   // Live residency gauge for the perf dashboard. Derived from `snapshot`, so it is recomputed exactly
   // when the cache actually changes — never on a timer, and never a reason to re-render on its own.
   const cacheGauge = useMemo<CacheGauge>(
@@ -199,5 +188,5 @@ export function useTiles(
     [cache, snapshot],
   );
 
-  return { selKeys, rendered, marksLoaded, atFullFidelity, loadError: snapshot.error, cacheGauge, ensureColumns };
+  return { selKeys, rendered, marksLoaded, loadError: snapshot.error, cacheGauge, ensureColumns };
 }

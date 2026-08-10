@@ -117,20 +117,20 @@ ctx.onmessage = async (e) => {
     if ('columns' in e.data) {
       const { view, render } = e.data.columns;
       const columns = await loadColumns(view, render, ac.signal);
-      ctx.postMessage({ id, columns, perf: takeEvents(), postedAt: Date.now() }, Object.values(columns.buffers));
+      ctx.postMessage({ id, columns, perf: takeEvents() }, Object.values(columns.buffers));
     } else if ('companion' in e.data) {
       const companion = await loadCompanion(e.data.companion, ac.signal);
-      ctx.postMessage({ id, companion, perf: takeEvents(), postedAt: Date.now() }, companionTransferable(companion));
+      ctx.postMessage({ id, companion, perf: takeEvents() }, companionTransferable(companion));
     } else {
       const { view, version, key, slots, tileFormat, render } = e.data;
       const tile = render
         ? await loadPackedTile(view, render, slots, key, ac.signal)
         : await loadTile(view, version, key, slots, tileFormat, ac.signal);
-      ctx.postMessage({ id, tile, perf: takeEvents(), postedAt: Date.now() }, transferable(tile));
+      ctx.postMessage({ id, tile, perf: takeEvents() }, transferable(tile));
     }
   } catch (err) {
     const aborted = ac.signal.aborted;
-    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err), aborted, perf: takeEvents(), postedAt: Date.now() });
+    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err), aborted, perf: takeEvents() });
   } finally {
     inflight.delete(id);
   }

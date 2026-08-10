@@ -12,9 +12,7 @@ export interface ControlsProps {
   onFilterChange: (name: string, value: string) => void;
 }
 
-/** The color-by selector + one control per filterable channel. Shared by the full HUD and the slim
- *  showcase-embed panel, so an embedded map filters exactly like the app — just without the dataset
- *  tabs, branding, stats, or embed button. */
+/** The color-by selector plus one control per filterable channel. Its parent owns layout and routing. */
 export default function Controls(p: ControlsProps) {
   return (
     <>

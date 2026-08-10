@@ -2,13 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearPerf,
   cumulative,
-  deckSnapshot,
   isPerfOn,
   netMeasure,
   perfEnabled,
   perfEvents,
   record,
-  recordDeck,
   recordFrame,
   setPerfEnabled,
   stats,
@@ -82,41 +80,6 @@ describe('stats', () => {
   it('leaves wire undefined when no request revealed its size', () => {
     record(ev({ stage: 'net.tile', bytes: 4000 }));
     expect(stats().find((x) => x.stage === 'net.tile')!.wire).toBeUndefined();
-  });
-});
-
-describe('deck admission metrics', () => {
-  it('records non-zero attribute work as a stage while retaining the latest deck gauge', () => {
-    recordDeck({
-      fps: 60,
-      gpuTimePerFrame: 1,
-      cpuTimePerFrame: 2,
-      bufferMemory: 300,
-      textureMemory: 40,
-      gpuMemory: 340,
-      updateAttributesTime: 12.5,
-      framesRedrawn: 3,
-      layersCount: 4,
-      drawLayersCount: 2,
-    });
-    expect(deckSnapshot()?.updateAttributesTime).toBe(12.5);
-    expect(stats().find((x) => x.stage === 'deck.attributes')).toMatchObject({ n: 1, last: 12.5 });
-  });
-
-  it('does not turn an idle zero gauge into a timing event', () => {
-    recordDeck({
-      fps: 60,
-      gpuTimePerFrame: 0,
-      cpuTimePerFrame: 0,
-      bufferMemory: 0,
-      textureMemory: 0,
-      gpuMemory: 0,
-      updateAttributesTime: 0,
-      framesRedrawn: 0,
-      layersCount: 0,
-      drawLayersCount: 0,
-    });
-    expect(stats().find((x) => x.stage === 'deck.attributes')).toBeUndefined();
   });
 });
 

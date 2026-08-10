@@ -1,6 +1,7 @@
 # Saga 001 — GPU rendering stutter
 
-- **Status:** Active; staged-admission mitigation built and verified
+- **Status:** Reverted and archived at product-owner request
+- **Reverted:** 2026-08-10
 - **Created:** 2026-08-10
 - **Last verified:** 2026-08-10
 
@@ -16,10 +17,10 @@ WebGPU, SharedArrayBuffer, and LOD delta encoding are outside its scope.
 
 | Order | Item | Status | Estimated production work |
 | --- | --- | --- | ---: |
-| 0 | [Staged layer admission](04-staged-layer-admission.md) | Built and verified | Implemented |
-| 1 | [GPU buffer ownership](01-gpu-buffer-ownership.md) | Candidate | 4–7 engineering days |
-| 2 | [Arena allocation and multi-draw](02-arena-multi-draw.md) | Candidate | 10–15 engineering days |
-| 3 | [Vertex pulling and data textures](03-vertex-pulling.md) | Candidate | 6–10 additional engineering days |
+| 0 | [Staged layer admission](04-staged-layer-admission.md) | Reverted | Implemented, then removed |
+| 1 | [GPU buffer ownership](01-gpu-buffer-ownership.md) | Abandoned | 4–7 engineering days |
+| 2 | [Arena allocation and multi-draw](02-arena-multi-draw.md) | Abandoned | 10–15 engineering days |
+| 3 | [Vertex pulling and data textures](03-vertex-pulling.md) | Abandoned | 6–10 additional engineering days |
 
 All three together are estimated at 4–6 engineering weeks for one experienced developer, including
 integration tests, real-tile profiling, and browser/GPU hardening. Items 2 and 3 are naturally coupled; the
@@ -118,6 +119,17 @@ explicit ownership is needed for GPU-residency cleanup. Items 2 and 3 remain def
   improves by at least 2× or falls below the agreed hitch threshold.
 - Frontend tests, type-check, lint, and production build pass.
 
+## Revert outcome — 2026-08-10
+
+The product owner reported that pan and zoom felt wrong with staged admission and requested that every
+runtime change belonging to this saga be reverted. The staged-admission hook, hidden-layer warm-up,
+interaction pause, worker-delivery/cache-admission/React/deck-attribute probes, and perf-only React
+Profiler were removed. The renderer again passes the complete drawn tile cover directly to deck.gl.
+
+The documentation-system reorganization made in the same historical commit was not a rendering change
+and remains in place. This saga and its measurements are archived as rejected experimental evidence, not
+as an active backlog or a performance baseline.
+
 ## Handoff memory
 
 The saga was picked up and its original GeoNames entry gate completed on 2026-08-10. A follow-up dense
@@ -127,9 +139,12 @@ at 125 fps with zero long frames and a 24 ms maximum; the 1,142,323-mark point p
 passed browser verification.
 
 Binary tile data still enters stock deck.gl layers through
-[`tileDeckData`](../../../web/src/features/map-viewer/engine/deckData.ts); no custom renderer or externally owned GPU buffer was
+[`tileDeckData`](../../../../web/src/features/map-viewer/engine/deckData.ts); no custom renderer or externally owned GPU buffer was
 introduced. Keep item 1 as the next measured escalation only if a future single-tile admission exceeds
 the threshold or resource lifetime requires explicit ownership.
 
+That implementation guidance is historical. The staged solution was subsequently rejected and reverted;
+do not revive any item from this archive without a new product decision and a newly scoped active saga.
+
 The original completed GPU-residency record and deferred design are preserved in the
-[pre-index archive](../../archive/2026/2026-08-10-pre-index/gpu-residency/README.md).
+[pre-index archive](../2026-08-10-pre-index/gpu-residency/README.md).

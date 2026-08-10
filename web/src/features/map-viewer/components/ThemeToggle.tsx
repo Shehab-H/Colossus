@@ -1,6 +1,6 @@
 import type { Theme } from '../engine/theme';
 
-/** Small dark/light switch, pinned bottom-right. Shows the theme you'll switch TO. */
+/** Small dark/light switch for the application header. Shows the theme you'll switch to. */
 export default function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
   const next = theme === 'dark' ? 'light' : 'dark';
   return (
@@ -11,10 +11,6 @@ export default function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggl
 }
 
 const btn: React.CSSProperties = {
-  position: 'absolute',
-  top: 12,
-  right: 12,
-  zIndex: 2, // above MapLibre's controls
   width: 32,
   height: 32,
   display: 'flex',
@@ -23,7 +19,6 @@ const btn: React.CSSProperties = {
   background: 'var(--card-bg)',
   color: 'var(--card-fg)',
   border: '1px solid var(--card-border)',
-  boxShadow: 'var(--card-shadow)',
   borderRadius: 8,
   cursor: 'pointer',
   fontSize: 16,

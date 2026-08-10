@@ -15,14 +15,10 @@ export type PerfStage =
   | 'decode.tile' // Arrow table → TileData (geometry, columns, filter slots)
   | 'decode.companion' // Arrow table / plane blocks → the fold's typed input
   | 'inflate' // DecompressionStream over a companion block
-  | 'worker.delivery' // transferable worker response posted → main-thread message handler
-  | 'cache.admit' // decoded tile merged, pruned, and published to React
   | 'fold.client' // foldTile / foldSlab on this machine
   | 'fold.remote' // POST /fold round trip (carries the server's own compute ms)
   | 'fold.server' // the server's own DuckDB compute, unwrapped from fold.remote's X-Fold-Ms
-  | 'layers' // deck layer construction for the drawn cover
-  | 'react.commit' // React render work for the app tree
-  | 'deck.attributes'; // deck attribute rebuild/upload reported by its metrics probe
+  | 'layers'; // deck layer construction for the drawn cover
 
 /** Which layer answered a fetch. The app has three caches with very different lifetimes and costs — the
  *  in-memory TileCache (384 MB, decoded), the browser's HTTP cache (disk, immutable tiles), and the
@@ -148,10 +144,7 @@ export const deckSnapshot = (): DeckSnapshot | null => deckSnap;
 
 export function recordDeck(m: Omit<DeckSnapshot, 't'>): void {
   if (!enabled) return;
-  const t = performance.now();
-  deckSnap = { ...m, t };
-  if (m.updateAttributesTime > 0)
-    record({ stage: 'deck.attributes', ms: m.updateAttributesTime, t, n: m.drawLayersCount });
+  deckSnap = { ...m, t: performance.now() };
   scheduleNotify();
 }
 
@@ -415,14 +408,10 @@ export const STAGE_ORDER: PerfStage[] = [
   'decode.ipc',
   'decode.tile',
   'decode.companion',
-  'worker.delivery',
-  'cache.admit',
   'fold.client',
   'fold.remote',
   'fold.server',
   'layers',
-  'react.commit',
-  'deck.attributes',
 ];
 
 /** One network stage's cold/warm split. `wire` counts only what was actually fetched, so it is never

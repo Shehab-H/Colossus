@@ -6,7 +6,7 @@ const rgb = ([r, g, b]: [number, number, number]) => `rgb(${r},${g},${b})`;
  *  a gradient bar for continuous/heat scales, labelled swatches for binned and categorical. */
 export default function LegendBox({ legend }: { legend: Legend }) {
   return (
-    <div style={box}>
+    <div style={box} data-testid="map-legend">
       <div style={head}>
         <span style={{ fontWeight: 700 }}>{legend.channel}</span>
         <span style={note}>{legend.note}</span>
@@ -39,20 +39,14 @@ export default function LegendBox({ legend }: { legend: Legend }) {
 }
 
 const box: React.CSSProperties = {
-  position: 'absolute',
-  zIndex: 2, // above the deck canvas (see Hud)
-  bottom: 12,
-  left: 12,
   padding: '8px 10px',
   background: 'var(--card-bg)',
   color: 'var(--card-fg)',
   font: '12px system-ui, sans-serif',
   borderRadius: 8,
   border: '1px solid var(--card-border)',
-  boxShadow: 'var(--card-shadow)',
   userSelect: 'none',
-  minWidth: 140,
-  maxWidth: 220,
+  width: '100%',
 };
 const head: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, marginBottom: 6 };
 const note: React.CSSProperties = { color: 'var(--card-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 };

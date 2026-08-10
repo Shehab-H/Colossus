@@ -1,6 +1,6 @@
 # 03 — Vertex pulling and data textures
 
-- **Status:** Candidate; best implemented with item 2
+- **Status:** Abandoned with the reverted saga
 - **Estimate:** 6–10 additional engineering days
 
 ## Goal
@@ -17,8 +17,8 @@ texture dimension of 16,384.
 
 ## Project integration surface
 
-- Replace `expandToVertices` in [`deckData.ts`](../../../web/src/features/map-viewer/engine/deckData.ts) and polygon expansion in
-  [`gpuFilter.ts`](../../../web/src/features/map-viewer/engine/gpuFilter.ts).
+- Replace `expandToVertices` in [`deckData.ts`](../../../../web/src/features/map-viewer/engine/deckData.ts) and polygon expansion in
+  [`gpuFilter.ts`](../../../../web/src/features/map-viewer/engine/gpuFilter.ts).
 - Add a stable per-vertex mark ID. Prefer baking it into the geometry payload; decide whether that is a new
   tile format or a backward-compatible geometry block, and preserve older-bake decoding.
 - Extend the C# tile writer/schema and TypeScript geometry decoder together, with cross-language fixtures.

@@ -1,21 +1,4 @@
-// Shared control-panel styles, used by both the full HUD (chrome) and the slim showcase-embed panel.
-// Kept in one place so the embed controls read identically to the app's.
-
-export const panel: React.CSSProperties = {
-  position: 'absolute',
-  zIndex: 2, // above the deck canvas — MapboxOverlay mounts inside a MapLibre ctrl corner at z-index 2
-  top: 12,
-  left: 12,
-  padding: '10px 12px',
-  background: 'var(--card-bg)',
-  color: 'var(--card-fg)',
-  font: '12px system-ui, sans-serif',
-  borderRadius: 8,
-  border: '1px solid var(--card-border)',
-  boxShadow: 'var(--card-shadow)',
-  userSelect: 'none',
-  minWidth: 160,
-};
+// Shared form controls. Page and panel composition live in the application shell.
 
 export const btn: React.CSSProperties = {
   padding: '4px 8px',

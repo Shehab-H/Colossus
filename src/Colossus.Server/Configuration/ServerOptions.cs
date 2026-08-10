@@ -14,5 +14,5 @@ public sealed class ServerOptions
         WebBaseUrl = WebBaseUrl.TrimEnd('/');
     }
 
-    public string ViewUrl(string viewId) => $"{WebBaseUrl}/?view={Uri.EscapeDataString(viewId)}";
+    public string ViewUrl(string viewId) => $"{WebBaseUrl}/maps/{Uri.EscapeDataString(viewId)}";
 }

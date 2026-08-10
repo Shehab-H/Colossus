@@ -1,14 +1,12 @@
-import { Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import '@app/styles.css'
 import App from '@app/App'
 import { registerTileCache } from '@infrastructure/cache/tileCacheServiceWorker'
-import { initResourceTiming, installPerfGlobal, perfEnabled, record, setPerfEnabled } from '@shared/observability/perf'
+import { initResourceTiming, installPerfGlobal, perfEnabled, setPerfEnabled } from '@shared/observability/perf'
 
 // ?perf=1 arms every lifecycle probe. Set before the first render — the tile loader reads this flag when
 // it posts to the decode workers, so a probe armed later would miss the opening tile set.
-const perf = perfEnabled()
-setPerfEnabled(perf)
+setPerfEnabled(perfEnabled())
 initResourceTiming()
 installPerfGlobal()
 
@@ -18,16 +16,4 @@ registerTileCache()
 
 // No <StrictMode>: its dev-only double-invoke double-mounts the react-map-gl `useControl` deck overlay,
 // leaving a stale second GL canvas. deck.gl + react-map-gl apps conventionally run without it.
-const app = <App />
-createRoot(document.getElementById('root')!).render(
-  perf ? (
-    <Profiler
-      id="app"
-      onRender={(_id, _phase, actualDuration) =>
-        record({ stage: 'react.commit', ms: actualDuration, t: performance.now() })
-      }
-    >
-      {app}
-    </Profiler>
-  ) : app,
-)
+createRoot(document.getElementById('root')!).render(<App />)

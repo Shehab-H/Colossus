@@ -1,6 +1,6 @@
 # Saga 002 — Productized map application
 
-- **Status:** Active; durable product catalog complete
+- **Status:** Active; map management application is next
 - **Created:** 2026-08-10
 - **Last verified:** 2026-08-10
 
@@ -18,7 +18,7 @@ durable state.
 
 - Authentication, authorization, organizations, billing, and collaboration are deferred.
 - This saga does not turn Colossus into a general-purpose BI or charting platform.
-- It does not replace deck.gl or reopen the deferred custom-GPU work in saga 001.
+- It does not replace deck.gl or revive the rejected GPU experiments archived from saga 001.
 - It does not require every source to share a SQL dialect. The shared contract is the canonical staging
   result, not the query text used to produce it.
 - It does not perform a big-bang rewrite or discard verified tile formats and manifests.
@@ -45,7 +45,6 @@ The runtime separates into three surfaces:
 
 | Order | Item | Status | Estimated production work |
 | --- | --- | --- | ---: |
-| 3 | [Viewer shell and embed contract](03-viewer-shell-and-embed-contract.md) | Candidate | 4–6 engineering days |
 | 4 | [Map management application](04-map-management-application.md) | Candidate | 5–8 engineering days |
 | 5 | [Source adapter and preview platform](05-source-adapter-and-preview-platform.md) | Candidate | 4–7 engineering days |
 | 6 | [Raw Parquet source adapter](06-raw-parquet-source-adapter.md) | Candidate | 4–6 engineering days |
@@ -68,6 +67,10 @@ established the relational product model, migration, compatibility lookup, and s
 [MySQL and appsettings follow-up](../../archive/2026/2026-08-10-productized-map-application/02a-mysql-and-appsettings-configuration.md)
 replaced the initial SQLite adapter before further product work.
 
+Completed viewer shell: [item 03 — viewer shell and embed contract](../../archive/2026/2026-08-10-productized-map-application/03-viewer-shell-and-embed-contract.md)
+established canonical single-map routes, a responsive application layout around a dedicated map window,
+and a versioned cross-origin iframe contract without map-catalog loading.
+
 ## Evidence already established
 
 - [`BakeViewUseCase`](../../../src/Colossus.Application/BakeViewUseCase.cs) already orchestrates the core
@@ -81,11 +84,13 @@ replaced the initial SQLite adapter before further product work.
   retaining the verified viewer behavior.
 - The durable catalog now separates connections, datasets, maps, bake policies, bake runs, and releases;
   all six legacy views import idempotently into equivalent bake snapshots.
-- The dense-map interaction path is browser-verified by saga 001; product work must retain that baseline.
+- The full viewer and embed viewer now resolve exactly one release at canonical routes; controls, legend,
+  inspection, release details, and opt-in diagnostics stay outside the map canvas at desktop and mobile breakpoints.
+- The renderer now uses direct deck.gl tile-cover admission again; the rejected staged-admission experiment
+  and its measurements remain only in the archive.
 
-The remaining product gaps are now above stable catalog contracts: the bake host still runs synchronously from
-command-line arguments, and the current HUD combines map controls, diagnostics, and map selection over the
-rendering surface.
+The remaining product gaps are now above stable catalog and viewer contracts: there is no management page,
+and the bake host still runs synchronously from command-line arguments.
 
 ## Global acceptance gates
 
@@ -104,8 +109,8 @@ rendering surface.
 
 ## Next action
 
-Activate item 03, the viewer shell and embed contract. Give the full viewer a dedicated map window with controls
-around it, preserve a chrome-free single-map embed route, and stop loading the catalog inside the viewer.
+Begin item 04: build the map-management page and draft editing workflow against the application use cases,
+without moving map selection back into an individual viewer.
 
 ## Handoff memory
 
