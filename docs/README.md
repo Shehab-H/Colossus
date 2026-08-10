@@ -9,6 +9,7 @@ documentation for current work lives under `sagas/`; completed or superseded mat
 | Saga | Status | Next decision |
 | --- | --- | --- |
 | [001 — GPU rendering stutter](sagas/gpu-rendering-stutter/README.md) | Active; staged-admission mitigation built and verified | Keep explicit GPU ownership deferred unless a single-tile trace crosses the hitch gate |
+| [002 — Productized map application](sagas/productized-map-application/README.md) | Active; architecture foundation approved | Complete item 01 before adding catalog, source, UI, or scheduling behavior |
 
 ## System map
 
