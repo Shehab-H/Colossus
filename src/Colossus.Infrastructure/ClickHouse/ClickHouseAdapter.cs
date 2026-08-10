@@ -1,6 +1,6 @@
 using System.Globalization;
 using Colossus.Domain.Model;
-using Colossus.Domain.Sources;
+using Colossus.Application.Abstractions.Sources;
 using Colossus.Domain.Tiling;
 using Colossus.Infrastructure.ClickHouse.Geometry;
 
@@ -14,6 +14,8 @@ namespace Colossus.Infrastructure.ClickHouse;
 /// geometry kind is a new <see cref="IGeometrySql"/>, nothing else.</summary>
 public sealed class ClickHouseAdapter(ClickHouseClient clickHouse) : ISourceAdapter
 {
+    public string Id => "clickhouse";
+
     public async Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default)
     {
         string sql = $"SELECT min({TileSchema.X}), max({TileSchema.X}), min({TileSchema.Y}), max({TileSchema.Y}), " +

@@ -66,23 +66,23 @@ internal sealed class ArrowColumnBuilder
             switch (indexType())
             {
                 case Int8Type:
-                {
-                    var b = new Int8Array.Builder();
-                    foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append((sbyte)c); }
-                    return b.Build(default);
-                }
+                    {
+                        var b = new Int8Array.Builder();
+                        foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append((sbyte)c); }
+                        return b.Build(default);
+                    }
                 case Int16Type:
-                {
-                    var b = new Int16Array.Builder();
-                    foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append((short)c); }
-                    return b.Build(default);
-                }
+                    {
+                        var b = new Int16Array.Builder();
+                        foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append((short)c); }
+                        return b.Build(default);
+                    }
                 default:
-                {
-                    var b = new Int32Array.Builder();
-                    foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append(c); }
-                    return b.Build(default);
-                }
+                    {
+                        var b = new Int32Array.Builder();
+                        foreach (int c in codes) { if (c < 0) b.AppendNull(); else b.Append(c); }
+                        return b.Build(default);
+                    }
             }
         }
 

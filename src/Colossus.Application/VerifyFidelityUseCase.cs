@@ -1,4 +1,4 @@
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
 using Colossus.Domain.Tiling;
 
@@ -46,9 +46,12 @@ public sealed class VerifyFidelityUseCase(
         // the pack's geometry block — the same directory the client fetches, which is what makes this a
         // witness of the artifact actually served rather than of a staging leftover.
         var renderPack = manifest.RenderPack;
-        string renderVersionDir = renderPack is null ? "" : store.VersionDirectory(viewId, version);
-        string renderPackPath = renderPack is null ? "" : Path.Combine(renderVersionDir, renderPack.File);
-        byte[]? renderDict = renderPack?.Dict is { } rd ? File.ReadAllBytes(Path.Combine(renderVersionDir, rd)) : null;
+        string renderPackPath = renderPack is null
+            ? ""
+            : store.VersionArtifactPath(viewId, version, renderPack.File);
+        byte[]? renderDict = renderPack?.Dict is { } rd
+            ? store.ReadVersionArtifact(viewId, version, rd)
+            : null;
 
         foreach (var tile in manifest.Tiles)
         {
@@ -98,7 +101,7 @@ public sealed class VerifyFidelityUseCase(
         // the grouped marks staging; the source rows are witnessed by the fact companions instead.
         // Row regime is unchanged: the leaf sum is the source rows.
         return manifest.CompanionTiles
-            ? DiagnoseGroup(viewId, version, manifest, leafRows, stagingPath, stagedRows, overBudget)
+            ? DiagnoseGroup(viewId, version, manifest, leafRows, stagedRows, overBudget)
             : DiagnoseRow(leafRows, stagedRows, manifest.SourceRows, overBudget);
     }
 
@@ -119,10 +122,10 @@ public sealed class VerifyFidelityUseCase(
     }
 
     private string? DiagnoseGroup(string viewId, string version, Manifest manifest, long leafRows,
-        string stagingPath, long? stagedRows, int overBudget)
+        long? stagedRows, int overBudget)
     {
         // Leaf marks == distinct marks (one row per geometry in the grouped marks staging).
-        string marksPath = MarksPath(stagingPath);
+        string marksPath = store.MarksStagingPath(viewId);
         if (staging.Exists(marksPath) && staging.RowCount(marksPath) is var marks && leafRows != marks)
             return $"leaf marks {leafRows:N0} != distinct marks {marks:N0} (marks staging) — grouping lost or split a mark";
 
@@ -134,10 +137,13 @@ public sealed class VerifyFidelityUseCase(
         if (source is { } src)
         {
             var pack = manifest.CompanionPack;
-            string versionDir = pack is null ? "" : store.VersionDirectory(viewId, version);
-            string packPath = pack is null ? "" : Path.Combine(versionDir, pack.File);
+            string packPath = pack is null
+                ? ""
+                : store.VersionArtifactPath(viewId, version, pack.File);
             // The slab pack's trained zstd dictionary (Work Item C), read once for the whole witness.
-            byte[]? dict = pack?.Dict is { } d ? File.ReadAllBytes(Path.Combine(versionDir, d)) : null;
+            byte[]? dict = pack?.Dict is { } d
+                ? store.ReadVersionArtifact(viewId, version, d)
+                : null;
             long companionRows = 0;
             foreach (var tile in manifest.Tiles.Where(t => t.IsLeaf))
             {
@@ -150,7 +156,7 @@ public sealed class VerifyFidelityUseCase(
                 }
                 else if (pack is not null && pack.Entries.TryGetValue(key, out var e))
                     companionRows += tiles.PackedRowCount(packPath, e[0], e[1], pack.Codec);
-                else if (CompanionPath(store.TilePath(viewId, version, tile.Id)) is var facts && tiles.Exists(facts))
+                else if (store.CompanionTilePath(viewId, version, tile.Id) is var facts && tiles.Exists(facts))
                     companionRows += tiles.RowCount(facts);
             }
             if (companionRows >= 0 && companionRows != src)
@@ -159,7 +165,4 @@ public sealed class VerifyFidelityUseCase(
 
         return overBudget > 0 ? $"{overBudget} internal tile(s) over the merge-grid cap" : null;
     }
-
-    private static string MarksPath(string staging) => Path.ChangeExtension(staging, ".marks.parquet");
-    private static string CompanionPath(string tilePath) => Path.ChangeExtension(tilePath, ".facts.arrow");
 }

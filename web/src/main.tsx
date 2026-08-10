@@ -1,9 +1,9 @@
 import { Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
-import './index.css'
-import App from './App.tsx'
-import { registerTileCache } from './lib/swClient'
-import { initResourceTiming, installPerfGlobal, perfEnabled, record, setPerfEnabled } from './lib/perf'
+import '@app/styles.css'
+import App from '@app/App'
+import { registerTileCache } from '@infrastructure/cache/tileCacheServiceWorker'
+import { initResourceTiming, installPerfGlobal, perfEnabled, record, setPerfEnabled } from '@shared/observability/perf'
 
 // ?perf=1 arms every lifecycle probe. Set before the first render — the tile loader reads this flag when
 // it posts to the decode workers, so a probe armed later would miss the opening tile set.

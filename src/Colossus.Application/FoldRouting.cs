@@ -5,7 +5,7 @@ namespace Colossus.Application;
 
 /// <summary>Bake-time configuration for R4 fold routing (bound from the <c>FoldRouting</c> config section;
 /// documented default in docs/DEPLOY.md). A plain record so the Application layer stays free of the options
-/// package — <see cref="Colossus.Infrastructure.DependencyInjection"/> reads the section and registers one.</summary>
+/// package; the active host binds and registers it at composition time.</summary>
 public sealed class FoldRoutingOptions
 {
     public const string Section = "FoldRouting";

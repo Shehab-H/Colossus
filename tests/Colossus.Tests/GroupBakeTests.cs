@@ -3,7 +3,7 @@ using Apache.Arrow.Ipc;
 using Colossus.Application;
 using Colossus.Domain.Measures;
 using Colossus.Domain.Model;
-using Colossus.Domain.Reduction;
+using Colossus.Application.Abstractions.Reduction;
 using Colossus.Domain.Tiling;
 using Colossus.Infrastructure;
 using Colossus.Infrastructure.Baking;

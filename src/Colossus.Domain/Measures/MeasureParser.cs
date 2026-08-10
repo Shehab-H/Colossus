@@ -165,15 +165,15 @@ public static class MeasureParser
                 case ',': tokens.Add(new(TokKind.Comma, ",")); i++; continue;
                 case '=': tokens.Add(new(TokKind.Eq, "=")); i++; continue;
                 case '\'':
-                {
-                    int start = ++i;
-                    while (i < expr.Length && expr[i] != '\'') i++;
-                    if (i >= expr.Length)
-                        throw Err("unterminated string literal", expr);
-                    tokens.Add(new(TokKind.Str, expr[start..i]));
-                    i++; // closing quote
-                    continue;
-                }
+                    {
+                        int start = ++i;
+                        while (i < expr.Length && expr[i] != '\'') i++;
+                        if (i >= expr.Length)
+                            throw Err("unterminated string literal", expr);
+                        tokens.Add(new(TokKind.Str, expr[start..i]));
+                        i++; // closing quote
+                        continue;
+                    }
             }
             if (char.IsAsciiLetter(c) || c == '_')
             {

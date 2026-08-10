@@ -6,7 +6,7 @@
 
 ## Motivation
 
-[`ISourceAdapter`](../../../src/Colossus.Domain/Sources/ISourceAdapter.cs) currently exposes only probe and
+[`ISourceAdapter`](../../../src/Colossus.Application/Abstractions/Sources/ISourceAdapter.cs) currently exposes only probe and
 extract against a complete `ViewConfig`, and [`SourceAdapterCatalog`](../../../src/Colossus.Infrastructure/Sources/SourceAdapterCatalog.cs)
 constructs ClickHouse through a switch. Product onboarding also needs connection testing, schema discovery,
 sample rows, geometry preview, capabilities, progress, and structured errors.
@@ -18,8 +18,8 @@ dialects into map, bake, controller, or UI code.
 
 ## Integration surface
 
-- [`ISourceAdapter`](../../../src/Colossus.Domain/Sources/ISourceAdapter.cs) and
-  [`ISourceAdapterCatalog`](../../../src/Colossus.Domain/Sources/ISourceAdapterCatalog.cs), moved or adapted
+- [`ISourceAdapter`](../../../src/Colossus.Application/Abstractions/Sources/ISourceAdapter.cs) and
+  [`ISourceAdapterCatalog`](../../../src/Colossus.Application/Abstractions/Sources/ISourceAdapterCatalog.cs), moved or adapted
   according to item 01's dependency rules.
 - [`ClickHouseAdapter`](../../../src/Colossus.Infrastructure/ClickHouse/ClickHouseAdapter.cs) as the first
   production implementation of the expanded contract.

@@ -1,6 +1,8 @@
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
+using Colossus.Infrastructure.Configuration;
 using Colossus.Infrastructure.Serialization;
+using Microsoft.Extensions.Options;
 
 namespace Colossus.Infrastructure.Baking;
 
@@ -13,11 +15,17 @@ public sealed class FileBakeStore : IBakeStore
 
     public FileBakeStore(string? tilesRoot = null, string? stagingRoot = null)
     {
-        _tilesRoot = tilesRoot ?? RepoPaths.TilesDir;
-        _stagingRoot = stagingRoot ?? RepoPaths.StagingDir;
+        _tilesRoot = tilesRoot ?? throw new ArgumentNullException(nameof(tilesRoot));
+        _stagingRoot = stagingRoot ?? throw new ArgumentNullException(nameof(stagingRoot));
+    }
+
+    public FileBakeStore(IOptions<StorageOptions> options)
+        : this(options.Value.TilesDirectory, options.Value.StagingDirectory)
+    {
     }
 
     public string StagingPath(string viewId) => Path.Combine(_stagingRoot, viewId + ".parquet");
+    public string MarksStagingPath(string viewId) => Path.Combine(_stagingRoot, viewId + ".marks.parquet");
 
     public string VersionDirectory(string viewId, string version)
     {
@@ -25,6 +33,15 @@ public sealed class FileBakeStore : IBakeStore
         Directory.CreateDirectory(dir);
         return dir;
     }
+
+    public string VersionArtifactPath(string viewId, string version, string relativePath) =>
+        Under(VersionDirectory(viewId, version), relativePath);
+
+    public long VersionArtifactSize(string viewId, string version, string relativePath) =>
+        new FileInfo(VersionArtifactPath(viewId, version, relativePath)).Length;
+
+    public byte[] ReadVersionArtifact(string viewId, string version, string relativePath) =>
+        File.ReadAllBytes(VersionArtifactPath(viewId, version, relativePath));
 
     public async Task WriteManifestAsync(Manifest manifest, CancellationToken ct = default)
     {
@@ -59,4 +76,16 @@ public sealed class FileBakeStore : IBakeStore
 
     public string TilePath(string viewId, string version, TileId tile) =>
         Path.Combine(_tilesRoot, viewId, version, tile.RelativePath);
+
+    public string CompanionTilePath(string viewId, string version, TileId tile) =>
+        Path.ChangeExtension(TilePath(viewId, version, tile), ".facts.arrow");
+
+    private static string Under(string root, string relativePath)
+    {
+        string fullRoot = Path.GetFullPath(root) + Path.DirectorySeparatorChar;
+        string fullPath = Path.GetFullPath(Path.Combine(root, relativePath));
+        if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"Artifact path '{relativePath}' escapes its version directory.");
+        return fullPath;
+    }
 }

@@ -13,15 +13,15 @@ A chart type is not a pipeline; it's `(mark + channel mapping) × reduction prim
 
 | Path | What |
 |------|------|
-| `src/Colossus.Domain` | Models + ports: view config, manifest, tile math, reduction/source/bake interfaces |
-| `src/Colossus.Application` | Use cases: bake planner + orchestration, fidelity verification |
-| `src/Colossus.Infrastructure` | Adapters: ClickHouse source, DuckDB reducers, Arrow tile writer, file store, view registry |
+| `src/Colossus.Domain` | Domain models: catalog records, view snapshots, manifests, and tile math |
+| `src/Colossus.Application` | Use cases and ports: catalog, bake orchestration, source/reduction seams, fidelity verification |
+| `src/Colossus.Infrastructure` | Adapters: MySQL catalog, ClickHouse source, DuckDB reducers, Arrow tiles, and file storage |
 | `src/Colossus.Bake` | Console entrypoint: bake registered views / `verify` |
-| `src/Colossus.Server` | Dev host: static tiles + view registry API |
-| `tests/Colossus.Tests` | Unit tests for the pure bake logic |
+| `src/Colossus.Server` | API host: product catalog, compatibility view API, and static tiles |
+| `tests/Colossus.Tests` | Unit, architecture, MySQL integration, and API tests |
 | `web/` | Vite + React + deck.gl + MapLibre; config-driven renderer |
-| `views/` | View config files (the registry) |
-| `docker/` | Local ClickHouse (dev) |
+| `views/` | Legacy view configs imported idempotently into the product catalog |
+| `docker/` | Local MySQL catalog and ClickHouse source services |
 
 ## Dev quickstart
 
@@ -29,7 +29,7 @@ Colossus reads from your own ClickHouse tables — there is no bundled data gene
 data using the archived canonical [view configuration reference](docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md), then:
 
 ```bash
-# 1. ClickHouse
+# 1. MySQL catalog + ClickHouse source
 docker compose -f docker/docker-compose.yml up -d
 
 # 2. Bake a view's tiles
@@ -41,6 +41,10 @@ dotnet run --project src/Colossus.Server
 # 4. Frontend
 cd web && npm run dev
 ```
+
+Runtime settings live in each host's `appsettings.json`. `ConnectionStrings:Database` selects the
+MySQL catalog; `Storage` owns the tile, staging, legacy-view, and media locations; `ClickHouse` owns source
+credentials. The checked-in development values match the Docker Compose services.
 
 Run the tests with `dotnet test`; verify a bake's fidelity invariant with
 `dotnet run --project src/Colossus.Bake -- verify`.

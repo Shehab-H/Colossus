@@ -1,0 +1,54 @@
+using Colossus.Domain.Catalog;
+
+namespace Colossus.Application.Abstractions.Catalog;
+
+public interface IConnectionRepository
+{
+    Task<CatalogConnection> CreateAsync(
+        CatalogConnection connection, IReadOnlyDictionary<string, string> secrets, CancellationToken ct = default);
+    Task<CatalogConnection?> FindAsync(Guid id, CancellationToken ct = default);
+    Task<CatalogConnection?> FindBySlugAsync(string workspaceKey, string slug, CancellationToken ct = default);
+    Task<IReadOnlyList<CatalogConnection>> ListAsync(string workspaceKey, bool includeArchived = false,
+        CancellationToken ct = default);
+    Task<IReadOnlyDictionary<string, string>> ReadSecretsAsync(Guid id, CancellationToken ct = default);
+}
+
+public interface IDatasetRepository
+{
+    Task<CatalogDataset> CreateAsync(CatalogDataset dataset, CancellationToken ct = default);
+    Task<CatalogDataset?> FindAsync(Guid id, CancellationToken ct = default);
+    Task<CatalogDataset?> FindBySlugAsync(string workspaceKey, string slug, CancellationToken ct = default);
+    Task<IReadOnlyList<CatalogDataset>> ListAsync(string workspaceKey, bool includeArchived = false,
+        CancellationToken ct = default);
+}
+
+public interface IMapRepository
+{
+    Task<CatalogMap> CreateAsync(CatalogMap map, CancellationToken ct = default);
+    Task<CatalogMap?> FindAsync(Guid id, CancellationToken ct = default);
+    Task<CatalogMap?> FindBySlugAsync(string workspaceKey, string slug, CancellationToken ct = default);
+    Task<IReadOnlyList<CatalogMap>> ListAsync(string workspaceKey, bool includeArchived = false,
+        CancellationToken ct = default);
+    Task<CatalogMap> UpdateAsync(CatalogMap map, long expectedRevision, CancellationToken ct = default);
+    Task<CatalogMap> ArchiveAsync(Guid id, long expectedRevision, DateTimeOffset updatedAt,
+        CancellationToken ct = default);
+}
+
+public interface IBakePolicyRepository
+{
+    Task<BakePolicy?> FindAsync(Guid mapId, CancellationToken ct = default);
+    Task<BakePolicy> UpsertAsync(BakePolicy policy, long? expectedRevision, CancellationToken ct = default);
+}
+
+public interface IBakeRunRepository
+{
+    Task<BakeRun> CreateAsync(BakeRun run, CancellationToken ct = default);
+    Task<BakeRun?> FindAsync(Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<BakeRun>> ListForMapAsync(Guid mapId, CancellationToken ct = default);
+}
+
+public interface IReleaseRepository
+{
+    Task<CatalogRelease> CreateAsync(CatalogRelease release, CancellationToken ct = default);
+    Task<IReadOnlyList<CatalogRelease>> ListForMapAsync(Guid mapId, CancellationToken ct = default);
+}

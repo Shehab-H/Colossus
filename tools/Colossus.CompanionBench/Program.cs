@@ -19,9 +19,10 @@ using System.IO.Compression;
 using System.Text.Json;
 using Colossus.Domain.Measures;
 using Colossus.Domain.Model;
-using Colossus.Infrastructure;
+using Colossus.Infrastructure.Configuration;
 using Colossus.Infrastructure.Serialization;
 using Colossus.Infrastructure.Tiles;
+using Microsoft.Extensions.Configuration;
 using ZstdSharp;
 
 const double DenseGate = 0.5;      // per-tile occupancy ≥ this ⇒ dense (matches SLAB-FORMAT §3)
@@ -29,6 +30,14 @@ const int ZstdLevel = 19;          // "high level" — the bake is a batch job (
 const int DictCapacity = 112 * 1024;
 const int DictSampleTiles = 12;
 const string IdxPlane = "@idx";    // SLAB-FORMAT §5 (SlabCompanionWriter.IdxPlane, which is internal)
+
+var configuration = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: false)
+    .Build();
+var storage = new StorageOptions();
+configuration.GetSection(StorageOptions.Section).Bind(storage);
+storage.ResolvePaths();
 
 var views = args.Where(a => !a.StartsWith('-')).ToArray();
 // --after reads a re-baked (zstd+dict) pack's directory only — actual at-rest bytes and the worst dense
@@ -57,7 +66,7 @@ return 0;
 // ── one view ────────────────────────────────────────────────────────────────────────────────────────
 object Bench(string viewId)
 {
-    string viewDir = Path.Combine(RepoPaths.TilesDir, viewId);
+    string viewDir = Path.Combine(storage.TilesDirectory, viewId);
     string version = ColossusJson.Deserialize<LatestPointer>(File.ReadAllText(Path.Combine(viewDir, "latest.json"))).Version;
     string dir = Path.Combine(viewDir, version);
     var manifest = ColossusJson.Deserialize<Manifest>(File.ReadAllText(Path.Combine(dir, "manifest.json")));
@@ -170,7 +179,7 @@ object Bench(string viewId)
 // ── after mode: directory-only analysis of a re-baked zstd+dict pack ───────────────────────────────────
 object AfterBench(string viewId)
 {
-    string viewDir = Path.Combine(RepoPaths.TilesDir, viewId);
+    string viewDir = Path.Combine(storage.TilesDirectory, viewId);
     string version = ColossusJson.Deserialize<LatestPointer>(File.ReadAllText(Path.Combine(viewDir, "latest.json"))).Version;
     string dir = Path.Combine(viewDir, version);
     var manifest = ColossusJson.Deserialize<Manifest>(File.ReadAllText(Path.Combine(dir, "manifest.json")));

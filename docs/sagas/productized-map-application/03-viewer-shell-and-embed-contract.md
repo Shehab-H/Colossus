@@ -21,12 +21,13 @@ The old `?view=` URL remains a compatibility redirect during migration.
 
 ## Integration surface
 
-- [`App.tsx`](../../../web/src/App.tsx) and the current map/view bootstrap.
-- [`Hud.tsx`](../../../web/src/components/Hud.tsx),
-  [`Controls.tsx`](../../../web/src/components/Controls.tsx),
-  [`Legend.tsx`](../../../web/src/components/Legend.tsx), and
-  [`InspectPanel.tsx`](../../../web/src/components/InspectPanel.tsx).
-- URL/embed helpers under [`web/src/lib`](../../../web/src/lib) and the static embed fixture.
+- [`App.tsx`](../../../web/src/app/App.tsx),
+  [`MapViewerPage.tsx`](../../../web/src/features/map-viewer/MapViewerPage.tsx), and the current map/view bootstrap.
+- [`Hud.tsx`](../../../web/src/features/map-viewer/components/Hud.tsx),
+  [`Controls.tsx`](../../../web/src/features/map-viewer/components/Controls.tsx),
+  [`Legend.tsx`](../../../web/src/features/map-viewer/components/Legend.tsx), and
+  [`InspectPanel.tsx`](../../../web/src/features/map-viewer/components/InspectPanel.tsx).
+- URL/embed helpers under [`map-viewer`](../../../web/src/features/map-viewer) and the static embed fixture.
 - The map-release lookup API introduced by item 02.
 
 ## Required layout and behavior

@@ -1,5 +1,5 @@
 using System.IO.Compression;
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 
 namespace Colossus.Infrastructure.Tiles;
 

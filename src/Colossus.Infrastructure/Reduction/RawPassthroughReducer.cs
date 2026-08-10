@@ -1,5 +1,5 @@
 using Colossus.Domain.Model;
-using Colossus.Domain.Reduction;
+using Colossus.Application.Abstractions.Reduction;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiles;
 

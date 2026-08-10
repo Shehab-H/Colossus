@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" />
   </ItemGroup>
@@ -16,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Colossus.Application\Colossus.Application.csproj" />
     <ProjectReference Include="..\..\src\Colossus.Infrastructure\Colossus.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Colossus.Server\Colossus.Server.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +25,10 @@
     <None Include="..\fixtures\tiling-cases.json" Link="fixtures\tiling-cases.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\measure-cases.json" Link="fixtures\measure-cases.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\geometry-codec-cases.json" Link="fixtures\geometry-codec-cases.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

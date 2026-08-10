@@ -1,5 +1,5 @@
 using System.Text;
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Measures;
 using Colossus.Domain.Model;
 using Colossus.Domain.Tiling;

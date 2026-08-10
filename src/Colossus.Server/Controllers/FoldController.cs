@@ -1,4 +1,5 @@
 using Colossus.Domain.Model;
+using Colossus.Infrastructure.Configuration;
 using Colossus.Infrastructure.Fold;
 using Colossus.Infrastructure.Serialization;
 using Colossus.Server.Configuration;
@@ -16,9 +17,9 @@ namespace Colossus.Server.Controllers;
 [Route("api/views")]
 [Tags("Views")]
 public sealed class FoldController(
-    DuckDbFoldExecutor executor, IOptions<ServerOptions> options, IWebHostEnvironment env) : ControllerBase
+    DuckDbFoldExecutor executor, IOptions<StorageOptions> options) : ControllerBase
 {
-    private readonly ServerOptions _server = options.Value;
+    private readonly StorageOptions _storage = options.Value;
 
     [HttpPost("{id}/fold")]
     public async Task<IActionResult> Fold(string id, [FromBody] FoldQuery query, CancellationToken ct)
@@ -26,11 +27,7 @@ public sealed class FoldController(
         if (query.Tiles.Count == 0 || query.Measures.Count == 0)
             return BadRequest(new { error = "fold requires at least one tile and one measure" });
 
-        // Resolve the tiles root exactly as the static handler does (a relative root sits under the app's
-        // content root), so the fold reads from the same version tree the server serves.
-        string tilesRoot = Path.IsPathRooted(_server.TilesRoot)
-            ? _server.TilesRoot
-            : Path.Combine(env.ContentRootPath, _server.TilesRoot);
+        string tilesRoot = _storage.TilesDirectory;
 
         string? version = query.Version ?? ReadLatestVersion(tilesRoot, id);
         if (version is null) return NotFound(new { error = $"no baked version for '{id}'" });

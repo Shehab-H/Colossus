@@ -1,5 +1,5 @@
 using Colossus.Application;
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
 using Xunit;
 

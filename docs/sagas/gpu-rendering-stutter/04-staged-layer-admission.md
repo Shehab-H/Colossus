@@ -23,7 +23,7 @@ uploading geometry/value/filter attributes for several newly drawable layers in 
 
 ## Implementation
 
-[`useStagedTileAdmission`](../../../web/src/hooks/useStagedTileAdmission.ts) keeps the last complete cover
+[`useStagedTileAdmission`](../../../web/src/features/map-viewer/hooks/useStagedTileAdmission.ts) keeps the last complete cover
 visible, mounts replacement layers with `visible: false` one per animation frame, and flips the already
 resident replacement cover visible atomically after the final warm-up frame. During an active geographic
 pan or zoom, admission is paused so a completed worker response cannot inject an upload into the gesture.

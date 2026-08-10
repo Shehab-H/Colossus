@@ -1,58 +1,62 @@
-using Colossus.Domain.Baking;
+using Colossus.Application.Catalog;
+using Colossus.Domain.Catalog;
 using Colossus.Domain.Model;
+using Colossus.Infrastructure.Configuration;
 using Colossus.Server.Configuration;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
 namespace Colossus.Server.Controllers;
 
-
 [ApiController]
 [Route("api/views")]
 [Tags("Views")]
-public sealed class ViewsController(IViewCatalog views, IOptions<ServerOptions> options) : ControllerBase
+public sealed class ViewsController(
+    ProductCatalogService catalog,
+    IOptions<ServerOptions> options,
+    IOptions<StorageOptions> storageOptions) : ControllerBase
 {
     private readonly ServerOptions _server = options.Value;
+    private readonly StorageOptions _storage = storageOptions.Value;
 
     [HttpGet]
-    public IActionResult List() => Ok(views.All().Select(Summarize));
+    public async Task<IActionResult> List(CancellationToken ct) =>
+        Ok((await catalog.ListMapsAsync(ct: ct)).Select(Summarize));
 
     [HttpGet("{id}")]
-    public IActionResult Get(string id) =>
-        Found(id, view => Ok(view));
+    public async Task<IActionResult> Get(string id, CancellationToken ct) =>
+        await Found(id, view => Ok(view), ct);
 
     [HttpGet("{id}/url")]
-    public IActionResult GetUrl(string id) =>
-        Found(id, view => Ok(new { id = view.Id, url = _server.ViewUrl(view.Id), baked = _server.HasBake(view.Id) }));
+    public async Task<IActionResult> GetUrl(string id, CancellationToken ct) =>
+        await Found(id, view => Ok(new { id = view.Id, url = _server.ViewUrl(view.Id), baked = _storage.HasBake(view.Id) }), ct);
 
     [HttpPost]
-    public IActionResult Register([FromBody] ViewConfig view)
+    public async Task<IActionResult> Register([FromBody] ViewConfig view, CancellationToken ct)
     {
         try
         {
-            string path = views.Save(view);
-            return Ok(new { id = view.Id, url = _server.ViewUrl(view.Id), saved = path });
+            var map = await catalog.ImportLegacyViewAsync(view, ct: ct);
+            return Ok(new { id = view.Id, url = _server.ViewUrl(view.Id), saved = $"catalog://maps/{map.Id:D}" });
         }
-        catch (Exception e)
-        {
-            return BadRequest(new { error = e.Message });
-        }
+        catch (Exception e) { return this.ToResponse(e); }
     }
 
-    private IActionResult Found(string id, Func<ViewConfig, IActionResult> onFound)
+    private async Task<IActionResult> Found(
+        string id, Func<ViewConfig, IActionResult> onFound, CancellationToken ct)
     {
-        try { return onFound(views.Get(id)); }
-        catch (ArgumentException e) { return NotFound(new { error = e.Message }); }
+        try { return onFound(await catalog.ResolveSnapshotAsync(id, ct: ct)); }
+        catch (CatalogNotFoundException e) { return NotFound(new { error = e.Message }); }
     }
 
-    private object Summarize(ViewConfig v) => new
+    private object Summarize(CatalogMap map) => new
     {
-        id = v.Id,
-        title = v.Title,
-        viewport = v.Viewport,
-        mark = v.Mark,
-        reduction = v.Reduction,
-        url = _server.ViewUrl(v.Id),
-        baked = _server.HasBake(v.Id),
+        id = map.Draft.Slug,
+        title = map.Draft.Title,
+        viewport = map.Draft.Viewport,
+        mark = map.Draft.Mark,
+        reduction = map.Draft.Reduction,
+        url = _server.ViewUrl(map.Draft.Slug),
+        baked = _storage.HasBake(map.Draft.Slug),
     };
 }

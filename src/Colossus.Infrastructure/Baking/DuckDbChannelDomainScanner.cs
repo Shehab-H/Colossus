@@ -1,6 +1,6 @@
 using System.Collections;
 using System.Globalization;
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
 using Colossus.Infrastructure.DuckDb;
 

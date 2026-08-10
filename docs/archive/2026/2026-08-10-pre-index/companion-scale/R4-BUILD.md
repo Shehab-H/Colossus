@@ -111,13 +111,13 @@ resident planes (0 transfer), so end-to-end latency per filter change *is* the c
    ranges) + tile keys, and returns per-tile, mki-keyed Arrow columns (Float32 numeric; UInt16 canonical
    codes for argmax), with the per-tile row directory in the Arrow schema metadata so there is no per-row
    tile column on the wire. Marks with no surviving facts come back NaN / unknown, exactly like the client.
-4. **Client executor.** `web/src/lib/remoteFold.ts` behind the same seam; identical output types, identical
+4. **Client executor.** `web/src/features/map-viewer/engine/remoteFold.ts` behind the same seam; identical output types, identical
    fold-result cache keys, `(version, tileKey)` untouched, batched one request per viewport. The remote
    route fetches **no** companion planes.
 5. **R1 fix (prerequisite, owner-approved in-scope).** The ordered axis now records its domain in canonical
    ISO — the form `tests/fixtures/slab-cases.json` and the client's range compare already require —
    normalising whatever the adapter delivered (DATE / integer day count / epoch millis) via the same split
-   `web/src/lib/dates.ts` uses. See SLAB-FORMAT.md §1.
+   `web/src/features/map-viewer/engine/dates.ts` uses. See SLAB-FORMAT.md §1.
 
 ### Measured route pricing (both reference views)
 

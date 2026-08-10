@@ -1,8 +1,6 @@
 namespace Colossus.Infrastructure.Configuration;
 
-/// <summary>Connection settings for the ClickHouse HTTP interface. Bound from the <c>ClickHouse</c>
-/// config section, with the legacy <c>COLOSSUS_CH_*</c> environment variables taking precedence so the
-/// docker-compose dev workflow keeps working.</summary>
+/// <summary>Connection settings for the ClickHouse HTTP interface, bound from appsettings.</summary>
 public sealed class ClickHouseOptions
 {
     public const string Section = "ClickHouse";

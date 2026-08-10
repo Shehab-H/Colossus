@@ -137,7 +137,7 @@ across both C# and TS.
 ### Plane-split realized in the live client (browser-measured)
 
 The plane-split rows above measure the *format's* capability; the running client now exercises it. The map
-folds only the active colour measure ([`useMeasureFold`](../../../../../web/src/hooks/useMeasureFold.ts) is handed
+folds only the active colour measure ([`useMeasureFold`](../../../../../web/src/features/map-viewer/hooks/useMeasureFold.ts) is handed
 `mapMeasures = [renderChannel]`), so each on-screen tile fetches just that measure's planes — not the whole
 companion — with planes cached under the tile key (SLAB-FORMAT §5). Measured live against the running app
 (mobile-dominance, colour `dominant_operator` → planes `[sum__tests, @idx]`), per-tile scoped wire bytes vs
@@ -157,4 +157,4 @@ for the single-plane measures (dominant_operator / total_tests / apex_share) tha
 The tooltip still shows every inspect channel: it fetches the remaining inspect planes for the one clicked
 tile on demand (`foldInspect`), so nothing regresses. Row-form bakes and non-measure colour channels keep
 fetching every measure (no split). Correctness of folding over a plane subset (and of the incremental merge)
-is pinned by [slab.test.ts](../../../../../web/src/lib/slab.test.ts).
+is pinned by [slab.test.ts](../../../../../web/src/features/map-viewer/engine/slab.test.ts).

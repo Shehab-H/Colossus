@@ -1,6 +1,6 @@
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiles;

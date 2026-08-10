@@ -67,7 +67,7 @@ polygon tile, `geometry`/`part_offsets`/`triangles`/`x`/`y`/`id` are ~69–99% o
 derivable, so the bake drops them and writes one self-describing binary payload (the `geom3` column, in row 0
 of a binary column). The client's worker decodes it back into the *exact* format-2 buffers — `polyPositions`,
 `polyStartIndices`, tile-global `polyTriangles` — **bit-for-bit** (`decodeTileV3`; the codec is the
-cross-language authority `GeometryCodec` ↔ `web/src/lib/geometryCodec.ts`, pinned by
+cross-language authority `GeometryCodec` ↔ `web/src/features/map-viewer/engine/geometryCodec.ts`, pinned by
 `tests/fixtures/geometry-codec-cases.json`). Two per-tile codecs, chosen from the data: **rect** (every row a
 closed axis-aligned rectangle → u16 corner-table indices + a derived triangle pattern; the grid/quadkey case)
 and **delta** (real rings → de-interleaved, integer-delta, zigzag, byte-transposed f32 coordinate streams with

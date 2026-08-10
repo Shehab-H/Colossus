@@ -127,7 +127,7 @@ at 125 fps with zero long frames and a 24 ms maximum; the 1,142,323-mark point p
 passed browser verification.
 
 Binary tile data still enters stock deck.gl layers through
-[`tileDeckData`](../../../web/src/lib/deckData.ts); no custom renderer or externally owned GPU buffer was
+[`tileDeckData`](../../../web/src/features/map-viewer/engine/deckData.ts); no custom renderer or externally owned GPU buffer was
 introduced. Keep item 1 as the next measured escalation only if a future single-tile admission exceeds
 the threshold or resource lifetime requires explicit ownership.
 

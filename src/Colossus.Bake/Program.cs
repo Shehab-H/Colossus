@@ -1,12 +1,14 @@
 using System.Diagnostics;
 using Colossus.Application;
-using Colossus.Domain.Baking;
-using Colossus.Infrastructure;
+using Colossus.Application.Abstractions.Baking;
+using Colossus.Infrastructure.Catalog;
 using Colossus.Infrastructure.ClickHouse;
+using Colossus.Infrastructure.Configuration;
 using Colossus.Infrastructure.DependencyInjection;
 using Colossus.Infrastructure.Tiles;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 // Bakes registered views into tile pyramids. No args bakes every view; pass ids to bake a subset,
 // e.g. `dotnet run --project src/Colossus.Bake -- geo-points`. `verify` checks the fidelity invariant.
@@ -18,7 +20,9 @@ var builder = Host.CreateApplicationBuilder();
 builder.Services.AddColossus(builder.Configuration);
 using var host = builder.Build();
 var services = host.Services;
+var storage = services.GetRequiredService<IOptions<StorageOptions>>().Value;
 
+await services.GetRequiredService<DatabaseBootstrapper>().InitializeAsync();
 var views = services.GetRequiredService<IViewCatalog>();
 
 if (args is ["verify", ..])
@@ -47,9 +51,9 @@ if (args is ["compress", .. var rest])
     var viewIds = rest.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
     var targets = new List<(string Name, string Dir)>();
     if (viewIds.Length > 0)
-        foreach (var v in viewIds) targets.Add((v, Path.Combine(RepoPaths.TilesDir, v)));
+        foreach (var v in viewIds) targets.Add((v, Path.Combine(storage.TilesDirectory, v)));
     else
-        targets.Add(("(all views)", RepoPaths.TilesDir));
+        targets.Add(("(all views)", storage.TilesDirectory));
 
     var sw = Stopwatch.StartNew();
     int files = 0, skipped = 0;
@@ -71,7 +75,7 @@ if (args is ["compress", .. var rest])
 var selected = args.Length > 0 ? args.Select(views.Get).ToArray() : views.All().ToArray();
 if (selected.Length == 0)
 {
-    Console.WriteLine($"No views registered under {RepoPaths.ViewsDir}. See docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md.");
+    Console.WriteLine($"No views registered under {storage.LegacyViewsDirectory}. See docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md.");
     return 0;
 }
 
@@ -79,9 +83,10 @@ var clickHouse = services.GetRequiredService<ClickHouseClient>();
 await clickHouse.WaitUntilReadyAsync(TimeSpan.FromMinutes(2));
 
 var bake = services.GetRequiredService<BakeViewUseCase>();
+var progress = new ConsoleBakeProgress();
 foreach (var view in selected)
 {
-    var outcome = await bake.BakeAsync(view);
+    var outcome = await bake.BakeAsync(view, progress);
     Console.WriteLine(outcome.IsEmpty
         ? $"  {outcome.ViewId}: empty source — skipped"
         : $"  {outcome.ViewId} → {outcome.Version}: {outcome.SourceRows:N0} rows, " +
@@ -90,3 +95,8 @@ foreach (var view in selected)
 
 Console.WriteLine("\nBake complete.");
 return 0;
+
+sealed class ConsoleBakeProgress : IProgress<BakeProgress>
+{
+    public void Report(BakeProgress value) => Console.WriteLine($"  [{value.Stage}] {value.Message}");
+}

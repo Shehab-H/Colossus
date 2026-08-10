@@ -1,6 +1,6 @@
 using Colossus.Application;
 using Colossus.Domain.Model;
-using Colossus.Domain.Sources;
+using Colossus.Application.Abstractions.Sources;
 using Xunit;
 
 namespace Colossus.Tests;

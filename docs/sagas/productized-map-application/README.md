@@ -1,6 +1,6 @@
 # Saga 002 — Productized map application
 
-- **Status:** Active; architecture foundation approved
+- **Status:** Active; durable product catalog complete
 - **Created:** 2026-08-10
 - **Last verified:** 2026-08-10
 
@@ -45,8 +45,6 @@ The runtime separates into three surfaces:
 
 | Order | Item | Status | Estimated production work |
 | --- | --- | --- | ---: |
-| 1 | [Clean architecture foundation](01-clean-architecture-foundation.md) | Active | 4–6 engineering days |
-| 2 | [Durable product catalog](02-durable-product-catalog.md) | Candidate | 4–6 engineering days |
 | 3 | [Viewer shell and embed contract](03-viewer-shell-and-embed-contract.md) | Candidate | 4–6 engineering days |
 | 4 | [Map management application](04-map-management-application.md) | Candidate | 5–8 engineering days |
 | 5 | [Source adapter and preview platform](05-source-adapter-and-preview-platform.md) | Candidate | 4–7 engineering days |
@@ -62,21 +60,32 @@ boundaries before adding adapters or UI against unstable contracts. Viewer-shell
 item 01 without waiting for source adapters; the catalog, scheduler, and release work should retain their
 listed dependency order.
 
+Completed foundation: [item 01 — clean architecture foundation](../../archive/2026/2026-08-10-productized-map-application/01-clean-architecture-foundation.md)
+established and verified the backend and frontend dependency boundaries on 2026-08-10.
+
+Completed catalog: [item 02 — durable product catalog](../../archive/2026/2026-08-10-productized-map-application/02-durable-product-catalog.md)
+established the relational product model, migration, compatibility lookup, and secret-safe APIs. The approved
+[MySQL and appsettings follow-up](../../archive/2026/2026-08-10-productized-map-application/02a-mysql-and-appsettings-configuration.md)
+replaced the initial SQLite adapter before further product work.
+
 ## Evidence already established
 
 - [`BakeViewUseCase`](../../../src/Colossus.Application/BakeViewUseCase.cs) already orchestrates the core
   bake behind source, reduction, store, packing, and verification seams.
-- [`ISourceAdapter`](../../../src/Colossus.Domain/Sources/ISourceAdapter.cs) proves the engine after staging
+- [`ISourceAdapter`](../../../src/Colossus.Application/Abstractions/Sources/ISourceAdapter.cs) proves the engine after staging
   can be source-agnostic, though the contract needs discovery/preview/progress capabilities.
 - [`FileBakeStore`](../../../src/Colossus.Infrastructure/Baking/FileBakeStore.cs) already writes immutable
   version directories and atomically flips `latest.json`.
 - The web client already supports URL-addressable map state and a chromeless iframe mode.
+- The web client now has enforced `app`, `domain`, `features`, `infrastructure`, and `shared` boundaries while
+  retaining the verified viewer behavior.
+- The durable catalog now separates connections, datasets, maps, bake policies, bake runs, and releases;
+  all six legacy views import idempotently into equivalent bake snapshots.
 - The dense-map interaction path is browser-verified by saga 001; product work must retain that baseline.
 
-The same evidence exposes the product gaps: [`ViewConfig`](../../../src/Colossus.Domain/Model/ViewConfig.cs)
-combines source and presentation concerns, [`ViewRegistry`](../../../src/Colossus.Infrastructure/Views/ViewRegistry.cs)
-persists mutable product state as JSON files, the bake host runs synchronously from command-line arguments,
-and the current HUD combines map controls, diagnostics, and map selection over the rendering surface.
+The remaining product gaps are now above stable catalog contracts: the bake host still runs synchronously from
+command-line arguments, and the current HUD combines map controls, diagnostics, and map selection over the
+rendering surface.
 
 ## Global acceptance gates
 
@@ -95,10 +104,8 @@ and the current HUD combines map controls, diagnostics, and map selection over t
 
 ## Next action
 
-Implement item 01 first. Capture characterization tests around the current bake, manifest, registry, and
-viewer bootstrap; establish enforceable dependency rules; then move direct filesystem and host concerns
-out of the application layer. Do not add Hangfire, Trino, Parquet, or catalog persistence until those
-boundaries are in place.
+Activate item 03, the viewer shell and embed contract. Give the full viewer a dedicated map window with controls
+around it, preserve a chrome-free single-map embed route, and stop loading the catalog inside the viewer.
 
 ## Handoff memory
 

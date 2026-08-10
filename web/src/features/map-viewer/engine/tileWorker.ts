@@ -1,0 +1,137 @@
+// Off-main-thread tile decode. The zoom-swap freeze was fetch + Arrow parse + column materialization
+// running synchronously on the main thread as a whole new tile set arrives. Here that runs in a worker,
+// and every column is (or rides in) a typed array, so results transfer back zero-copy — the main thread
+// never deserializes row-wise strings. A cancel message aborts the fetch; a tile already past fetch is
+// decoded and kept (the bytes are paid for, and it may be wanted again on zoom-back).
+import { type Companion, type CompanionFetch, loadColumns, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
+import type { ViewConfig } from '@domain/map/manifest';
+import type { FilterSlots } from './gpuFilter';
+import { initResourceTiming, setPerfEnabled, takeEvents } from '@shared/observability/perf';
+
+interface LoadRequest {
+  id: number;
+  view: ViewConfig;
+  version: string;
+  key: string;
+  slots: FilterSlots | null;
+  tileFormat: number;
+  /** Present when the bake is packed: range this tile's first-paint blocks out of the archive instead of
+   *  fetching a per-tile file (which a packed version does not have). */
+  render?: RenderFetch | null;
+  perf?: boolean;
+}
+
+/** Fetch + decode a fact companion off the main thread — a low-zoom companion runs to millions of rows,
+ *  and its typed columns/planes transfer back zero-copy. The fetch spec routes a slab tile to its plane
+ *  ranges (R1/R5) or a row-form tile to its block/per-file companion. */
+interface CompanionRequest {
+  id: number;
+  companion: CompanionFetch;
+  perf?: boolean;
+}
+
+/** Fetch one resident tile's extra column blocks (a colour switch away from the default, or an inspect
+ *  click). Returns just the decoded columns so the caller merges them into the existing cache entry. */
+interface ColumnsRequest {
+  id: number;
+  columns: { view: ViewConfig; render: RenderFetch };
+  perf?: boolean;
+}
+
+interface CancelRequest {
+  cancel: number;
+}
+
+// Typed as a minimal dedicated-worker surface so the app tsconfig needn't pull in the webworker lib.
+const ctx = self as unknown as {
+  onmessage: ((e: MessageEvent<LoadRequest | CompanionRequest | ColumnsRequest | CancelRequest>) => void) | null;
+  postMessage: (message: unknown, transfer?: Transferable[]) => void;
+};
+
+// Every geometry/measure/code buffer moves (not copies) across the boundary; only a dict column's small
+// dictionary and the rare string[] fallback are cloned.
+function transferable(tile: TileData): Transferable[] {
+  const buffers = new Set<ArrayBuffer>();
+  const add = (v: ArrayBufferView | undefined) => {
+    if (v) buffers.add(v.buffer as ArrayBuffer);
+  };
+  // Format 2: the retained buffer; every view into it dedups against this entry in the Set.
+  if (tile.buffer) buffers.add(tile.buffer);
+  // Packed tiles hold one buffer per fetched block; every column viewed out of one dedups against it.
+  if (tile.blocks) for (const b of Object.values(tile.blocks)) buffers.add(b);
+  add(tile.positions);
+  add(tile.polyPositions);
+  add(tile.polyStartIndices);
+  add(tile.polyTriangles);
+  add(tile.filterValues);
+  for (const col of Object.values(tile.values)) {
+    if (col instanceof Float32Array) add(col);
+    else if (Array.isArray(col)) continue;
+    else if (col.kind === 'dict') add(col.codes);
+    else {
+      add(col.bytes);
+      add(col.offsets);
+    }
+  }
+  return [...buffers];
+}
+
+// The companion's typed columns/planes, deduplicated to their backing buffers (slab planes decoded from
+// one Arrow block share a buffer; the Set collapses them so each transfers once).
+function companionTransferable(c: Companion): Transferable[] {
+  const buffers = new Set<ArrayBuffer>();
+  if (c.kind === 'row') {
+    const d = c.data;
+    buffers.add(d.mki.buffer as ArrayBuffer);
+    for (const dim of Object.values(d.dim)) buffers.add(dim.codes.buffer as ArrayBuffer);
+    for (const t of Object.values(d.temporalDays)) buffers.add(t.buffer as ArrayBuffer);
+    for (const p of Object.values(d.partial)) buffers.add(p.buffer as ArrayBuffer);
+  } else {
+    const d = c.data;
+    if (d.offsets) buffers.add(d.offsets.buffer as ArrayBuffer);
+    if (d.cellIds) buffers.add(d.cellIds.buffer as ArrayBuffer);
+    for (const p of Object.values(d.planes)) buffers.add(p.buffer as ArrayBuffer);
+  }
+  return [...buffers];
+}
+
+const inflight = new Map<number, AbortController>();
+
+// Tiles and companions are fetched here, so the worker's own Resource Timing timeline is the one that
+// holds their wire sizes — it needs the same headroom as the main thread's.
+initResourceTiming();
+
+ctx.onmessage = async (e) => {
+  if ('cancel' in e.data) {
+    inflight.get(e.data.cancel)?.abort();
+    return;
+  }
+  const { id } = e.data;
+  const ac = new AbortController();
+  inflight.set(id, ac);
+  // The worker can't see the page's ?perf=1 (self.location is the worker script), so the flag rides on
+  // each request. `takeEvents` drains this request's events into the response; tileLoader re-emits them
+  // on the main thread, where the dashboard lives.
+  setPerfEnabled(e.data.perf === true);
+  try {
+    if ('columns' in e.data) {
+      const { view, render } = e.data.columns;
+      const columns = await loadColumns(view, render, ac.signal);
+      ctx.postMessage({ id, columns, perf: takeEvents(), postedAt: Date.now() }, Object.values(columns.buffers));
+    } else if ('companion' in e.data) {
+      const companion = await loadCompanion(e.data.companion, ac.signal);
+      ctx.postMessage({ id, companion, perf: takeEvents(), postedAt: Date.now() }, companionTransferable(companion));
+    } else {
+      const { view, version, key, slots, tileFormat, render } = e.data;
+      const tile = render
+        ? await loadPackedTile(view, render, slots, key, ac.signal)
+        : await loadTile(view, version, key, slots, tileFormat, ac.signal);
+      ctx.postMessage({ id, tile, perf: takeEvents(), postedAt: Date.now() }, transferable(tile));
+    }
+  } catch (err) {
+    const aborted = ac.signal.aborted;
+    ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err), aborted, perf: takeEvents(), postedAt: Date.now() });
+  } finally {
+    inflight.delete(id);
+  }
+};

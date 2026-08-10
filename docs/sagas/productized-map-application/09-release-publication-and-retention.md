@@ -17,7 +17,7 @@ without risking the current version, an active run, or a concurrent reader.
 
 ## Integration surface
 
-- [`IBakeStore`](../../../src/Colossus.Domain/Baking/IBakeStore.cs) and
+- [`IBakeStore`](../../../src/Colossus.Application/Abstractions/Baking/IBakeStore.cs) and
   [`FileBakeStore`](../../../src/Colossus.Infrastructure/Baking/FileBakeStore.cs), evolved behind item 01's
   application-owned artifact ports.
 - BakeRun/Release catalog records from item 02 and the Hangfire coordinator from item 08.

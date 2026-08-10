@@ -15,6 +15,9 @@ web/dist/
 /tiles/
 /staging/
 
+# Operator-uploaded media is runtime data.
+/media/
+
 # Env / local
 *.local
 .DS_Store

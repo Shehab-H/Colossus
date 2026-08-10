@@ -18,6 +18,11 @@
     <!-- Managed zstd (compress + ZDICT dictionary training), no native bindings — the same lib Work
          Item C uses at bake. This is a measurement tool; it does not touch the bake path. -->
     <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

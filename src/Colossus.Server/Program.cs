@@ -1,3 +1,5 @@
+using Colossus.Infrastructure.Catalog;
+using Colossus.Infrastructure.Configuration;
 using Colossus.Infrastructure.DependencyInjection;
 using Colossus.Infrastructure.Serialization;
 using Colossus.Server;
@@ -17,10 +19,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOptions<ServerOptions>()
     .Bind(builder.Configuration.GetSection(ServerOptions.Section))
-    .PostConfigure(o => o.ApplyEnvOverrides());
+    .PostConfigure(o => o.Normalize());
 var server = new ServerOptions();
 builder.Configuration.GetSection(ServerOptions.Section).Bind(server);
-server.ApplyEnvOverrides();
+server.Normalize();
 
 builder.WebHost.UseUrls(server.ServerUrl);
 builder.Services.AddColossus(builder.Configuration);
@@ -45,19 +47,10 @@ builder.Services.AddOpenApi(o => o.AddDocumentTransformer((doc, _, _) =>
 var app = builder.Build();
 app.UseCors();
 
-// A relative TilesRoot (e.g. "tiles" from appsettings) resolves under the app's content root, so a
-// published deploy needs no absolute path. When tiles are served from a CDN (client TILES_BASE points
-// elsewhere) this local handler simply serves whatever is present locally — often nothing.
-if (!Path.IsPathRooted(server.TilesRoot))
-    server.TilesRoot = Path.Combine(app.Environment.ContentRootPath, server.TilesRoot);
+// Shared appsettings paths resolve through StorageOptions so this host and the bake host use one artifact tree.
+var storage = app.Services.GetRequiredService<IOptions<StorageOptions>>().Value;
 
-// /api/views (the dataset picker) reads view configs from a "views" folder. A published deploy has no
-// repo marker for RepoPaths to find, so point it at a "views" folder shipped next to the app when one is
-// present. Dev keeps RepoPaths' repo-root resolution (no such folder beside the project). The map itself
-// never needs this — every view's config is embedded in its manifest.
-var deployedViews = Path.Combine(app.Environment.ContentRootPath, "views");
-if (Environment.GetEnvironmentVariable("COLOSSUS_VIEWS_DIR") is null && Directory.Exists(deployedViews))
-    Environment.SetEnvironmentVariable("COLOSSUS_VIEWS_DIR", deployedViews);
+_ = await app.Services.GetRequiredService<DatabaseBootstrapper>().InitializeAsync();
 
 app.MapOpenApi();
 app.UseSwaggerUI(o =>
@@ -67,12 +60,13 @@ app.UseSwaggerUI(o =>
     o.DocumentTitle = "Colossus Server API";
 });
 
-Directory.CreateDirectory(server.TilesRoot);
+Directory.CreateDirectory(storage.TilesDirectory);
+Directory.CreateDirectory(storage.MediaDirectory);
 
 // Serve brotli-precompressed render tiles (tile-transfer initiative, Phase 1) ahead of the plain static
 // handler: a *.arrow request from a br-capable client that has a .arrow.br sibling on disk gets the sibling's
 // bytes + Content-Encoding: br; everything else falls through to the plain file below (the rollback rail).
-app.UsePrecompressedTiles("/tiles", server.TilesRoot);
+app.UsePrecompressedTiles("/tiles", storage.TilesDirectory);
 
 var contentTypes = new FileExtensionContentTypeProvider();
 contentTypes.Mappings[".arrow"] = "application/vnd.apache.arrow.stream";
@@ -81,7 +75,7 @@ contentTypes.Mappings[".arrow"] = "application/vnd.apache.arrow.stream";
 contentTypes.Mappings[".pack"] = "application/octet-stream";
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new PhysicalFileProvider(server.TilesRoot),
+    FileProvider = new PhysicalFileProvider(storage.TilesDirectory),
     RequestPath = "/tiles",
     ContentTypeProvider = contentTypes,
     ServeUnknownFileTypes = true,
@@ -132,5 +126,7 @@ app.MapGet("/", () => Results.Text(
     "  POST /api/views                    register a view config\n", "text/plain"))
     .ExcludeFromDescription();
 
-Console.WriteLine($"Serving tiles from {server.TilesRoot}; Swagger UI → /swagger; view URLs → {server.WebBaseUrl}");
+Console.WriteLine($"Serving tiles from {storage.TilesDirectory}; Swagger UI → /swagger; view URLs → {server.WebBaseUrl}");
 app.Run();
+
+public partial class Program;

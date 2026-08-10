@@ -1,8 +1,8 @@
 using System.Globalization;
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
-using Colossus.Domain.Reduction;
-using Colossus.Domain.Sources;
+using Colossus.Application.Abstractions.Reduction;
+using Colossus.Application.Abstractions.Sources;
 
 namespace Colossus.Application;
 
@@ -21,22 +21,28 @@ public sealed record BakeOutcome(
 public sealed class BakeViewUseCase(
     ISourceAdapterCatalog sources, IReductionCatalog reductions, IBakeStore store, BakePlanner planner,
     IChannelDomainScanner domains, IFactGrouper grouper, FoldRoutingOptions foldRouting,
-    ITileCompressor compressor, ITilePacker packer)
+    ITileCompressor compressor, ITilePacker packer, TimeProvider clock)
 {
-    public async Task<BakeOutcome> BakeAsync(ViewConfig view, CancellationToken ct = default)
+    public async Task<BakeOutcome> BakeAsync(
+        ViewConfig view, IProgress<BakeProgress>? progress = null, CancellationToken ct = default)
     {
         var source = sources.Resolve(view.Source.Adapter);
 
+        progress?.Report(new BakeProgress(BakeStage.Probing, $"Probing {view.Id} through {source.Id}."));
         var probe = await source.ProbeAsync(view, ct);
         if (probe.Count == 0)
+        {
+            progress?.Report(new BakeProgress(BakeStage.Completed, $"{view.Id} has no source rows."));
             return BakeOutcome.Empty(view.Id);
+        }
 
         var plan = planner.Plan(probe, view);
 
         string staging = store.StagingPath(view.Id);
+        progress?.Report(new BakeProgress(BakeStage.Extracting, $"Extracting {probe.Count:N0} rows for {view.Id}."));
         await source.ExtractAsync(view, probe.Bounds, staging, ct);
 
-        string version = NewVersion();
+        string version = NewVersion(clock.GetUtcNow());
         string outputDir = store.VersionDirectory(view.Id, version);
 
         // Area marks carry geometry, so they bake as tile format 3 (geometry replaced by the encoded geom3
@@ -61,7 +67,7 @@ public sealed class BakeViewUseCase(
 
         if (view.HasMeasures)
         {
-            string marks = MarksPath(staging);
+            string marks = store.MarksStagingPath(view.Id);
             var grouping = grouper.GroupToMarks(staging, marks, view);
             group = GroupRegimeArtifacts.Build(view, grouping, staging, marks, domains);
             channelDomains = group.ChannelDomains;
@@ -82,6 +88,7 @@ public sealed class BakeViewUseCase(
             rc = rc with { CanonicalDictionaryOrders = CanonicalOrders(view, channelDomains) };
         }
 
+        progress?.Report(new BakeProgress(BakeStage.Reducing, $"Reducing {view.Id} with {plan.Reduction}."));
         var result = reductions.Resolve(plan.Reduction).Reduce(rc);
 
         // Tile-transfer initiative (Phase 3): pack every tile's columns into one per-version archive, so a
@@ -95,15 +102,16 @@ public sealed class BakeViewUseCase(
         {
             var compression = compressor.CompressVersionTiles(outputDir);
             if (compression.Files > 0)
-                Console.WriteLine($"  {view.Id}: brotli {compression.Files} tiles, " +
+                progress?.Report(new BakeProgress(BakeStage.Packaging, $"{view.Id}: brotli {compression.Files} tiles, " +
                     $"{compression.OriginalBytes / 1_048_576.0:N1} → {compression.CompressedBytes / 1_048_576.0:N1} MB " +
-                    $"({compression.Ratio:0.00}x)");
+                    $"({compression.Ratio:0.00}x)"));
         }
         else
         {
-            long packBytes = new FileInfo(Path.Combine(outputDir, renderPack.File)).Length;
-            Console.WriteLine($"  {view.Id}: render pack {renderPack.Entries.Count} tiles, " +
-                $"{packBytes / 1_048_576.0:N1} MB at rest, first paint [{string.Join(", ", renderPack.FirstPaint)}]");
+            long packBytes = store.VersionArtifactSize(view.Id, version, renderPack.File);
+            progress?.Report(new BakeProgress(BakeStage.Packaging,
+                $"{view.Id}: render pack {renderPack.Entries.Count} tiles, " +
+                $"{packBytes / 1_048_576.0:N1} MB at rest, first paint [{string.Join(", ", renderPack.FirstPaint)}]"));
         }
 
         // R4: a group-regime reduction retains the facts the server fold reads (per version, beside the
@@ -112,6 +120,11 @@ public sealed class BakeViewUseCase(
         FoldRoute? foldRoute = result.CompanionPack is { } companionPack
             ? FoldRoutePlanner.Price(view, companionPack, result.CompanionSlab, foldRouting)
             : null;
+
+        if (foldRoute is not null)
+            progress?.Report(new BakeProgress(BakeStage.Packaging, $"{view.Id}: fold route = {foldRoute.Execution} " +
+                $"(worst tile {foldRoute.WorstTileBytes:N0} B vs budget {foldRoute.BudgetBytes:N0} B" +
+                (foldRoute.Forced ? ", forced" : "") + ")"));
 
         int bakedMaxZoom = result.Tiles.Count > 0 ? result.Tiles.Max(t => t.Z) : 0;
         await store.WriteManifestAsync(new Manifest
@@ -140,19 +153,15 @@ public sealed class BakeViewUseCase(
             FactsParquet = result.FactsParquet,
             FoldRoute = foldRoute,
         }, ct);
+        progress?.Report(new BakeProgress(BakeStage.Publishing, $"Publishing {view.Id} release {version}."));
         store.PublishLatest(view.Id, version);
 
-        if (foldRoute is not null)
-            Console.WriteLine($"  {view.Id}: fold route = {foldRoute.Execution} " +
-                $"(worst tile {foldRoute.WorstTileBytes:N0} B vs budget {foldRoute.BudgetBytes:N0} B" +
-                (foldRoute.Forced ? ", forced" : "") + ")");
-
-        return new BakeOutcome(view.Id, version, probe.Count, result.Tiles.Count,
+        var outcome = new BakeOutcome(view.Id, version, probe.Count, result.Tiles.Count,
             result.Tiles.Count(t => t.IsLeaf), result.LeafPointCount, probe.Bounds, plan.MaxZoom);
+        progress?.Report(new BakeProgress(BakeStage.Completed,
+            $"{view.Id} → {version}: {probe.Count:N0} rows, {result.Tiles.Count} tiles."));
+        return outcome;
     }
-
-    // The grouped marks parquet sits beside the facts staging (<id>.marks.parquet).
-    private static string MarksPath(string staging) => Path.ChangeExtension(staging, ".marks.parquet");
 
     // Canonical dictionary order per dict-encoded channel: its scanned domain values, but only when the
     // scan was complete (a truncated domain has no trustworthy order, so that channel is left to the
@@ -167,6 +176,6 @@ public sealed class BakeViewUseCase(
         return orders.Count > 0 ? orders : null;
     }
 
-    private static string NewVersion() =>
-        "v" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
+    private static string NewVersion(DateTimeOffset now) =>
+        "v" + now.UtcDateTime.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
 }

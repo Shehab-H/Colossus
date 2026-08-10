@@ -38,7 +38,7 @@ Two contracts are implemented in more than one place/language. Each has **one so
    - Authority: [`TileMath`](../../../../src/Colossus.Domain/Tiling/TileMath.cs) (C#).
    - SQL projection: [`TileSql`](../../../../src/Colossus.Infrastructure/Tiling/TileSql.cs) renders the same math
      as DuckDB expressions for the reducers — the *only* place tile math becomes SQL.
-   - Client mirror: [`web/src/lib/tiling.ts`](../../../../web/src/lib/tiling.ts) `pointToTile`/`tileRect`.
+   - Client mirror: [`web/src/features/map-viewer/engine/tiling.ts`](../../../../web/src/features/map-viewer/engine/tiling.ts) `pointToTile`/`tileRect`.
    - Pinned by: [`tests/fixtures/tiling-cases.json`](../../../../tests/fixtures/tiling-cases.json), verified by
      the C# `TilingConformanceTests` (both `TileMath` and `TileSql`-through-DuckDB) **and** the web
      `tiling.test.ts`. Change the scheme → regenerate the fixture → both sides must still pass.
@@ -46,7 +46,7 @@ Two contracts are implemented in more than one place/language. Each has **one so
 2. **The canonical tile schema** — the column names every tile carries (RULES R3).
    - Authority: [`TileSchema`](../../../../src/Colossus.Domain/Tiling/TileSchema.cs) (`x`, `y`, `geometry`,
      `part_offsets`, `triangles`, `id`, `GridPerTile`).
-   - Client mirror: [`web/src/lib/schema.ts`](../../../../web/src/lib/schema.ts) `TileColumns` / `GRID_PER_TILE`.
+   - Client mirror: [`web/src/features/map-viewer/engine/schema.ts`](../../../../web/src/features/map-viewer/engine/schema.ts) `TileColumns` / `GRID_PER_TILE`.
    - Referenced through the constant everywhere (adapter emit, Arrow writer, client read) — never a
      string literal — so a rename is one edit and a compile error, not a runtime break downstream.
 

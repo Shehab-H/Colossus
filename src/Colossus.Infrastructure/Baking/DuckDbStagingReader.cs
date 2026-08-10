@@ -1,4 +1,4 @@
-using Colossus.Domain.Baking;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Infrastructure.DuckDb;
 
 namespace Colossus.Infrastructure.Baking;

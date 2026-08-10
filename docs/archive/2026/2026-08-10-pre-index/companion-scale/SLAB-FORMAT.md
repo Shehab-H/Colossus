@@ -3,7 +3,7 @@
 Normative spec for the R1 fact-companion slab. This is the **fourth cross-language authority** alongside
 tiling, schema, and the measure grammar: the C# bake writer
 ([`SlabCompanionWriter`](../../../../../src/Colossus.Infrastructure/Tiles/SlabCompanionWriter.cs)) and the TS
-client reader/fold ([`web/src/lib/slab.ts`](../../../../../web/src/lib/slab.ts)) both implement exactly what is
+client reader/fold ([`web/src/features/map-viewer/engine/slab.ts`](../../../../../web/src/features/map-viewer/engine/slab.ts)) both implement exactly what is
 below, and both are pinned by the shared fixture [`tests/fixtures/slab-cases.json`](../../../../../tests/fixtures/slab-cases.json).
 
 > **v2 (2026-07-18, companion-scale R5 second half).** The dense/sparse gate is **per leaf tile**, not per
@@ -35,7 +35,7 @@ the client's context compare must all agree on it, or a fold silently resolves e
 canonical form is **ISO `YYYY-MM-DD`** — the form `tests/fixtures/slab-cases.json` pins and the client's
 range compare needs (lexical order on ISO is chronological). The bake normalises to it whatever the adapter
 delivered: a `DATE`, an integer day count (ClickHouse's `Date` extracts as one), or epoch millis — the same
-day-count vs epoch-millis split `web/src/lib/dates.ts` uses. The conversion follows the channel's declared
+day-count vs epoch-millis split `web/src/features/map-viewer/engine/dates.ts` uses. The conversion follows the channel's declared
 temporal role, never its name (data-agnostic).
 
 > Fixed 2026-07-17 (found while building R4's parity gate): the domain was scanned with a bare
