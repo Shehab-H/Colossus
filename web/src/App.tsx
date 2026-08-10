@@ -16,6 +16,7 @@ import InspectPanel, { type Selection } from './components/InspectPanel';
 import LegendBox from './components/Legend';
 import ThemeToggle from './components/ThemeToggle';
 import { useTiles, type RenderedTile } from './hooks/useTiles';
+import { useStagedTileAdmission } from './hooks/useStagedTileAdmission';
 import { useViewData } from './hooks/useViewData';
 import { foldActive, useMeasureFold } from './hooks/useMeasureFold';
 import { basemapStyle } from './lib/basemap';
@@ -70,6 +71,7 @@ export default function App() {
   const [viewsError, setViewsError] = useState<string | null>(null);
   const [viewId, setViewId] = useState<string | null>(urlViewId());
   const [camera, setCamera] = useState<CameraState | null>(null);
+  const [mapMoving, setMapMoving] = useState(false);
   const [size, setSize] = useState({ width: window.innerWidth, height: window.innerHeight });
 
   useEffect(() => {
@@ -178,6 +180,11 @@ export default function App() {
     drawnRef.current = drawn;
   });
 
+  // Dense cover swaps can make deck allocate/upload every replacement layer in one frame. Mount new
+  // layers hidden one per frame, then reveal the already-resident cover atomically; the previous cover
+  // remains visible throughout the warm-up.
+  const admitted = useStagedTileAdmission(drawn, manifest?.view.viewport === 'geo' && mapMoving);
+
   // GPU state that rides on the layers, never on tile identity: the color LUT (Phase 2) and the filter
   // uniforms (Phase 1). A measure/scale/theme change or a filter change makes new layer instances with the
   // SAME id and SAME `data` object — deck diffs props and updates a texture / uniforms, re-uploading no
@@ -279,7 +286,7 @@ export default function App() {
     if (!manifest) return [];
     const coordinateSystem = isGeo ? COORDINATE_SYSTEM.LNGLAT : COORDINATE_SYSTEM.CARTESIAN;
     const pickable = !!inspect; // marks answer clicks only when the view opts into inspection
-    return timedSync('layers', () => drawn.map(({ key, data }) => {
+    return timedSync('layers', () => admitted.map(({ key, data, visible }) => {
       // Key by tile ONLY — never by measure/filter. A stable id lets deck match the existing layer
       // and swap attribute buffers in place; folding measure into the id destroyed and rebuilt every
       // on-screen layer per picker switch, re-running geometry setup for ~1M cells in one frame.
@@ -295,6 +302,7 @@ export default function App() {
           positionFormat: 'XY',
           coordinateSystem,
           opacity: 0.85,
+          visible,
           pickable,
           ...gpuProps,
           // autoHighlight is intentionally OFF: it forces a full picking pass + synchronous
@@ -313,12 +321,13 @@ export default function App() {
         radiusMaxPixels: 3,
         stroked: false,
         opacity: 0.85,
+        visible,
         pickable,
         ...gpuProps,
         autoHighlight: false, // see the polygon layer above — per-pointermove picking is the pan stall
       });
     }), (ls) => ({ n: ls.length }));
-  }, [drawn, viewId, manifest, isGeo, isPolygon, renderChannel, colorCategories, inspect, slots, gpuProps, folded, contextKey]);
+  }, [admitted, viewId, manifest, isGeo, isPolygon, renderChannel, colorCategories, inspect, slots, gpuProps, folded, contextKey]);
 
   return (
     <div style={{ position: 'absolute', inset: 0, background: 'var(--app-bg)' }}>
@@ -326,8 +335,13 @@ export default function App() {
       {isGeo && camera && (
         <BaseMap
           mapStyle={basemapStyle(theme)}
-          {...(camera as object)}
+           {...(camera as object)}
+          onMoveStart={() => setMapMoving(true)}
           onMove={(e: { viewState: CameraState }) => setCamera(e.viewState)}
+          onMoveEnd={(e: { viewState: CameraState }) => {
+            setCamera(e.viewState);
+            setMapMoving(false);
+          }}
           onLoad={(e: { target: { resize: () => void } }) => e.target.resize()}
           style={{ position: 'absolute', inset: 0 }}
         >

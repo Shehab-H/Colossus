@@ -30,7 +30,7 @@ cd web && npx vite-node scripts/bench-companion.ts -- mobile-coverage mobile-dom
 find tiles/<view>/<version> -name '*.facts.arrow' -printf '%s\n' | awk '{s+=$1} END{print s}'
 ```
 
-The harness ([web/scripts/bench-companion.ts](../../web/scripts/bench-companion.ts)) reads
+The harness ([web/scripts/bench-companion.ts](../../../../../web/scripts/bench-companion.ts)) reads
 `latest.json → manifest.json`, ranges each leaf block out of `facts.pack` exactly as the worker does,
 and calls the **same** `decodeCompanion` + `foldTile` the app runs. The worst leaf tile is the one
 with the largest packed block; fold p50/p95 are the best-of-3 per context over 60 varied contexts
@@ -131,13 +131,13 @@ Every demanded win is met or beaten, and no wire number is chased past what the 
 **Caveats (measured, not estimated).** Bake wall time is sensitive to ClickHouse cache warmth — the after
 run had a warm DB (up ~1 h) vs the baseline's cold start, so the −24 %/−26 % is not claimed as a slab bake
 speedup, only recorded. The dense O(1) fold path is not measured on a real view (no registered view clears
-the 0.5 occupancy gate); its correctness is pinned by [slab-cases.json](../../tests/fixtures/slab-cases.json)
+the 0.5 occupancy gate); its correctness is pinned by [slab-cases.json](../../../../../tests/fixtures/slab-cases.json)
 across both C# and TS.
 
 ### Plane-split realized in the live client (browser-measured)
 
 The plane-split rows above measure the *format's* capability; the running client now exercises it. The map
-folds only the active colour measure ([`useMeasureFold`](../../web/src/hooks/useMeasureFold.ts) is handed
+folds only the active colour measure ([`useMeasureFold`](../../../../../web/src/hooks/useMeasureFold.ts) is handed
 `mapMeasures = [renderChannel]`), so each on-screen tile fetches just that measure's planes — not the whole
 companion — with planes cached under the tile key (SLAB-FORMAT §5). Measured live against the running app
 (mobile-dominance, colour `dominant_operator` → planes `[sum__tests, @idx]`), per-tile scoped wire bytes vs
@@ -157,4 +157,4 @@ for the single-plane measures (dominant_operator / total_tests / apex_share) tha
 The tooltip still shows every inspect channel: it fetches the remaining inspect planes for the one clicked
 tile on demand (`foldInspect`), so nothing regresses. Row-form bakes and non-measure colour channels keep
 fetching every measure (no split). Correctness of folding over a plane subset (and of the incremental merge)
-is pinned by [slab.test.ts](../../web/src/lib/slab.test.ts).
+is pinned by [slab.test.ts](../../../../../web/src/lib/slab.test.ts).

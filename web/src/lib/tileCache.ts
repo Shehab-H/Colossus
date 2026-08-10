@@ -1,4 +1,5 @@
 import { tileBytes, type TileColumn, type TileData } from './tileData';
+import { isPerfOn, record } from './perf';
 
 const RETRY_MS = 2000;
 // Resident-tile budget. Byte-based, not count-based: tile weight varies ~100× across datasets (a
@@ -68,12 +69,17 @@ export class TileCache {
     this.loading.set(key, load.cancel);
     load.promise
       .then((tile) => {
+        const t0 = isPerfOn() ? performance.now() : 0;
         this.loading.delete(key);
         this.failedAt.delete(key);
         const next = new Map(this.snapshot.tiles);
         next.set(key, tile);
         this.sizes.set(key, tileBytes(tile));
         this.commit(this.prune(next, keepActive()), null);
+        if (t0) {
+          const t = performance.now();
+          record({ stage: 'cache.admit', ms: t - t0, t, bytes: this.sizes.get(key), key });
+        }
       })
       .catch((e: unknown) => {
         this.loading.delete(key);

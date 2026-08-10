@@ -1,6 +1,6 @@
 # Seeds colossus.mobile_coverage: Ookla open-data mobile tiles (real geometry + densities) expanded
 # with a deterministic synthetic operator dimension. This is the reference dataset for the dynamic-
-# aggregation model (docs/VIEW_CONFIG.md): geometry is NOT unique — each z14 quadkey repeats per
+# aggregation model (docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md): geometry is NOT unique — each z14 quadkey repeats per
 # (quarter, operator), so per-mark values only exist as filter-dependent aggregates.
 #
 # Synthetic model (all deterministic — reseeding reproduces byte-identical data):

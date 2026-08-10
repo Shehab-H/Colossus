@@ -71,7 +71,7 @@ if (args is ["compress", .. var rest])
 var selected = args.Length > 0 ? args.Select(views.Get).ToArray() : views.All().ToArray();
 if (selected.Length == 0)
 {
-    Console.WriteLine($"No views registered under {RepoPaths.ViewsDir}. See docs/VIEW_CONFIG.md.");
+    Console.WriteLine($"No views registered under {RepoPaths.ViewsDir}. See docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md.");
     return 0;
 }
 

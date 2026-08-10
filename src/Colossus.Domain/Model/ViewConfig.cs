@@ -3,7 +3,7 @@ using Colossus.Domain.Measures;
 
 namespace Colossus.Domain.Model;
 
-/// <summary>A declarative, uploadable view (docs/VIEW_CONFIG.md) — the one artifact you author to add
+/// <summary>A declarative, uploadable view (docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md) — the one artifact you author to add
 /// a visualization. The engine knows nothing of "map" or "scatter"; those are just descriptors.</summary>
 public sealed record ViewConfig
 {

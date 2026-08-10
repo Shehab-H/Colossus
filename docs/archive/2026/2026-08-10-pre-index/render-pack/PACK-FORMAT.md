@@ -1,8 +1,8 @@
 # Render pack — format and the block-order rule
 
 The render pack (tile-transfer Phase 3) replaces the per-tile render files of a baked version with one
-archive. Authority: [`RenderPack`](../../src/Colossus.Domain/Model/Manifest.cs) (contract) and
-[`RenderPackWriter`](../../src/Colossus.Infrastructure/Tiles/RenderPackWriter.cs) (writer + reader).
+archive. Authority: [`RenderPack`](../../../../../src/Colossus.Domain/Model/Manifest.cs) (contract) and
+[`RenderPackWriter`](../../../../../src/Colossus.Infrastructure/Tiles/RenderPackWriter.cs) (writer + reader).
 
 > **Status.** The bake can write the pack and `verify` reads through it. **The client does not read it yet** —
 > the browser still takes the per-tile path. Packing is therefore **opt-in behind `COLOSSUS_RENDER_PACK=1`**:

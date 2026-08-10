@@ -6,7 +6,8 @@ Render very large datasets (10M–1000M+ rows) with **no aggregation or simplifi
 source query (ClickHouse) → bake → Arrow IPC LOD tiles → static immutable serve → deck.gl binary attributes → GPU
 ```
 
-A chart type is not a pipeline; it's `(mark + channel mapping) × reduction primitive`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code is organized, [docs/PLAN.md](docs/PLAN.md) for the full design, [docs/RULES.md](docs/RULES.md) for the hard invariants, and [docs/VIEW_CONFIG.md](docs/VIEW_CONFIG.md) for the config schema.
+A chart type is not a pipeline; it's `(mark + channel mapping) × reduction primitive`. Start at the
+[documentation index](docs/README.md) for active work and the preserved historical reference set.
 
 ## Layout
 
@@ -24,7 +25,8 @@ A chart type is not a pipeline; it's `(mark + channel mapping) × reduction prim
 
 ## Dev quickstart
 
-Colossus reads from your own ClickHouse tables — there is no bundled data generator. Point a view at your data ([docs/VIEW_CONFIG.md](docs/VIEW_CONFIG.md)), then:
+Colossus reads from your own ClickHouse tables — there is no bundled data generator. Point a view at your
+data using the archived canonical [view configuration reference](docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md), then:
 
 ```bash
 # 1. ClickHouse
@@ -60,7 +62,6 @@ embeds one baked table many ways — the design's stress test; open it at `/embe
 
 ## Status
 
-Batch engine works end-to-end: planner-chosen reduction, Arrow IPC LOD tiles, a config-driven renderer
-with a full color-scale system (+ legend), click-to-inspect, a dark/light basemap toggle, and
-URL-addressable embeddable maps. Interactive filtering and the queryable store are next — see the
-roadmap in [docs/PLAN.md](docs/PLAN.md).
+The batch engine works end-to-end: planner-chosen reduction, Arrow IPC LOD tiles, GPU filtering and color,
+click-to-inspect, a dark/light basemap toggle, group/measure folding, packed tile transfer, and
+URL-addressable embeddable maps. Current work is indexed in [docs/README.md](docs/README.md).

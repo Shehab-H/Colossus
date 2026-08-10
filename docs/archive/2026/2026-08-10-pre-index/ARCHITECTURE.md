@@ -25,7 +25,7 @@ Colossus.Bake  /  Colossus.Server   hosts. Thin: build config + DI, then delegat
 - **Ports** (Domain interfaces): `ISourceAdapter`, `IReductionStrategy`/`IReductionCatalog`,
   `IBakeStore`, `IViewCatalog`, `ITileReader`. Each has exactly one adapter in Infrastructure today and
   is swappable without touching the layers above.
-- **Composition root**: [`AddColossus`](../src/Colossus.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs)
+- **Composition root**: [`AddColossus`](../../../../src/Colossus.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs)
   wires the whole graph. Both hosts call it, so wiring exists once. Config binds to typed options
   (`ClickHouseOptions`, `ServerOptions`) with the legacy `COLOSSUS_*` env vars taking precedence.
 
@@ -35,18 +35,18 @@ Two contracts are implemented in more than one place/language. Each has **one so
 **test that pins the copies to it** — this is what keeps the system from silently drifting.
 
 1. **The tiling scheme** — "which tile does a point fall in at zoom z over this bbox."
-   - Authority: [`TileMath`](../src/Colossus.Domain/Tiling/TileMath.cs) (C#).
-   - SQL projection: [`TileSql`](../src/Colossus.Infrastructure/Tiling/TileSql.cs) renders the same math
+   - Authority: [`TileMath`](../../../../src/Colossus.Domain/Tiling/TileMath.cs) (C#).
+   - SQL projection: [`TileSql`](../../../../src/Colossus.Infrastructure/Tiling/TileSql.cs) renders the same math
      as DuckDB expressions for the reducers — the *only* place tile math becomes SQL.
-   - Client mirror: [`web/src/lib/tiling.ts`](../web/src/lib/tiling.ts) `pointToTile`/`tileRect`.
-   - Pinned by: [`tests/fixtures/tiling-cases.json`](../tests/fixtures/tiling-cases.json), verified by
+   - Client mirror: [`web/src/lib/tiling.ts`](../../../../web/src/lib/tiling.ts) `pointToTile`/`tileRect`.
+   - Pinned by: [`tests/fixtures/tiling-cases.json`](../../../../tests/fixtures/tiling-cases.json), verified by
      the C# `TilingConformanceTests` (both `TileMath` and `TileSql`-through-DuckDB) **and** the web
      `tiling.test.ts`. Change the scheme → regenerate the fixture → both sides must still pass.
 
 2. **The canonical tile schema** — the column names every tile carries (RULES R3).
-   - Authority: [`TileSchema`](../src/Colossus.Domain/Tiling/TileSchema.cs) (`x`, `y`, `geometry`,
+   - Authority: [`TileSchema`](../../../../src/Colossus.Domain/Tiling/TileSchema.cs) (`x`, `y`, `geometry`,
      `part_offsets`, `triangles`, `id`, `GridPerTile`).
-   - Client mirror: [`web/src/lib/schema.ts`](../web/src/lib/schema.ts) `TileColumns` / `GRID_PER_TILE`.
+   - Client mirror: [`web/src/lib/schema.ts`](../../../../web/src/lib/schema.ts) `TileColumns` / `GRID_PER_TILE`.
    - Referenced through the constant everywhere (adapter emit, Arrow writer, client read) — never a
      string literal — so a rename is one edit and a compile error, not a runtime break downstream.
 
@@ -55,14 +55,14 @@ Two contracts are implemented in more than one place/language. Each has **one so
 Adding capability means adding a small class at a seam, not editing a pipeline:
 
 - **Source geometry** → an `IGeometrySql` in
-  [`ClickHouse/Geometry/`](../src/Colossus.Infrastructure/ClickHouse/Geometry) selected by
+  [`ClickHouse/Geometry/`](../../../../src/Colossus.Infrastructure/ClickHouse/Geometry) selected by
   `GeometrySqlFactory`. (Point and Quadkey today; WKT/geohash/H3 are new classes.)
 - **Reduction primitive** → an `IReductionStrategy` resolved by `ReductionCatalog`. (RawPassthrough,
   QuadtreeLod, Aggregate today; SignalM4 next.) The two current descents are deliberately *not* forced
   into one shared "pyramid" — a depth-first adaptive split and a breadth-first level pass are different
   algorithms; the genuinely shared mechanics are `DuckDbSession`, `TileSql`, and `ArrowTileWriter`.
 - **Source adapter** → an `ISourceAdapter` resolved by `SourceAdapterCatalog`. (ClickHouse today.)
-- **Reduction choice** is data-driven, not authored: [`BakePlanner`](../src/Colossus.Application/BakePlanner.cs)
+- **Reduction choice** is data-driven, not authored: [`BakePlanner`](../../../../src/Colossus.Application/BakePlanner.cs)
   maps a source probe → `BakePlan` (reduction, depth, budget, root).
 
 ## Frontend (web/)

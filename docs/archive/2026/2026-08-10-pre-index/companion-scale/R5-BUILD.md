@@ -19,7 +19,7 @@ bakes already on disk: mobile-coverage `v20260717T100621Z`, mobile-dominance `v2
 × **quarter** (ordered/cumulative, card 8) → **32 cells**, global occupancy **37.7 %** (< 0.5 → sparse per
 the current per-view gate).
 
-**The re-encoder.** [`tools/Colossus.CompanionBench`](../../tools/Colossus.CompanionBench/Program.cs) — a
+**The re-encoder.** [`tools/Colossus.CompanionBench`](../../../../../tools/Colossus.CompanionBench/Program.cs) — a
 managed C# tool (dictionary *training* needs a managed zstd lib; Node's zlib has the zstd codec but not the
 ZDICT trainer, so this is C# not TS, unlike `bench-companion.ts`). It reads `latest.json → manifest.json`,
 ranges each block out of `facts.pack` exactly as the worker does, reconstructs the **dense** cumulative

@@ -1,7 +1,7 @@
 import { type Companion, type CompanionFetch, type LazyColumns, loadColumns, loadCompanion, loadPackedTile, loadTile, type RenderFetch, type TileData } from './tileData';
 import type { ViewConfig } from './manifest';
 import type { FilterSlots } from './gpuFilter';
-import { emitAll, isPerfOn, type PerfEvent } from './perf';
+import { emitAll, isPerfOn, record, type PerfEvent } from './perf';
 
 interface LoadResponse {
   id: number;
@@ -12,6 +12,8 @@ interface LoadResponse {
   aborted?: boolean;
   /** Stage timings measured in the worker (fetch, inflate, decode) — re-emitted into the main-thread bus. */
   perf?: PerfEvent[];
+  /** Wall-clock timestamp immediately before the worker posted this transferable response. */
+  postedAt?: number;
 }
 
 interface Pending {
@@ -53,6 +55,8 @@ class TileLoader {
   }
 
   private settle(res: LoadResponse): void {
+    if (res.postedAt !== undefined)
+      record({ stage: 'worker.delivery', ms: Math.max(0, Date.now() - res.postedAt), t: performance.now() });
     if (res.perf) emitAll(res.perf);
     const p = this.pending.get(res.id);
     if (!p) return;
