@@ -14,16 +14,16 @@ public sealed record BakePolicyRequest(
 [ApiController]
 [Route("api/maps")]
 [Tags("Maps")]
-public sealed class MapsController(ProductCatalogService catalog) : ControllerBase
+public sealed class MapsController(ProductCatalogService catalog, MapManagementService management) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] bool includeArchived, CancellationToken ct) =>
-        Ok(await catalog.ListMapsAsync(includeArchived: includeArchived, ct: ct));
+        Ok(await management.ListAsync(includeArchived, ct));
 
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
-        try { return Ok(await catalog.GetMapAsync(id, ct)); }
+        try { return Ok(await management.GetAsync(id, ct)); }
         catch (Exception e) { return this.ToResponse(e); }
     }
 
@@ -50,6 +50,13 @@ public sealed class MapsController(ProductCatalogService catalog) : ControllerBa
     public async Task<IActionResult> Archive(Guid id, [FromQuery] long expectedRevision, CancellationToken ct)
     {
         try { return Ok(await catalog.ArchiveMapAsync(id, expectedRevision, ct)); }
+        catch (Exception e) { return this.ToResponse(e); }
+    }
+
+    [HttpPost("{id:guid}/runs")]
+    public async Task<IActionResult> RunNow(Guid id, CancellationToken ct)
+    {
+        try { return Accepted(await management.RunNowAsync(id, ct)); }
         catch (Exception e) { return this.ToResponse(e); }
     }
 

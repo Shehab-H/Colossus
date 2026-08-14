@@ -17,7 +17,7 @@ with the expected pixels. luma.gl exposes the WebGL2 context and mutable buffers
 ## Project integration surface
 
 - Replace the per-tile `ScatterplotLayer`/`SolidPolygonLayer` mapping in
-  [`MapViewerPage.tsx`](../../../../web/src/features/map-viewer/MapViewerPage.tsx) with custom deck.gl `Layer` implementations.
+  [`MapViewerPage.tsx`](../../../../web/src/pages/maps/MapViewerPage.tsx) with custom deck.gl `Layer` implementations.
 - Implement arena allocation, growth, free-list reuse, fragmentation metrics, and deterministic cleanup.
 - Port the existing GPU filter and color-LUT shader behavior from
   [`gpuFilter.ts`](../../../../web/src/features/map-viewer/engine/gpuFilter.ts) and

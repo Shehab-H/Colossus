@@ -23,11 +23,11 @@ The old `?view=` URL remains a compatibility redirect during migration.
 ## Integration surface
 
 - [`App.tsx`](../../../../web/src/app/App.tsx),
-  [`MapViewerPage.tsx`](../../../../web/src/features/map-viewer/MapViewerPage.tsx), and the current map/view bootstrap.
-- [`EmbedDisclosure.tsx`](../../../../web/src/features/map-viewer/components/EmbedDisclosure.tsx),
-  [`Controls.tsx`](../../../../web/src/features/map-viewer/components/Controls.tsx),
-  [`Legend.tsx`](../../../../web/src/features/map-viewer/components/Legend.tsx), and
-  [`InspectPanel.tsx`](../../../../web/src/features/map-viewer/components/InspectPanel.tsx).
+  [`MapViewerPage.tsx`](../../../../web/src/pages/maps/MapViewerPage.tsx), and the current map/view bootstrap.
+- [`EmbedDisclosure.tsx`](../../../../web/src/widgets/map-viewer/EmbedDisclosure.tsx),
+  [`Controls.tsx`](../../../../web/src/widgets/map-viewer/Controls.tsx),
+  [`Legend.tsx`](../../../../web/src/widgets/map-viewer/Legend.tsx), and
+  [`InspectPanel.tsx`](../../../../web/src/widgets/map-viewer/InspectPanel.tsx).
 - URL/embed helpers under [`map-viewer`](../../../../web/src/features/map-viewer) and the static embed fixture.
 - The map-release lookup API introduced by item 02.
 
@@ -79,7 +79,7 @@ camera, filter, color, scale, theme, and debug state. Live full-viewer state rem
 The server's compatibility URL response now returns `/maps/:mapId`.
 
 Iframe messages use the documented `colossus.map-viewer` version-1 envelope for `ready`, `error`, `camera`,
-and `selection`. The dependency-free parent fixture validates the viewer origin and iframe source and was
+and `selection`. The standalone parent fixture validates the viewer origin and iframe source and was
 verified from a separate origin.
 
 ### Public embed contract — version 1

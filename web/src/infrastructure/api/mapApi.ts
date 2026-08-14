@@ -1,7 +1,7 @@
 import type { Manifest } from '@domain/map/manifest';
+import { API_BASE, TILES_BASE } from '@shared/api/config';
 
-const TILES_BASE = import.meta.env.VITE_TILES_BASE ?? 'http://localhost:5174/tiles';
-export const API_BASE = import.meta.env.VITE_API_BASE ?? TILES_BASE.replace(/\/tiles\/?$/, '/api');
+export { API_BASE };
 
 export function tileUrl(viewId: string, version: string, z: number, x: number, y: number): string {
   return `${TILES_BASE}/${viewId}/${version}/${z}/${x}/${y}.arrow`;

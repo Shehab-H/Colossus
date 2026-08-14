@@ -1,6 +1,6 @@
 # Colossus — Showcase site
 
-A standalone, dependency-free static page that presents the Colossus maps to an audience (e.g. a
+A standalone static page that presents the Colossus maps to an audience (e.g. a
 demo for stakeholders). It embeds the live maps as `<iframe>`s in showcase-embed mode — filter and
 color-by controls, no dataset switcher or app chrome.
 

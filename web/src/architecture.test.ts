@@ -3,20 +3,26 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-type Layer = 'app' | 'domain' | 'features' | 'infrastructure' | 'shared';
+type Layer = 'app' | 'pages' | 'widgets' | 'features' | 'entities' | 'domain' | 'infrastructure' | 'shared';
 
 const sourceRoot = fileURLToPath(new URL('.', import.meta.url));
 const aliasRoots: Record<string, Layer> = {
   '@app/': 'app',
+  '@pages/': 'pages',
+  '@widgets/': 'widgets',
   '@domain/': 'domain',
+  '@entities/': 'entities',
   '@features/': 'features',
   '@infrastructure/': 'infrastructure',
   '@shared/': 'shared',
 };
 const allowed: Record<Layer, ReadonlySet<Layer>> = {
-  app: new Set(['app', 'domain', 'features', 'infrastructure', 'shared']),
+  app: new Set(['app', 'pages', 'widgets', 'features', 'entities', 'domain', 'infrastructure', 'shared']),
+  pages: new Set(['pages', 'widgets', 'features', 'entities', 'domain', 'shared']),
+  widgets: new Set(['widgets', 'features', 'entities', 'domain', 'shared']),
+  entities: new Set(['entities', 'shared']),
   domain: new Set(['domain', 'shared']),
-  features: new Set(['domain', 'features', 'infrastructure', 'shared']),
+  features: new Set(['features', 'entities', 'domain', 'infrastructure', 'shared']),
   infrastructure: new Set(['domain', 'infrastructure', 'shared']),
   shared: new Set(['shared']),
 };

@@ -177,13 +177,35 @@ public sealed class ProductCatalogService(
 
     private async Task ValidateMapDraftAsync(MapDraft draft, string workspaceKey, CancellationToken ct)
     {
+        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (!ViewConfig.IsValidId(draft.Slug))
+            errors["slug"] = ["Use non-empty kebab-case containing only lowercase letters, digits, and hyphens."];
+        if (draft.DatasetId == Guid.Empty)
+            errors["datasetId"] = ["Select a dataset."];
+        if (errors.Count > 0) throw new CatalogValidationException(errors);
+
         var dataset = await datasets.FindAsync(draft.DatasetId, ct)
             ?? throw new CatalogRelationshipException($"Unknown dataset '{draft.DatasetId}'.");
         var connection = await connections.FindAsync(dataset.Draft.ConnectionId, ct)
             ?? throw new CatalogRelationshipException($"Unknown connection '{dataset.Draft.ConnectionId}'.");
         if (dataset.Archived || connection.Archived || dataset.WorkspaceKey != workspaceKey || connection.WorkspaceKey != workspaceKey)
             throw new CatalogRelationshipException("Map dependencies are archived or belong to another workspace.");
-        _ = draft.ToSnapshot(dataset, connection);
+        try
+        {
+            _ = draft.ToSnapshot(dataset, connection);
+        }
+        catch (ArgumentException error)
+        {
+            string field = error.Message switch
+            {
+                var message when message.Contains("encoding", StringComparison.OrdinalIgnoreCase) => "encoding",
+                var message when message.Contains("measure", StringComparison.OrdinalIgnoreCase) => "measures",
+                var message when message.Contains("inspect", StringComparison.OrdinalIgnoreCase) => "inspect",
+                var message when message.Contains("geometry", StringComparison.OrdinalIgnoreCase) => "datasetId",
+                _ => "definition",
+            };
+            throw new CatalogValidationException(new Dictionary<string, string[]> { [field] = [error.Message] });
+        }
     }
 
     private async Task<ViewConfig> ResolveSnapshotAsync(CatalogMap map, CancellationToken ct)

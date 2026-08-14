@@ -4,7 +4,7 @@
 // ranged) are cached; latest.json, manifests, and the API pass through.
 // Version rotation is the GC: on manifest activation the client posts {viewId, version}, and caches for
 // the view's other versions are dropped. Registered for production builds only (see swClient.ts). Plain
-// JS, no bundler, no dependencies — keep it small.
+// This service worker executes directly in the browser, outside the application bundle.
 
 const TILE_RE = /\/[^/]+\/v[^/]+\/\d+\/\d+\/\d+(\.facts)?\.arrow$/; // <viewId>/<version>/z/x/y[.facts].arrow
 const PACK_RE = /\/([^/]+)\/(v[^/]+)\/[^/]+\.pack$/; // <viewId>/<version>/facts.pack (+ ?tile= and a Range header)

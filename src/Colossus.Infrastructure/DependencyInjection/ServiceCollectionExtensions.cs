@@ -73,6 +73,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<BakePlanner>();
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<ProductCatalogService>();
+        services.AddSingleton<MapManagementService>();
         services.AddSingleton<LegacyViewImporter>();
         services.AddSingleton<DatabaseBootstrapper>();
         services.AddSingleton<IViewCatalog, DatabaseViewCompatibility>();

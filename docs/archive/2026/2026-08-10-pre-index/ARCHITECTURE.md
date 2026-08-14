@@ -11,7 +11,7 @@ are in [RULES.md](RULES.md); the canonical config DSL (including the group/measu
 Dependencies point inward. Domain knows nothing of ClickHouse, DuckDB, ASP.NET, or the filesystem.
 
 ```
-Colossus.Domain          models + ports (interfaces). No I/O, no dependencies.
+Colossus.Domain          models + ports (interfaces). No I/O.
    ▲
 Colossus.Application      use cases: BakeViewUseCase, BakePlanner, VerifyFidelityUseCase.
    ▲                        Orchestrates ports; depends only on Domain.

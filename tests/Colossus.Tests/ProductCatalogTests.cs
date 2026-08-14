@@ -99,6 +99,40 @@ public sealed class ProductCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task ManagementQueries_DistinguishFailedAndPublishedMaps()
+    {
+        var (store, catalog) = CreateCatalog();
+        var connection = await catalog.CreateConnectionAsync(Connection());
+        var dataset = await catalog.CreateDatasetAsync(Dataset(connection.Id));
+        var failedMap = await catalog.CreateMapAsync(Map(dataset.Id, "failed-map"));
+        var publishedMap = await catalog.CreateMapAsync(Map(dataset.Id, "published-map"));
+        var failedSnapshot = await catalog.ResolveSnapshotAsync(failedMap.Draft.Slug);
+        var publishedSnapshot = await catalog.ResolveSnapshotAsync(publishedMap.Draft.Slug);
+        var now = new DateTimeOffset(2026, 8, 10, 13, 0, 0, TimeSpan.Zero);
+        var failedRun = await ((IBakeRunRepository)store).CreateAsync(new BakeRun(
+            Guid.NewGuid(), failedMap.Id, failedMap.Revision, failedSnapshot, BakeRunStatus.Failed,
+            now, StartedAt: now, CompletedAt: now.AddMinutes(1), Error: "source unavailable"));
+        var publishedRun = await ((IBakeRunRepository)store).CreateAsync(new BakeRun(
+            Guid.NewGuid(), publishedMap.Id, publishedMap.Revision, publishedSnapshot, BakeRunStatus.Succeeded,
+            now, StartedAt: now, CompletedAt: now.AddMinutes(2)));
+        await ((IReleaseRepository)store).CreateAsync(new CatalogRelease(
+            Guid.NewGuid(), publishedMap.Id, publishedRun.Id, "v20260810T130200Z",
+            "tiles/published-map/v20260810T130200Z", now.AddMinutes(2)));
+        var management = new MapManagementService(catalog, store, store, store, store, store);
+
+        var maps = await management.ListAsync();
+        var failed = Assert.Single(maps, map => map.Id == failedMap.Id);
+        var published = Assert.Single(maps, map => map.Id == publishedMap.Id);
+
+        Assert.Equal(MapPublicationState.LastRunFailed, failed.PublicationState);
+        Assert.Equal(BakeRunStatus.Failed, failed.LastRunStatus);
+        Assert.Equal(failedRun.Error, failed.LastFailure);
+        Assert.Equal(MapPublicationState.Published, published.PublicationState);
+        Assert.Equal("v20260810T130200Z", published.CurrentRelease);
+        Assert.Equal(now.AddMinutes(2), published.PublishedAt);
+    }
+
+    [Fact]
     public async Task LegacyImport_IsIdempotentEquivalentAndNonDestructive()
     {
         string legacyDir = Path.Combine(RepoPaths.Root, "views");

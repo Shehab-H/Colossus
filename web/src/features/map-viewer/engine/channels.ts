@@ -4,7 +4,7 @@ import { fetchArrowTable } from './arrow';
 import { parseMeasure } from './measures';
 import type { ColorDomain } from './colorScale';
 
-// Date/ALL helpers live in dates.ts (dependency-free, so measures.ts can share them without a cycle);
+// Date/ALL helpers live in dates.ts so measures.ts can share the behavior without a module cycle;
 // imported for internal use and re-exported so existing importers keep resolving them from './channels'.
 import { ALL, RANGE_SEP, parseDateRange, makeDateRange, inDateRange, type DateRange } from './dates';
 export { ALL, RANGE_SEP, parseDateRange, makeDateRange, inDateRange, type DateRange };

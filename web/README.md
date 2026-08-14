@@ -1,32 +1,37 @@
-# React + TypeScript + Vite
+# Colossus web
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 application for the Colossus map control plane, full viewer, and embeddable viewer. The UI uses a
+Vodafone-inspired Sass design system and product-oriented dependency boundaries documented in
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```powershell
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The Vite application runs on `http://127.0.0.1:5173` by default.
+
+## Component workbench
+
+```powershell
+npm run storybook
+```
+
+Storybook runs on `http://127.0.0.1:6006`. It exposes the shared primitives and composed viewer widgets in
+light and dark themes, with interaction and accessibility checks available from the testing panel.
+
+## Quality gates
+
+```powershell
+npm run lint
+npm test
+npm run test:storybook
+npm run test:visual
+npm run build
+npm run build:storybook
+```
+
+Use `npm run test:visual:update` only when an intentional visual change has been reviewed. A fresh machine
+can install the visual-test browser with `npm run test:browser:install`.

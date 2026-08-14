@@ -9,6 +9,9 @@ obj/
 # Node
 node_modules/
 web/dist/
+web/storybook-static/
+web/playwright-report/
+web/test-results/
 
 # Bake output (derived data — rebakeable from source).
 # Anchored to repo root so it never matches source dirs like src/.../Tiles/.

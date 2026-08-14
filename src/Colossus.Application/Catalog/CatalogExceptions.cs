@@ -19,3 +19,10 @@ public sealed class CatalogConcurrencyException(string message) : CatalogExcepti
 public sealed class CatalogRelationshipException(string message) : CatalogException(message)
 {
 }
+
+public sealed class CatalogValidationException(
+    IReadOnlyDictionary<string, string[]> errors,
+    string message = "The catalog definition is invalid.") : CatalogException(message)
+{
+    public IReadOnlyDictionary<string, string[]> Errors { get; } = errors;
+}

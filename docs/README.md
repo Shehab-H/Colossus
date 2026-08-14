@@ -8,7 +8,7 @@ documentation for current work lives under `sagas/`; completed or superseded mat
 
 | Saga | Status | Next decision |
 | --- | --- | --- |
-| [002 — Productized map application](sagas/productized-map-application/README.md) | Active; map management application is next | Begin the map-management page and draft workflow (item 04) |
+| [002 — Productized map application](sagas/productized-map-application/README.md) | Active; design system and component workbench verified | Evaluate routing/data ownership and bundle splitting (item 04a) |
 
 ## System map
 

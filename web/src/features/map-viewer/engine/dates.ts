@@ -1,5 +1,5 @@
-// Filter-value helpers shared by the channel model and the measure fold. Kept dependency-free so both
-// channels.ts and measures.ts can import them without a cycle.
+// Filter-value helpers shared by the channel model and the measure fold. This module owns the common
+// semantics so channels.ts and measures.ts do not need to depend on each other.
 
 /** Sentinel filter value meaning "no predicate on this channel". */
 export const ALL = '(all)';

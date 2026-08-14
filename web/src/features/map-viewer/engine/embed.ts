@@ -1,5 +1,5 @@
 import type { ColorSpec, ScaleType } from '@domain/map/manifest';
-import type { Theme } from './theme';
+import type { Theme } from '@shared/theme/useTheme';
 
 // Embeddable maps: a view is fully addressable by URL, so an <iframe> reproduces an exact map — the
 // view, camera, color-by channel + scale, theme, and any coarse filters. `embed=1` drops the chrome

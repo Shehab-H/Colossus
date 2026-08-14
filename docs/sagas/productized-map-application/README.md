@@ -1,8 +1,8 @@
 # Saga 002 — Productized map application
 
-- **Status:** Active; map management application is next
+- **Status:** Active; frontend design-system migration underway before source preview
 - **Created:** 2026-08-10
-- **Last verified:** 2026-08-10
+- **Last verified:** 2026-08-14
 
 ## Objective
 
@@ -45,7 +45,7 @@ The runtime separates into three surfaces:
 
 | Order | Item | Status | Estimated production work |
 | --- | --- | --- | ---: |
-| 4 | [Map management application](04-map-management-application.md) | Candidate | 5–8 engineering days |
+| 4a | [Frontend design system and UI architecture](04a-frontend-design-system-and-ui-architecture.md) | Active | 4–6 engineering days |
 | 5 | [Source adapter and preview platform](05-source-adapter-and-preview-platform.md) | Candidate | 4–7 engineering days |
 | 6 | [Raw Parquet source adapter](06-raw-parquet-source-adapter.md) | Candidate | 4–6 engineering days |
 | 7 | [Trino source adapter](07-trino-source-adapter.md) | Candidate | 6–10 engineering days |
@@ -71,6 +71,10 @@ Completed viewer shell: [item 03 — viewer shell and embed contract](../../arch
 established canonical single-map routes, a responsive application layout around a dedicated map window,
 and a versioned cross-origin iframe contract without map-catalog loading.
 
+Completed map management: [item 04 — map management application](../../archive/2026/2026-08-10-productized-map-application/04-map-management-application.md)
+established the `/maps` product home, durable create/edit/detail workflows, structured validation,
+run/schedule controls, browser-verified archival, and management read models for future job and release state.
+
 ## Evidence already established
 
 - [`BakeViewUseCase`](../../../src/Colossus.Application/BakeViewUseCase.cs) already orchestrates the core
@@ -89,8 +93,11 @@ and a versioned cross-origin iframe contract without map-catalog loading.
 - The renderer now uses direct deck.gl tile-cover admission again; the rejected staged-admission experiment
   and its measurements remain only in the archive.
 
-The remaining product gaps are now above stable catalog and viewer contracts: there is no management page,
-and the bake host still runs synchronously from command-line arguments.
+The catalog, management, and viewer contracts are stable. Management, full viewer, and embed surfaces now use
+the shared Vodafone-inspired Sass design system and enforced page/widget/feature/entity boundaries. The
+Storybook workbench now enforces interactions, accessibility, and reviewed visual baselines in both themes;
+routing/data-ownership evaluation remains active in item 04a. Source discovery and preview are not yet adapter
+capabilities, and the bake host still runs synchronously from command-line arguments.
 
 ## Global acceptance gates
 
@@ -109,8 +116,9 @@ and the bake host still runs synchronously from command-line arguments.
 
 ## Next action
 
-Begin item 04: build the map-management page and draft editing workflow against the application use cases,
-without moving map selection back into an individual viewer.
+Finish item 04a's routing/data-ownership evaluation and record a deliberate bundle-splitting decision, then
+begin item 05: define the source-adapter discovery and preview contract and connect it to the management
+workflow without leaking adapter-specific behavior into the map domain.
 
 ## Handoff memory
 

@@ -1,0 +1,138 @@
+$spacing: (
+  0: 0,
+  1: 0.25rem,
+  2: 0.5rem,
+  3: 0.75rem,
+  4: 1rem,
+  5: 1.25rem,
+  6: 1.5rem,
+  8: 2rem,
+  10: 2.5rem,
+  12: 3rem,
+  16: 4rem,
+  20: 5rem,
+);
+
+$radii: (
+  xs: 0.25rem,
+  sm: 0.5rem,
+  md: 0.75rem,
+  lg: 1rem,
+  xl: 1.5rem,
+  round: 999rem,
+);
+
+$type-scale: (
+  xs: 0.75rem,
+  sm: 0.875rem,
+  md: 1rem,
+  lg: 1.125rem,
+  xl: 1.5rem,
+  2xl: 2rem,
+  3xl: clamp(2.25rem, 5vw, 4rem),
+);
+
+$light-theme: (
+  bg-canvas: #f4f4f4,
+  bg-surface: #ffffff,
+  bg-subtle: #f8f8f8,
+  bg-raised: #ffffff,
+  text-primary: #0d0d0d,
+  text-secondary: #525252,
+  text-inverse: #ffffff,
+  border-default: #d8d8d8,
+  border-strong: #a8a8a8,
+  brand: #e60000,
+  brand-solid: #e60000,
+  brand-solid-hover: #bd0000,
+  brand-solid-active: #990000,
+  brand-soft: #fff0f0,
+  brand-on-soft: #bd0000,
+  success: #18864b,
+  success-soft: #e9f7ef,
+  success-on-soft: #0f713f,
+  warning: #a85d00,
+  warning-soft: #fff5df,
+  danger: #c90000,
+  danger-soft: #fff0f0,
+  info: #0067b1,
+  info-soft: #eaf5fc,
+  focus: #0067b1,
+  overlay: rgba(13, 13, 13, 0.55),
+);
+
+$dark-theme: (
+  bg-canvas: #090909,
+  bg-surface: #161616,
+  bg-subtle: #202020,
+  bg-raised: #242424,
+  text-primary: #f7f7f7,
+  text-secondary: #b8b8b8,
+  text-inverse: #ffffff,
+  border-default: #3d3d3d,
+  border-strong: #686868,
+  brand: #ff3131,
+  brand-solid: #e60000,
+  brand-solid-hover: #bd0000,
+  brand-solid-active: #990000,
+  brand-soft: #3a1010,
+  brand-on-soft: #ff8585,
+  success: #63d297,
+  success-soft: #123323,
+  success-on-soft: #63d297,
+  warning: #ffc46b,
+  warning-soft: #3b2b12,
+  danger: #ff6b6b,
+  danger-soft: #3a1414,
+  info: #67b7ee,
+  info-soft: #102b3d,
+  focus: #67b7ee,
+  overlay: rgba(0, 0, 0, 0.7),
+);
+
+@mixin emit-scale($prefix, $values) {
+  @each $name, $value in $values {
+    --#{$prefix}-#{$name}: #{$value};
+  }
+}
+
+@mixin emit-theme($theme) {
+  @each $name, $value in $theme {
+    --color-#{$name}: #{$value};
+  }
+}
+
+:root {
+  color-scheme: light;
+  --font-sans: "Inter", "Segoe UI", Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-weight-regular: 400;
+  --font-weight-medium: 550;
+  --font-weight-semibold: 650;
+  --font-weight-bold: 750;
+  --line-height-tight: 1.15;
+  --line-height-body: 1.5;
+  --control-height-sm: 2rem;
+  --control-height-md: 2.75rem;
+  --control-height-lg: 3.25rem;
+  --shadow-sm: 0 1px 2px rgba(13, 13, 13, 0.08);
+  --shadow-md: 0 8px 24px rgba(13, 13, 13, 0.1);
+  --shadow-lg: 0 20px 50px rgba(13, 13, 13, 0.14);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --content-max: 94rem;
+  --header-height: 4.5rem;
+  @include emit-scale("space", $spacing);
+  @include emit-scale("radius", $radii);
+  @include emit-scale("font-size", $type-scale);
+  @include emit-theme($light-theme);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.42);
+  @include emit-theme($dark-theme);
+}

@@ -1,0 +1,104 @@
+@use "@shared/ui/styles/mixins" as *;
+
+.management-shell {
+  width: 100%;
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+  overflow: auto;
+  color: var(--color-text-primary);
+  background:
+    radial-gradient(circle at 90% -10%, color-mix(in srgb, var(--color-brand) 9%, transparent), transparent 28rem),
+    var(--color-bg-canvas);
+}
+
+.management-brand-rail {
+  position: fixed;
+  z-index: 30;
+  inset: 0 0 auto;
+  height: 0.25rem;
+  background: var(--color-brand-solid);
+}
+
+.management-skip-link {
+  position: fixed;
+  z-index: 100;
+  top: var(--space-2);
+  left: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  transform: translateY(-150%);
+
+  &:focus { transform: translateY(0); @include focus-ring; }
+}
+
+.management-header {
+  position: sticky;
+  z-index: 20;
+  top: 0;
+  min-height: var(--header-height);
+  border-bottom: 1px solid var(--color-border-default);
+  background: color-mix(in srgb, var(--color-bg-surface) 92%, transparent);
+  backdrop-filter: blur(18px);
+}
+
+.management-header__inner {
+  width: min(var(--content-max), calc(100% - var(--space-8)));
+  min-height: var(--header-height);
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.management-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text-primary);
+  text-decoration: none;
+
+  &:focus-visible { @include focus-ring; border-radius: var(--radius-md); }
+}
+
+.management-brand__mark {
+  width: 2.5rem;
+  height: 2.5rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--color-brand-solid);
+  color: var(--color-text-inverse);
+  box-shadow: 0 0 0 0.25rem var(--color-brand-soft);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+}
+
+.management-brand__copy {
+  display: grid;
+  line-height: 1.1;
+
+  strong { font-size: var(--font-size-md); letter-spacing: -0.02em; }
+  small { margin-top: 0.2rem; color: var(--color-text-secondary); font-size: 0.6875rem; }
+}
+
+.management-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.management-content {
+  width: min(var(--content-max), calc(100% - var(--space-8)));
+  margin-inline: auto;
+  padding-bottom: var(--space-16);
+}
+
+@media (max-width: 44rem) {
+  .management-header__inner,
+  .management-content { width: min(100% - var(--space-6), var(--content-max)); }
+  .management-brand__copy small { display: none; }
+}
