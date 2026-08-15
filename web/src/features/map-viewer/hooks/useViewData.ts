@@ -58,7 +58,8 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
         for (const ch of carriedFilterableChannels(m)) {
           const opts = o[ch.name] ?? [];
           const pick = ch.role === 'temporal' ? opts[opts.length - 1] : opts[0];
-          defaults[ch.name] = slice ? pick ?? ALL : ALL;
+          const authored = m.view.filters?.find((filter) => filter.channel === ch.name)?.default;
+          defaults[ch.name] = authored ?? (slice ? pick ?? ALL : ALL);
         }
         setFilters({ ...defaults, ...seed?.filters });
       })

@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Colossus.Server.Controllers;
 
+public sealed record SourceSchemaRequestBody(string Query);
+
 [ApiController]
 [Route("api/source-adapters")]
 [Tags("Source adapters")]
@@ -27,6 +29,16 @@ public sealed class SourcePreviewController(SourcePreviewService sources) : Cont
     public async Task<IActionResult> Discover(Guid connectionId, CancellationToken ct)
     {
         try { return Ok(await sources.DiscoverAsync(connectionId, ct)); }
+        catch (Exception error) { return this.ToResponse(error); }
+    }
+
+    [HttpPost("api/connections/{connectionId:guid}/schema")]
+    public async Task<IActionResult> InspectSchema(
+        Guid connectionId,
+        SourceSchemaRequestBody request,
+        CancellationToken ct)
+    {
+        try { return Ok(await sources.InspectSchemaAsync(connectionId, request.Query, ct)); }
         catch (Exception error) { return this.ToResponse(error); }
     }
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Manifest, ViewConfig } from '@domain/map/manifest';
-import { canonicalCategories, describeColorDomain, discoverOptions, inDateRange, makeDateRange, parseDateRange } from './channels';
+import { canonicalCategories, describeColorDomain, discoverOptions, filterableChannels, inDateRange, makeDateRange, parseDateRange } from './channels';
 
 // Baked manifest domains must answer WITHOUT touching the tile store; only the legacy fallback
 // (old manifests / truncated domains) may fetch the root tile.
@@ -95,6 +95,20 @@ describe('discoverOptions from baked domains', () => {
   it('fetches the root tile only when some channel is missing a usable domain', async () => {
     await expect(discoverOptions(manifest({ cat: { values: ['x'] } }))).rejects.toThrow('unexpected tile fetch');
     expect(fetchArrowTable).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('authored filter curation', () => {
+  it('keeps automatic controls only when filter configuration is omitted', () => {
+    expect(filterableChannels(view).map((channel) => channel.name)).toEqual(['cat', 'day']);
+    expect(filterableChannels({ ...view, filters: [] })).toEqual([]);
+  });
+
+  it('uses the explicit filter order and excludes unselected channels', () => {
+    expect(filterableChannels({
+      ...view,
+      filters: [{ channel: 'day', control: 'dateRange' }],
+    }).map((channel) => channel.name)).toEqual(['day']);
   });
 });
 

@@ -192,8 +192,8 @@ public sealed record BakePolicy(
         if (MapId == Guid.Empty) throw new ArgumentException("bake policy map is required");
         if (Enabled && (Interval is null || Interval <= TimeSpan.Zero))
             throw new ArgumentException("an enabled bake policy requires a positive interval");
-        if (Enabled && Interval < TimeSpan.FromMinutes(1))
-            throw new ArgumentException("bake policy intervals must be at least one minute");
+        if (Enabled && Interval < TimeSpan.FromSeconds(1))
+            throw new ArgumentException("bake policy intervals must be at least one second");
         if (string.IsNullOrWhiteSpace(TimeZoneId)) throw new ArgumentException("bake policy time zone is required");
         try { _ = TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId); }
         catch (TimeZoneNotFoundException e) { throw new ArgumentException($"unknown bake policy time zone '{TimeZoneId}'", e); }

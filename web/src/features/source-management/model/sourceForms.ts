@@ -4,6 +4,7 @@ import type {
   CreateDatasetInput,
   GeometrySpec,
   SourceAdapterDescriptor,
+  SourceSchema,
 } from '@entities/catalog';
 
 export interface ConnectionFormState {
@@ -51,6 +52,70 @@ export const emptyDatasetForm = (connectionId = ''): DatasetFormState => ({
   geometryColumn: '',
   channels: '[]',
 });
+
+export function applySourceSchema(form: DatasetFormState, schema: SourceSchema): DatasetFormState {
+  const byName = new Map(schema.columns.map((column) => [column.name.toLowerCase(), column.name]));
+  const find = (...names: string[]) => names.map((name) => byName.get(name)).find(Boolean);
+  const quadkey = find('quadkey', 'quad_key');
+  const wkt = find('wkt', 'geometry_wkt', 'geom_wkt');
+  const lon = find('lon', 'lng', 'longitude');
+  const lat = find('lat', 'latitude');
+  const x = find('x');
+  const y = find('y');
+
+  let next: DatasetFormState = { ...form };
+  const geometryColumns = new Set<string>();
+  if (quadkey) {
+    next = { ...next, geometryKind: 'quadkey', geometryColumn: quadkey };
+    geometryColumns.add(quadkey);
+  } else if (wkt) {
+    next = { ...next, geometryKind: 'wkt', geometryColumn: wkt };
+    geometryColumns.add(wkt);
+  } else if (lon && lat) {
+    next = { ...next, geometryKind: 'lonLat', firstCoordinate: lon, secondCoordinate: lat };
+    geometryColumns.add(lon);
+    geometryColumns.add(lat);
+  } else if (x && y) {
+    next = { ...next, geometryKind: 'xy', firstCoordinate: x, secondCoordinate: y };
+    geometryColumns.add(x);
+    geometryColumns.add(y);
+  }
+
+  const channels = schema.columns
+    .filter((column) => !geometryColumns.has(column.name))
+    .map(suggestedChannel)
+    .filter((channel): channel is ChannelSpec => channel !== undefined);
+  return { ...next, channels: JSON.stringify(channels, null, 2) };
+}
+
+export function readChannelSpecs(source: string): ChannelSpec[] {
+  try {
+    const parsed = JSON.parse(source || '[]');
+    return Array.isArray(parsed) ? parsed.map(parseChannel) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function suggestedChannel(column: SourceSchema['columns'][number]): ChannelSpec | undefined {
+  const sourceType = column.sourceType.toLowerCase();
+  const name = column.name;
+  const temporal = /date|time/.test(sourceType) || /(^|_)(date|time|timestamp|quarter|year|month)($|_)/i.test(name);
+  const identity = /(^id$|_id$|^uuid$)/i.test(name);
+  const stringLike = /string|varchar|char|enum|uuid/.test(sourceType);
+  const numeric = /float|double|decimal|int|number|real/.test(sourceType);
+  if (temporal) return { name, column: name, role: 'temporal', type: 'date' };
+  if (stringLike) return { name, column: name, role: identity ? 'identity' : 'dimension', type: 'dict' };
+  if (!numeric) return;
+  const type = /float32|\breal\b/.test(sourceType) ? 'f32'
+    : /float64|double|decimal/.test(sourceType) ? 'f64'
+      : /uint8/.test(sourceType) ? 'u8'
+        : /uint16/.test(sourceType) ? 'u16'
+          : /uint32|uint64|int64/.test(sourceType) ? 'i64'
+            : /int32/.test(sourceType) ? 'i32'
+              : 'f64';
+  return { name, column: name, role: identity ? 'identity' : 'measure', type };
+}
 
 export function parseConnectionForm(
   form: ConnectionFormState,

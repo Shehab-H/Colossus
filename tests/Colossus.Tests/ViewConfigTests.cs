@@ -116,6 +116,36 @@ public class ViewConfigTests
         Assert.Throws<ArgumentException>(view.Validate);
     }
 
+    [Fact]
+    public void Filters_RequireUniqueDimensionOrTemporalChannels()
+    {
+        (ValidGroup() with
+        {
+            Filters =
+            [
+                new FilterSpec { Channel = "operator", Control = ControlKind.Select },
+                new FilterSpec { Channel = "quarter", Control = ControlKind.DateRange },
+            ],
+        }).Validate();
+
+        Assert.Throws<ArgumentException>(() => (ValidGroup() with
+        {
+            Filters = [new FilterSpec { Channel = "tests", Control = ControlKind.Range }],
+        }).Validate());
+        Assert.Throws<ArgumentException>(() => (ValidGroup() with
+        {
+            Filters =
+            [
+                new FilterSpec { Channel = "operator", Control = ControlKind.Select },
+                new FilterSpec { Channel = "operator", Control = ControlKind.MultiSelect },
+            ],
+        }).Validate());
+    }
+
+    [Fact]
+    public void BakeFilters_RejectEmptyPredicates() =>
+        Assert.Throws<ArgumentException>(() => (Valid() with { BakeFilters = [" "] }).Validate());
+
     // ── Group regime (measures) — VIEW_CONFIG §4/§11 config-time validation ──
 
     private static ViewConfig ValidGroup(params (string name, string expr)[] measures) => new()

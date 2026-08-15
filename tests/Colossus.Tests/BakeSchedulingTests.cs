@@ -21,6 +21,16 @@ public sealed class BakeSchedulingTests : IDisposable
     }
 
     [Fact]
+    public void Policy_AllowsSecondLevelIntervalsAndRejectsSubsecondIntervals()
+    {
+        var valid = new BakePolicy(Guid.NewGuid(), true, TimeSpan.FromSeconds(1), "UTC", false, 3, 0, default);
+        valid.Validate();
+
+        var invalid = valid with { Interval = TimeSpan.FromMilliseconds(999) };
+        Assert.Throws<ArgumentException>(invalid.Validate);
+    }
+
+    [Fact]
     public async Task RunNow_ReconciliationAndDueDispatch_AreApplicationOwnedAndCoalesce()
     {
         var database = NewDatabase();
@@ -28,7 +38,7 @@ public sealed class BakeSchedulingTests : IDisposable
         var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 14, 12, 0, 0, TimeSpan.Zero));
         var catalog = new ProductCatalogService(store, store, store, store, store, store, clock);
         var queue = new RecordingScheduler();
-        var scheduling = new BakeSchedulingService(catalog, store, store, queue, clock);
+        var scheduling = new BakeSchedulingService(catalog, store, store, queue, new FakeMapLock(), clock);
         var map = await CreateMapAsync(catalog);
 
         var first = await scheduling.RunNowAsync(map.Id);
@@ -275,7 +285,7 @@ public sealed class BakeSchedulingTests : IDisposable
         }
     }
 
-    private sealed class FakeMapLock(bool available = true) : IMapBakeLock
+    private sealed class FakeMapLock(bool available = true) : IMapBakeLock, IBakeScheduleLock
     {
         public Task<IAsyncDisposable?> TryAcquireAsync(Guid mapId, CancellationToken ct = default) =>
             Task.FromResult<IAsyncDisposable?>(available ? new Lease() : null);

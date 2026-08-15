@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { CatalogApiError, datasetsQuery, managedMapQuery, type CatalogDataset } from '@entities/catalog';
 import { useSaveManagedMapMutation } from '@features/map-management/api/mapManagementMutations';
-import { draftFromForm, emptyMapForm, formFromDraft, hoursToInterval, type MapFormState } from '@features/map-management/model/mapForm';
+import { draftFromForm, emptyMapForm, formFromDraft, intervalFromParts, type MapFormState } from '@features/map-management/model/mapForm';
+import { MapConfigurationBuilder } from '@features/map-management/ui/MapConfigurationBuilder';
 import {
   Alert,
   Badge,
@@ -16,7 +17,6 @@ import {
   PageHeader,
   PaddedCard,
   Select,
-  Textarea,
 } from '@shared/ui';
 import { ButtonRouteLink } from '@shared/navigation/RouteLink';
 import ManagementShell from '@widgets/management-shell/ManagementShell';
@@ -102,7 +102,7 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
         policyRevision,
         policy: {
           enabled: form.scheduleEnabled,
-          interval: hoursToInterval(form.intervalHours),
+          interval: intervalFromParts(form),
           timeZoneId: 'UTC',
           allowOverlap: false,
           retainSuccessfulReleases: Math.max(1, Number(form.retention) || 3),
@@ -133,8 +133,8 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
       <form className="maps-editor" onSubmit={(event) => void submit(event)}>
         <PageHeader
           eyebrow={editing ? 'Edit map' : 'New map'}
-          title={editing ? form.title || form.slug : 'Create a map that is ready to scale.'}
-          description="Configure the view against a durable dataset. Server validation remains authoritative."
+          title={editing ? form.title || form.slug : 'Create map configuration'}
+          description="Define the dataset binding, rendering configuration, interaction contract, and bake policy."
           actions={<><Button variant="secondary" onClick={cancel}>Cancel</Button><Button variant="primary" type="submit" disabled={saveMutation.isPending || loading || datasets.length === 0}>{saveMutation.isPending ? 'Saving…' : editing ? 'Save changes' : 'Create map'}</Button></>}
         />
 
@@ -160,7 +160,7 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
                 </Select>
               </Field>
               {datasets.length === 0 && <Alert>No datasets are available. Import or create a dataset before creating a map.</Alert>}
-              <div><ButtonRouteLink variant="ghost" size="sm" to="/sources">Manage and preview sources</ButtonRouteLink></div>
+              <div><ButtonRouteLink variant="ghost" size="sm" to="/sources?task=datasets">Manage datasets</ButtonRouteLink></div>
               {selectedDataset && (
                 <div className="maps-editor__dataset">
                   <div className="maps-editor__dataset-summary">
@@ -186,21 +186,20 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
             </PaddedCard>
 
             <PaddedCard className="maps-editor__card maps-editor__card--wide">
-              <SectionHeading step="3" title="Channels, filters & encoding" description="Technical JSON remains available until source discovery powers the assisted builder." />
-              <div className="maps-editor__json-grid">
-                <JsonField label="Bake filters" field="bakeFilters" value={form.bakeFilters} onChange={change} errors={errors} />
-                <JsonField label="Interactive filters" field="filters" value={form.filters} onChange={change} errors={errors} />
-                <JsonField label="Measures" field="measures" value={form.measures} onChange={change} errors={errors} />
-                <JsonField label="Encoding" field="encoding" value={form.encoding} onChange={change} errors={errors} placeholder={'{\n  "color": { "channel": "value" }\n}'} />
-                <JsonField label="Inspection" field="inspect" value={form.inspect} onChange={change} errors={errors} placeholder={'{\n  "channels": ["value"]\n}'} />
-              </div>
+              <SectionHeading step="3" title="Map configuration" description="Configure extraction predicates, controls, computed measures, encoding, and inspection against the selected dataset contract." />
+              <MapConfigurationBuilder form={form} dataset={selectedDataset} errors={errors} onChange={change} />
             </PaddedCard>
 
             <PaddedCard className="maps-editor__card maps-editor__card--wide">
-              <SectionHeading step="4" title="Schedule & retention" description="Persist policy now; the worker will execute it when scheduling lands." />
+              <SectionHeading step="4" title="Schedule & retention" description="Recurring bake intervals are evaluated to the second. Successful release retention is applied after publication." />
               <div className="maps-editor__schedule">
                 <Checkbox label="Enable recurring bake" checked={form.scheduleEnabled} onChange={(event) => change('scheduleEnabled', event.target.checked)} />
-                <Field label="Interval (hours)"><Input type="number" min="1" value={form.intervalHours} onChange={(event) => change('intervalHours', event.target.value)} /></Field>
+                <div className="maps-editor__duration" role="group" aria-label="Bake interval">
+                  <Field label="Days"><Input type="number" min="0" value={form.intervalDays} onChange={(event) => change('intervalDays', event.target.value)} /></Field>
+                  <Field label="Hours"><Input type="number" min="0" max="23" value={form.intervalHours} onChange={(event) => change('intervalHours', event.target.value)} /></Field>
+                  <Field label="Minutes"><Input type="number" min="0" max="59" value={form.intervalMinutes} onChange={(event) => change('intervalMinutes', event.target.value)} /></Field>
+                  <Field label="Seconds"><Input type="number" min="0" max="59" value={form.intervalSeconds} onChange={(event) => change('intervalSeconds', event.target.value)} /></Field>
+                </div>
                 <Field label="Successful releases to retain"><Input type="number" min="1" value={form.retention} onChange={(event) => change('retention', event.target.value)} /></Field>
               </div>
             </PaddedCard>
@@ -215,18 +214,4 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
 
 function SectionHeading({ step, title, description }: { step: string; title: string; description: string }) {
   return <div className="maps-editor__section-heading"><span>{step}</span><div><h2>{title}</h2><p>{description}</p></div></div>;
-}
-
-function JsonField<K extends 'bakeFilters' | 'filters' | 'measures' | 'encoding' | 'inspect'>({
-  label, field, value, onChange, errors, placeholder,
-}: {
-  label: string;
-  field: K;
-  value: string;
-  onChange: <T extends keyof MapFormState>(field: T, value: MapFormState[T]) => void;
-  errors: Record<string, string[]>;
-  placeholder?: string;
-}) {
-  const error: ReactNode = errors[field]?.join(' ');
-  return <Field label={label} error={error}><Textarea className="maps-editor__json" value={value} placeholder={placeholder} onChange={(event) => onChange(field, event.target.value)} spellCheck={false} aria-invalid={Boolean(error)} /></Field>;
 }

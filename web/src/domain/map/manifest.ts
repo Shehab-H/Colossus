@@ -80,6 +80,12 @@ export interface MeasureSpec {
   expr: string;
 }
 
+export interface FilterSpec {
+  channel: string;
+  control: 'select' | 'multiSelect' | 'dateRange' | 'range';
+  default?: string;
+}
+
 export interface ViewConfig {
   id: string;
   title?: string;
@@ -87,6 +93,8 @@ export interface ViewConfig {
   mark: Mark;
   reduction?: string;
   source: SourceSpec;
+  bakeFilters?: string[];
+  filters?: FilterSpec[];
   measures?: MeasureSpec[];
   encoding?: EncodingSpec;
   inspect?: InspectSpec;

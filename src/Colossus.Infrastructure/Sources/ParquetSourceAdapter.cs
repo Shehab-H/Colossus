@@ -92,6 +92,44 @@ public sealed class ParquetSourceAdapter : ISourceAdapter
         }
     }
 
+    public async Task<SourceSchema> InspectSchemaAsync(
+        SourceSchemaRequest request,
+        CancellationToken ct = default)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(SourcePreviewBudget.Default.MaxDuration);
+        try
+        {
+            var resolved = await _locations.ResolveAsync(
+                request.Connection.Settings, request.Query, snapshot: null, timeout.Token);
+            return await WithSessionAsync(resolved, async (db, token) =>
+            {
+                using var command = db.Connection.CreateCommand();
+                command.CommandText = $"SELECT * FROM {ReadParquet(resolved)} LIMIT 0";
+                using var reader = await command.ExecuteReaderAsync(token);
+                var columns = reader.GetColumnSchema().Select(column => new SourceSchemaColumn(
+                    column.ColumnName ?? "unknown",
+                    column.DataTypeName ?? column.DataType?.Name ?? "Unknown",
+                    column.AllowDBNull != false)).ToArray();
+                return new SourceSchema(columns);
+            }, timeout.Token);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException error)
+        {
+            throw new SourceOperationException(
+                SourceErrorKind.TransientFailure,
+                "Parquet schema inspection exceeded its 10-second duration budget.",
+                new Dictionary<string, string[]> { ["query"] = ["Choose fewer files or a more selective partition."] },
+                transient: true,
+                innerException: error);
+        }
+        catch (Exception error)
+        {
+            throw Classify(error, ct, "query");
+        }
+    }
+
     public async Task<SourcePreview> PreviewAsync(SourcePreviewRequest request, CancellationToken ct = default)
     {
         var budget = request.Budget.ConstrainTo(SourcePreviewBudget.Default);

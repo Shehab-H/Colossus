@@ -17,6 +17,12 @@ public interface IMapBakeLock
     Task<IAsyncDisposable?> TryAcquireAsync(Guid mapId, CancellationToken ct = default);
 }
 
+/// <summary>Distributed exclusion for due-policy evaluation across web/worker replicas.</summary>
+public interface IBakeScheduleLock
+{
+    Task<IAsyncDisposable?> TryAcquireAsync(Guid mapId, CancellationToken ct = default);
+}
+
 /// <summary>The executable bake pipeline boundary used by durable run coordination.</summary>
 public interface IBakePipeline
 {

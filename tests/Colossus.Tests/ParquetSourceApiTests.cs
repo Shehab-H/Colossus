@@ -77,6 +77,13 @@ public sealed class ParquetSourceApiTests : IDisposable
         using var locations = JsonDocument.Parse(await client.GetStringAsync($"/api/connections/{connectionId}/locations"));
         Assert.Equal("places.parquet", Assert.Single(locations.RootElement.EnumerateArray()).GetProperty("name").GetString());
 
+        var schemaResponse = await client.PostAsJsonAsync($"/api/connections/{connectionId}/schema", new { query = "places.parquet" });
+        schemaResponse.EnsureSuccessStatusCode();
+        using var schema = JsonDocument.Parse(await schemaResponse.Content.ReadAsStringAsync());
+        Assert.Equal(
+            ["lon", "lat", "label"],
+            schema.RootElement.GetProperty("columns").EnumerateArray().Select(column => column.GetProperty("name").GetString()));
+
         var datasetResponse = await client.PostAsJsonAsync("/api/datasets", new
         {
             slug = "parquet-places",

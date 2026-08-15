@@ -2,7 +2,7 @@ import type { SourcePreview } from '@entities/catalog';
 import { Badge, EmptyState, PaddedCard } from '@shared/ui';
 
 export function SourcePreviewPanel({ preview, datasetName }: { preview?: SourcePreview; datasetName?: string }) {
-  if (!preview) return <PaddedCard><EmptyState eyebrow="Preview" title="Choose a dataset" description="Preview is capped at 50 rows, 1 MB, one million scanned rows, and 10 seconds." /></PaddedCard>;
+  if (!preview) return <PaddedCard><EmptyState eyebrow="Preview" title="Choose a dataset" description="Preview is capped at 50 returned rows, 1 MB, 50 million scanned rows, and 10 seconds." /></PaddedCard>;
   const bounds = preview.geometry.bounds;
   return (
     <PaddedCard className="source-preview">

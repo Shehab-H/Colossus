@@ -17,6 +17,11 @@ public interface ISourceAdapter
         SourceConnectionContext connection, CancellationToken ct = default);
     Task<IReadOnlyList<SourceLocation>> DiscoverAsync(
         SourceConnectionContext connection, CancellationToken ct = default);
+    Task<SourceSchema> InspectSchemaAsync(
+        SourceSchemaRequest request, CancellationToken ct = default) =>
+        throw new SourceOperationException(
+            SourceErrorKind.Configuration,
+            $"The '{Id}' adapter does not support query schema inspection.");
     Task<SourcePreview> PreviewAsync(SourcePreviewRequest request, CancellationToken ct = default);
     Task<ViewConfig> ResolveAsync(ViewConfig view, CancellationToken ct = default) => Task.FromResult(view);
     Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default);

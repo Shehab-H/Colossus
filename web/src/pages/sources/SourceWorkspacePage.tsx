@@ -11,17 +11,20 @@ import {
   type SourceAdapterDescriptor,
   type SourceConnectionValidation,
   type SourceLocation,
+  type SourceSchema,
 } from '@entities/catalog';
 import {
   useCreateConnectionMutation,
   useCreateDatasetMutation,
   useDiscoverLocationsMutation,
+  useInspectSourceSchemaMutation,
   usePreviewDatasetMutation,
   useTestConnectionMutation,
 } from '@features/source-management/api/sourceManagementMutations';
 import {
   emptyConnectionForm,
   emptyDatasetForm,
+  applySourceSchema,
   parseConnectionForm,
   parseDatasetForm,
   type ConnectionFormState,
@@ -30,7 +33,7 @@ import {
 import { ConnectionForm } from '@features/source-management/ui/ConnectionForm';
 import { DatasetForm } from '@features/source-management/ui/DatasetForm';
 import { ButtonRouteLink } from '@shared/navigation/RouteLink';
-import { Alert, Badge, LoadingState, PageHeader, PaddedCard } from '@shared/ui';
+import { Alert, Badge, Button, LoadingState, PageHeader, PaddedCard } from '@shared/ui';
 import ManagementShell from '@widgets/management-shell/ManagementShell';
 import { SourceConnectionList } from '@widgets/source-workspace/SourceConnectionList';
 import { SourceDatasetList } from '@widgets/source-workspace/SourceDatasetList';
@@ -55,6 +58,7 @@ export default function SourceWorkspacePage() {
   const createDatasetMutation = useCreateDatasetMutation();
   const testMutation = useTestConnectionMutation();
   const discoveryMutation = useDiscoverLocationsMutation();
+  const schemaMutation = useInspectSourceSchemaMutation();
   const previewMutation = usePreviewDatasetMutation();
   const [connectionForm, setConnectionForm] = useState<ConnectionFormState>(emptyConnectionForm);
   const [datasetForm, setDatasetForm] = useState<DatasetFormState>(emptyDatasetForm);
@@ -63,7 +67,9 @@ export default function SourceWorkspacePage() {
   const [message, setMessage] = useState<{ tone: 'info' | 'danger'; text: string }>();
   const [validation, setValidation] = useState<{ connectionId: string; result: SourceConnectionValidation }>();
   const [locations, setLocations] = useState<{ connectionId: string; result: SourceLocation[] }>();
+  const [schemaInspection, setSchemaInspection] = useState<{ connectionId: string; query: string; result: SourceSchema }>();
   const selectedDatasetId = searchParams.get('dataset') ?? undefined;
+  const activeTask = searchParams.get('task') === 'datasets' ? 'datasets' : 'connections';
 
   useEffect(() => {
     if (!connectionForm.adapter && adapters[0]) setConnectionForm((current) => ({ ...current, adapter: adapters[0].id }));
@@ -94,6 +100,10 @@ export default function SourceWorkspacePage() {
     }
   }, [datasetForm.geometryKind, geometryKinds]);
   const selectedDataset = datasets.find((dataset) => dataset.id === selectedDatasetId);
+  const inspectedSchema = schemaInspection?.connectionId === datasetForm.connectionId
+    && schemaInspection.query === datasetForm.query.trim()
+    ? schemaInspection.result
+    : undefined;
   const loading = connectionsResult.isPending || datasetsResult.isPending || adaptersResult.isPending;
   const loadError = connectionsResult.error ?? datasetsResult.error ?? adaptersResult.error;
 
@@ -114,7 +124,8 @@ export default function SourceWorkspacePage() {
       const created = await createConnectionMutation.mutateAsync(parsed.value);
       setConnectionForm(emptyConnectionForm(connectionForm.adapter));
       setDatasetForm((current) => ({ ...current, connectionId: created.id }));
-      setMessage({ tone: 'info', text: `${created.name} is saved. Test it before onboarding a dataset.` });
+      setTask('datasets');
+      setMessage({ tone: 'info', text: `${created.name} is saved. You can now define a dataset against it.` });
     } catch (error) {
       setConnectionErrors(fieldErrors(error));
       setMessage({ tone: 'danger', text: errorMessage(error) });
@@ -130,8 +141,23 @@ export default function SourceWorkspacePage() {
     try {
       const created = await createDatasetMutation.mutateAsync(parsed.value);
       setDatasetForm(emptyDatasetForm(created.draft.connectionId));
-      setSearchParams({ dataset: created.id });
+      setSchemaInspection(undefined);
+      setSearchParams({ task: 'datasets', dataset: created.id });
       setMessage({ tone: 'info', text: `${created.draft.name} is saved. Run its bounded preview to validate the mapping.` });
+    } catch (error) {
+      setDatasetErrors(fieldErrors(error));
+      setMessage({ tone: 'danger', text: errorMessage(error) });
+    }
+  };
+
+  const inspectSchema = async () => {
+    setMessage(undefined);
+    setDatasetErrors((current) => ({ ...current, query: [], geometry: [], channels: [] }));
+    try {
+      const query = datasetForm.query.trim();
+      const result = await schemaMutation.mutateAsync({ connectionId: datasetForm.connectionId, query });
+      setSchemaInspection({ connectionId: datasetForm.connectionId, query, result });
+      setDatasetForm((current) => applySourceSchema(current, result));
     } catch (error) {
       setDatasetErrors(fieldErrors(error));
       setMessage({ tone: 'danger', text: errorMessage(error) });
@@ -156,10 +182,17 @@ export default function SourceWorkspacePage() {
 
   const previewDataset = (datasetId: string) => {
     setMessage(undefined);
-    setSearchParams({ dataset: datasetId });
+    setSearchParams({ task: 'datasets', dataset: datasetId });
     previewMutation.mutate(datasetId, {
       onError: (error) => setMessage({ tone: 'danger', text: errorMessage(error) }),
     });
+  };
+
+  const setTask = (task: 'connections' | 'datasets') => {
+    const next = new URLSearchParams(searchParams);
+    next.set('task', task);
+    if (task === 'connections') next.delete('dataset');
+    setSearchParams(next);
   };
 
   return (
@@ -167,16 +200,20 @@ export default function SourceWorkspacePage() {
       <section className="sources-page">
         <PageHeader
           eyebrow="Source platform"
-          title="Connect, discover, and validate before you bake."
-          description="Adapters enforce one bounded preview and canonical spatial contract across every source engine."
+          title="Sources"
+          description="Manage source connections, dataset queries, schema mappings, and bounded validation."
           actions={<Badge tone="brand">{adapters.length} adapter{adapters.length === 1 ? '' : 's'}</Badge>}
         />
+        <nav className="sources-page__tasks" aria-label="Source management task">
+          <Button variant={activeTask === 'connections' ? 'primary' : 'secondary'} onClick={() => setTask('connections')}>Connections</Button>
+          <Button variant={activeTask === 'datasets' ? 'primary' : 'secondary'} onClick={() => setTask('datasets')}>Datasets</Button>
+        </nav>
         {message && <Alert tone={message.tone}>{message.text}</Alert>}
         {loading ? <LoadingState>Loading source workspace…</LoadingState> : (
           <>
-            <div className="sources-page__onboarding">
+            {activeTask === 'connections' ? <>
               <PaddedCard className="sources-page__form-card">
-                <SectionHeading step="1" title="Add a connection" description="Adapter-declared fields keep secrets server-side." />
+                <SectionHeading step="1" title="Connection definition" description="Store adapter endpoints and credentials independently from dataset queries." />
                 <ConnectionForm
                   form={connectionForm}
                   adapters={adapters}
@@ -186,45 +223,47 @@ export default function SourceWorkspacePage() {
                   onSubmit={(event) => void submitConnection(event)}
                 />
               </PaddedCard>
+              <section className="sources-page__section">
+                <SectionTitle eyebrow="Connections" title="Saved connection definitions" description="Test connectivity or inspect discoverable source locations without creating a dataset." />
+                <SourceConnectionList
+                  connections={connections}
+                  testingId={testMutation.isPending ? testMutation.variables : undefined}
+                  discoveringId={discoveryMutation.isPending ? discoveryMutation.variables : undefined}
+                  validation={validation}
+                  locations={locations}
+                  onTest={testConnection}
+                  onDiscover={discoverLocations}
+                />
+              </section>
+            </> : <>
               <PaddedCard className="sources-page__form-card">
-                <SectionHeading step="2" title="Define a dataset" description="Map source columns into canonical geometry and typed channels." />
+                <SectionHeading step="1" title="Dataset definition" description="Write the final source query, inspect its result columns, then map geometry and channels." />
                 <DatasetForm
                   form={datasetForm}
                   connections={connections}
                   geometryKinds={geometryKinds}
                   sourceInput={sourceInput}
+                  schema={inspectedSchema}
                   errors={datasetErrors}
                   busy={createDatasetMutation.isPending}
+                  inspecting={schemaMutation.isPending}
                   onChange={setDatasetForm}
+                  onInspect={() => void inspectSchema()}
                   onSubmit={(event) => void submitDataset(event)}
                 />
               </PaddedCard>
-            </div>
-
-            <section className="sources-page__section">
-              <SectionTitle eyebrow="Connections" title="Connectivity and discovery" description="Tests and discovery go through the selected adapter without exposing credentials." />
-              <SourceConnectionList
-                connections={connections}
-                testingId={testMutation.isPending ? testMutation.variables : undefined}
-                discoveringId={discoveryMutation.isPending ? discoveryMutation.variables : undefined}
-                validation={validation}
-                locations={locations}
-                onTest={testConnection}
-                onDiscover={discoverLocations}
-              />
-            </section>
-
-            <section className="sources-page__section">
-              <SectionTitle eyebrow="Datasets" title="Schema and geometry preview" description="Every run is capped and uses the same mapping rules as extraction." />
-              <SourceDatasetList
-                datasets={datasets}
-                connections={connections}
-                selectedId={selectedDatasetId}
-                previewingId={previewMutation.isPending ? previewMutation.variables : undefined}
-                onPreview={previewDataset}
-              />
-            </section>
-            <SourcePreviewPanel preview={previewMutation.data} datasetName={selectedDataset?.draft.name} />
+              <section className="sources-page__section">
+                <SectionTitle eyebrow="Datasets" title="Saved dataset definitions" description="Run a bounded preview against the same query, geometry mapping, and channels used by extraction." />
+                <SourceDatasetList
+                  datasets={datasets}
+                  connections={connections}
+                  selectedId={selectedDatasetId}
+                  previewingId={previewMutation.isPending ? previewMutation.variables : undefined}
+                  onPreview={previewDataset}
+                />
+              </section>
+              <SourcePreviewPanel preview={previewMutation.data} datasetName={selectedDataset?.draft.name} />
+            </>}
           </>
         )}
       </section>

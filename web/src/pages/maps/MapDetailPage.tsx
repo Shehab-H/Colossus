@@ -151,7 +151,7 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
 
             <PaddedCard className="maps-detail__card maps-detail__card--wide">
               <CardHeading eyebrow="Publication" title="Releases" />
-              {detail.releases.length === 0 ? <p className="maps-detail__note">No catalog-tracked release has been published yet.</p> : <div className="maps-detail__history">{detail.releases.map((release) => <div className="maps-detail__history-row" key={release.id}><strong>{release.version}</strong><span>{formatDate(release.publishedAt)}</span><span>{formatBytes(release.outputBytes)}</span><code>{release.artifactLocation}</code></div>)}</div>}
+              {detail.releases.length === 0 ? <p className="maps-detail__note">No catalog-tracked release has been published yet.</p> : <div className="maps-detail__history">{detail.releases.map((release) => <div className="maps-detail__history-row maps-detail__history-row--release" key={release.id}><strong>{release.version}</strong><span>{formatDate(release.publishedAt)}</span><span>{formatBytes(release.outputBytes)}</span><code>{release.artifactLocation}</code></div>)}</div>}
             </PaddedCard>
           </div>
 

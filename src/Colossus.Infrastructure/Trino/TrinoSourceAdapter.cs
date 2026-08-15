@@ -100,6 +100,42 @@ public sealed class TrinoSourceAdapter : ISourceAdapter
         }
     }
 
+    public async Task<SourceSchema> InspectSchemaAsync(
+        SourceSchemaRequest request,
+        CancellationToken ct = default)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(SourcePreviewBudget.Default.MaxDuration);
+        try
+        {
+            string query = NormalizeSql(request.Query);
+            var read = await ReadRawAsync(
+                Configure(request.Connection.Settings),
+                $"SELECT * FROM (\n{query}\n) AS colossus_source LIMIT 0",
+                timeout.Token);
+            return new SourceSchema(
+                read.Columns.Select(column => new SourceSchemaColumn(
+                    column.Name,
+                    column.Type,
+                    Nullable: true)).ToArray(),
+                read.Warnings);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException error)
+        {
+            throw new SourceOperationException(
+                SourceErrorKind.TransientFailure,
+                "Trino schema inspection exceeded its 10-second duration budget.",
+                new Dictionary<string, string[]> { ["query"] = ["Simplify the query used for schema inspection."] },
+                transient: true,
+                innerException: error);
+        }
+        catch (Exception error)
+        {
+            throw Classify(error, "query");
+        }
+    }
+
     public async Task<SourcePreview> PreviewAsync(SourcePreviewRequest request, CancellationToken ct = default)
     {
         var budget = request.Budget.ConstrainTo(SourcePreviewBudget.Default);

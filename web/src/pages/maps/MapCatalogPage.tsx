@@ -42,8 +42,8 @@ export default function MapCatalogPage() {
     <ManagementShell actions={<><ButtonRouteLink variant="ghost" to="/sources">Sources</ButtonRouteLink><ButtonRouteLink variant="primary" to="/maps/new">Create map</ButtonRouteLink></>}>
       <PageHeader
         eyebrow="Control plane"
-        title="Your map estate, in one place."
-        description="Create, publish, schedule, and inspect high-volume maps without changing registry files."
+        title="Maps"
+        description="Manage map definitions, bake runs, releases, schedules, and archived records."
         actions={<Checkbox label="Show archived" checked={includeArchived} onChange={(event) => toggleArchived(event.target.checked)} />}
       />
 

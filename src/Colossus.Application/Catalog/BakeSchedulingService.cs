@@ -10,6 +10,7 @@ public sealed class BakeSchedulingService(
     IBakePolicyRepository policies,
     IBakeRunRepository runs,
     IBakeJobScheduler scheduler,
+    IBakeScheduleLock scheduleLocks,
     TimeProvider clock)
 {
     public async Task<BakeRun> RunNowAsync(Guid mapId, CancellationToken ct = default)
@@ -45,6 +46,9 @@ public sealed class BakeSchedulingService(
     /// <summary>Called by the persistent minutely recurring trigger. Missed intervals coalesce to one run.</summary>
     public async Task<BakeRun?> DispatchDueAsync(Guid mapId, CancellationToken ct = default)
     {
+        await using var scheduleLease = await scheduleLocks.TryAcquireAsync(mapId, ct);
+        if (scheduleLease is null) return null;
+
         var policy = await policies.FindAsync(mapId, ct);
         if (policy is not { Enabled: true, Interval: { } interval }) return null;
 

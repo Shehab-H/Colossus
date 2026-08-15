@@ -45,6 +45,25 @@ public sealed class SourcePreviewServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SchemaInspection_UsesTheSavedConnectionWithoutCreatingADataset()
+    {
+        var (store, catalog) = Catalog();
+        var connection = await catalog.CreateConnectionAsync(new ConnectionDraft
+        {
+            Slug = "schema-warehouse",
+            Name = "Schema warehouse",
+            Adapter = "deterministic",
+        });
+        var adapter = new DeterministicAdapter();
+        var service = new SourcePreviewService(store, store, new SourceAdapterCatalog([adapter]));
+
+        var schema = await service.InspectSchemaAsync(connection.Id, " SELECT lon, lat, value FROM fixture ");
+
+        Assert.Equal(["lon", "lat", "value"], schema.Columns.Select(column => column.Name));
+        Assert.Equal("SELECT lon, lat, value FROM fixture", adapter.SchemaRequest!.Query);
+    }
+
+    [Fact]
     public async Task Cancellation_ReachesTheUnderlyingAdapter()
     {
         var (store, catalog) = Catalog();
@@ -129,6 +148,7 @@ public sealed class SourcePreviewServiceTests : IDisposable
             [GeometryKind.LonLat]);
 
         public SourcePreviewRequest? Request { get; private set; }
+        public SourceSchemaRequest? SchemaRequest { get; private set; }
         public bool BlockUntilCancelled { get; init; }
         public bool CancellationObserved { get; private set; }
         public SourceOperationException? Failure { get; init; }
@@ -141,6 +161,16 @@ public sealed class SourcePreviewServiceTests : IDisposable
         public Task<IReadOnlyList<SourceLocation>> DiscoverAsync(
             SourceConnectionContext connection, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<SourceLocation>>([new("fixture", "points", "table")]);
+
+        public Task<SourceSchema> InspectSchemaAsync(SourceSchemaRequest request, CancellationToken ct = default)
+        {
+            SchemaRequest = request;
+            return Task.FromResult(new SourceSchema([
+                new("lon", "Float64", false),
+                new("lat", "Float64", false),
+                new("value", "Float64", false),
+            ]));
+        }
 
         public async Task<SourcePreview> PreviewAsync(
             SourcePreviewRequest request, CancellationToken ct = default)

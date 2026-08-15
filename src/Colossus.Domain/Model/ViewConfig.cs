@@ -62,6 +62,25 @@ public sealed record ViewConfig
         var colorable = new HashSet<string>(channels, StringComparer.Ordinal);
         colorable.UnionWith(measures);
 
+        if (BakeFilters?.Any(string.IsNullOrWhiteSpace) == true)
+            throw new ArgumentException($"view '{Id}': bakeFilters cannot contain an empty SQL predicate");
+
+        if (Filters is { } filters)
+        {
+            var filterable = Source.Channels
+                .Where(channel => channel.Role is ChannelRole.Dimension or ChannelRole.Temporal)
+                .Select(channel => channel.Name)
+                .ToHashSet(StringComparer.Ordinal);
+            var configured = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var filter in filters)
+            {
+                if (string.IsNullOrWhiteSpace(filter.Channel) || !filterable.Contains(filter.Channel))
+                    throw new ArgumentException($"view '{Id}': filter channel '{filter.Channel}' is not a declared dimension or temporal channel");
+                if (!configured.Add(filter.Channel))
+                    throw new ArgumentException($"view '{Id}': filter channel '{filter.Channel}' is configured more than once");
+            }
+        }
+
         void Require(IReadOnlySet<string> set, string? name, string what, string kind)
         {
             if (!string.IsNullOrEmpty(name) && !set.Contains(name))

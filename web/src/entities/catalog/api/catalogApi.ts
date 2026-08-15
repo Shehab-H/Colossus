@@ -15,6 +15,7 @@ import type {
   SourceConnectionValidation,
   SourceLocation,
   SourcePreview,
+  SourceSchema,
 } from '../model/catalog';
 import { API_BASE } from '@shared/api/config';
 
@@ -68,6 +69,12 @@ export const testConnection = (connectionId: string): Promise<SourceConnectionVa
 
 export const discoverSourceLocations = (connectionId: string): Promise<SourceLocation[]> =>
   request(`/connections/${connectionId}/locations`);
+
+export const inspectSourceSchema = (input: { connectionId: string; query: string }): Promise<SourceSchema> =>
+  request(`/connections/${input.connectionId}/schema`, {
+    method: 'POST',
+    body: JSON.stringify({ query: input.query }),
+  });
 
 export const previewDataset = (datasetId: string): Promise<SourcePreview> =>
   request(`/datasets/${datasetId}/preview`, { method: 'POST' });

@@ -1,4 +1,5 @@
 using Colossus.Application.Abstractions.Baking;
+using Colossus.Application.Abstractions.Catalog;
 using Colossus.Application.Catalog;
 using Colossus.Domain.Catalog;
 using Hangfire;
@@ -67,4 +68,39 @@ public sealed class BakeScheduleReconciler(BakeSchedulingService scheduling) : I
 {
     public Task StartAsync(CancellationToken cancellationToken) => scheduling.ReconcileAllAsync(cancellationToken);
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+/// <summary>Evaluates durable policies once per second. The minutely Hangfire recurrence remains a
+/// persistence/restart fallback; the MySQL schedule lock prevents two hosts from dispatching one due map.</summary>
+public sealed class BakeScheduleTicker(
+    IBakePolicyRepository policies,
+    BakeSchedulingService scheduling,
+    ILogger<BakeScheduleTicker> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        do
+        {
+            IReadOnlyList<BakePolicy> savedPolicies;
+            try { savedPolicies = await policies.ListAsync(stoppingToken); }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception error)
+            {
+                logger.LogError(error, "Failed to read bake policies for due-time evaluation.");
+                continue;
+            }
+
+            foreach (var policy in savedPolicies.Where(policy => policy.Enabled))
+            {
+                try { _ = await scheduling.DispatchDueAsync(policy.MapId, stoppingToken); }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
+                catch (Exception error)
+                {
+                    logger.LogError(error, "Failed to evaluate bake schedule for map {MapId}.", policy.MapId);
+                }
+            }
+        }
+        while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
 }

@@ -67,8 +67,12 @@ export function colorableChannels(manifest: Manifest): ChannelSpec[] {
   return [...view.source.channels.filter((c) => perMark.has(c.name)), ...measureChannelSpecs(view)];
 }
 
-export const filterableChannels = (view: ViewConfig): ChannelSpec[] =>
-  view.source.channels.filter((c) => c.role === 'dimension' || c.role === 'temporal');
+export const filterableChannels = (view: ViewConfig): ChannelSpec[] => {
+  const candidates = view.source.channels.filter((channel) => channel.role === 'dimension' || channel.role === 'temporal');
+  if (view.filters === undefined) return candidates;
+  const byName = new Map(candidates.map((channel) => [channel.name, channel]));
+  return view.filters.map((filter) => byName.get(filter.channel)).filter((channel): channel is ChannelSpec => channel !== undefined);
+};
 
 /** The filterable channels a view can actually answer, so only live controls render. Group regime:
  *  all of them (perMark → GPU predicate, perFact → fold context). Row regime: the aggregate reducer

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyConnectionForm, emptyDatasetForm, parseConnectionForm, parseDatasetForm } from './sourceForms';
+import { applySourceSchema, emptyConnectionForm, emptyDatasetForm, parseConnectionForm, parseDatasetForm, readChannelSpecs } from './sourceForms';
 
 describe('source management forms', () => {
   it('separates adapter-declared settings from secrets', () => {
@@ -66,5 +66,24 @@ describe('source management forms', () => {
       .toContain('role must be one of');
     expect(parseDatasetForm({ ...base, channels: '[{"name":"speed","column":"a","role":"measure","type":"f64"},{"name":"speed","column":"b","role":"measure","type":"f32"}]' }).errors.channels?.[0])
       .toContain('must be unique');
+  });
+
+  it('derives selectable geometry and channel suggestions from inspected query columns', () => {
+    const form = applySourceSchema(emptyDatasetForm('connection'), {
+      columns: [
+        { name: 'quadkey', sourceType: 'String', nullable: false },
+        { name: 'quarter', sourceType: 'Date', nullable: false },
+        { name: 'operator', sourceType: 'LowCardinality(String)', nullable: false },
+        { name: 'tests', sourceType: 'UInt32', nullable: false },
+      ],
+    });
+
+    expect(form.geometryKind).toBe('quadkey');
+    expect(form.geometryColumn).toBe('quadkey');
+    expect(readChannelSpecs(form.channels)).toEqual([
+      { name: 'quarter', column: 'quarter', role: 'temporal', type: 'date' },
+      { name: 'operator', column: 'operator', role: 'dimension', type: 'dict' },
+      { name: 'tests', column: 'tests', role: 'measure', type: 'i64' },
+    ]);
   });
 });

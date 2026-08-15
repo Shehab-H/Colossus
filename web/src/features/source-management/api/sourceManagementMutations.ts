@@ -4,6 +4,7 @@ import {
   createConnection,
   createDataset,
   discoverSourceLocations,
+  inspectSourceSchema,
   previewDataset,
   testConnection,
 } from '@entities/catalog';
@@ -29,6 +30,10 @@ export function useTestConnectionMutation() {
 
 export function useDiscoverLocationsMutation() {
   return useMutation({ mutationFn: discoverSourceLocations });
+}
+
+export function useInspectSourceSchemaMutation() {
+  return useMutation({ mutationFn: inspectSourceSchema });
 }
 
 export function usePreviewDatasetMutation() {

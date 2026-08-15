@@ -82,6 +82,35 @@ public sealed class ClickHouseAdapter(
                 .ToArray();
         }, ct);
 
+    public Task<SourceSchema> InspectSchemaAsync(
+        SourceSchemaRequest request,
+        CancellationToken ct = default) =>
+        WithClientAsync(request.Connection, async (client, token) =>
+        {
+            string query = request.Query.Trim().TrimEnd(';');
+            string response = await client.QueryTextAsync($"""
+                SELECT *
+                FROM (
+                {query}
+                ) AS colossus_source
+                LIMIT 0
+                FORMAT JSON
+                """, maxBytes: 1 * 1024 * 1024, token);
+            using var document = JsonDocument.Parse(response);
+            var columns = document.RootElement.GetProperty("meta").EnumerateArray()
+                .Select(column =>
+                {
+                    string name = column.GetProperty("name").GetString() ?? "unknown";
+                    string type = column.GetProperty("type").GetString() ?? "Unknown";
+                    return new SourceSchemaColumn(
+                        name,
+                        type,
+                        type.StartsWith("Nullable(", StringComparison.Ordinal));
+                })
+                .ToArray();
+            return new SourceSchema(columns);
+        }, ct, SourcePreviewBudget.Default.MaxDuration, "query");
+
     public Task<SourcePreview> PreviewAsync(SourcePreviewRequest request, CancellationToken ct = default)
     {
         var budget = request.Budget.ConstrainTo(SourcePreviewBudget.Default);
@@ -92,7 +121,7 @@ public sealed class ClickHouseAdapter(
             string response = await client.QueryTextAsync(sql, budget.MaxResultBytes + 64 * 1024, token);
             var preview = ParsePreview(response, request.Dataset, budget, timer.Elapsed);
             return preview with { Elapsed = timer.Elapsed };
-        }, ct, budget.MaxDuration);
+        }, ct, budget.MaxDuration, "preview");
     }
 
     public async Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default)
@@ -141,7 +170,8 @@ public sealed class ClickHouseAdapter(
         SourceConnectionContext connection,
         Func<ClickHouseClient, CancellationToken, Task<T>> operation,
         CancellationToken ct,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        string errorField = "connection")
     {
         using var timeoutSource = timeout is null
             ? null
@@ -162,13 +192,13 @@ public sealed class ClickHouseAdapter(
             throw new SourceOperationException(
                 SourceErrorKind.TransientFailure,
                 $"The source operation exceeded its {timeout?.TotalSeconds:0.#}-second duration budget.",
-                new Dictionary<string, string[]> { ["preview"] = ["Reduce the query scope or increase source selectivity."] },
+                new Dictionary<string, string[]> { [errorField] = ["Reduce the query scope or increase source selectivity."] },
                 transient: true,
                 innerException: error);
         }
         catch (Exception error)
         {
-            throw Classify(error, ct, "connection");
+            throw Classify(error, ct, errorField);
         }
     }
 

@@ -64,6 +64,7 @@ public static class ServiceCollectionExtensions
             catalogConnection,
             sp.GetRequiredService<IOptions<DatabaseOptions>>().Value));
         services.AddSingleton<IMapBakeLock>(_ => new MySqlMapBakeLock(catalogConnection));
+        services.AddSingleton<IBakeScheduleLock>(_ => new MySqlBakeScheduleLock(catalogConnection));
         services.AddSingleton<IConnectionRepository>(sp => sp.GetRequiredService<MySqlDatabase>());
         services.AddSingleton<IDatasetRepository>(sp => sp.GetRequiredService<MySqlDatabase>());
         services.AddSingleton<IMapRepository>(sp => sp.GetRequiredService<MySqlDatabase>());

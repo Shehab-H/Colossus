@@ -38,6 +38,19 @@ public sealed record SourceConnectionValidation(
 
 public sealed record SourceLocation(string Namespace, string Name, string Kind);
 
+public sealed record SourceSchemaRequest(
+    SourceConnectionContext Connection,
+    string Query);
+
+public sealed record SourceSchemaColumn(
+    string Name,
+    string SourceType,
+    bool Nullable);
+
+public sealed record SourceSchema(
+    IReadOnlyList<SourceSchemaColumn> Columns,
+    IReadOnlyList<string>? Warnings = null);
+
 public sealed record SourcePreviewBudget(
     int MaxRows,
     long MaxResultBytes,
@@ -47,7 +60,7 @@ public sealed record SourcePreviewBudget(
     public static SourcePreviewBudget Default { get; } = new(
         MaxRows: 50,
         MaxResultBytes: 1 * 1024 * 1024,
-        MaxScannedRows: 1_000_000,
+        MaxScannedRows: 50_000_000,
         MaxDuration: TimeSpan.FromSeconds(10));
 
     public SourcePreviewBudget ConstrainTo(SourcePreviewBudget ceiling)

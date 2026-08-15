@@ -46,6 +46,7 @@ public static class BakeSchedulingServiceCollectionExtensions
         });
         services.AddSingleton<IBakeJobScheduler, HangfireBakeScheduler>();
         services.AddHostedService<BakeScheduleReconciler>();
+        services.AddHostedService<BakeScheduleTicker>();
         return services;
     }
 }

@@ -12,7 +12,10 @@ export interface MapFormState {
   encoding: string;
   inspect: string;
   scheduleEnabled: boolean;
+  intervalDays: string;
   intervalHours: string;
+  intervalMinutes: string;
+  intervalSeconds: string;
   retention: string;
 }
 
@@ -23,18 +26,22 @@ export const emptyMapForm = (): MapFormState => ({
   viewport: 'geo',
   mark: 'point',
   bakeFilters: '[]',
-  filters: '[]',
+  filters: '',
   measures: '[]',
   encoding: '',
   inspect: '',
   scheduleEnabled: false,
-  intervalHours: '24',
+  intervalDays: '1',
+  intervalHours: '0',
+  intervalMinutes: '0',
+  intervalSeconds: '0',
   retention: '3',
 });
 
 const pretty = (value: unknown): string => value === undefined || value === null ? '' : JSON.stringify(value, null, 2);
 
 export function formFromDraft(draft: MapDraft, policy?: BakePolicy): MapFormState {
+  const interval = intervalParts(policy?.interval);
   return {
     slug: draft.slug,
     title: draft.title ?? '',
@@ -42,12 +49,15 @@ export function formFromDraft(draft: MapDraft, policy?: BakePolicy): MapFormStat
     viewport: draft.viewport,
     mark: draft.mark,
     bakeFilters: pretty(draft.bakeFilters ?? []),
-    filters: pretty(draft.filters ?? []),
+    filters: draft.filters === undefined ? '' : pretty(draft.filters),
     measures: pretty(draft.measures ?? []),
     encoding: pretty(draft.encoding),
     inspect: pretty(draft.inspect),
     scheduleEnabled: policy?.enabled ?? false,
-    intervalHours: String(intervalHours(policy?.interval) ?? 24),
+    intervalDays: String(interval?.days ?? 1),
+    intervalHours: String(interval?.hours ?? 0),
+    intervalMinutes: String(interval?.minutes ?? 0),
+    intervalSeconds: String(interval?.seconds ?? 0),
     retention: String(policy?.retainSuccessfulReleases ?? 3),
   };
 }
@@ -66,13 +76,13 @@ export function draftFromForm(form: MapFormState): { draft?: MapDraft; errors: R
   if (!/^[a-z0-9-]+$/.test(form.slug)) errors.slug = ['Use lowercase kebab-case.'];
   if (!form.datasetId) errors.datasetId = ['Select a dataset.'];
   const bakeFilters = parseJson<string[]>('bakeFilters', form.bakeFilters, [], errors);
-  const filters = parseJson<unknown[]>('filters', form.filters, [], errors);
+  const filters = form.filters.trim() ? parseJson<unknown[]>('filters', form.filters, [], errors) : undefined;
   const measures = parseJson<unknown[]>('measures', form.measures, [], errors);
   const encoding = parseJson<unknown | undefined>('encoding', form.encoding, undefined, errors);
   const inspect = parseJson<unknown | undefined>('inspect', form.inspect, undefined, errors);
   if (!Array.isArray(bakeFilters) || bakeFilters.some((value) => typeof value !== 'string'))
-    errors.bakeFilters = ['Bake filters must be a JSON array of channel names.'];
-  if (!Array.isArray(filters)) errors.filters = ['Filters must be a JSON array.'];
+    errors.bakeFilters = ['Bake filters must be a list of SQL predicates.'];
+  if (filters !== undefined && !Array.isArray(filters)) errors.filters = ['Filters must be a JSON array.'];
   if (!Array.isArray(measures)) errors.measures = ['Measures must be a JSON array.'];
   if (Object.keys(errors).length > 0) return { errors };
 
@@ -103,9 +113,36 @@ export function hoursToInterval(hoursText: string): string {
     : `${String(hours).padStart(2, '0')}:00:00`;
 }
 
-export function intervalHours(interval?: string): number | null {
+export function intervalFromParts(parts: Pick<MapFormState, 'intervalDays' | 'intervalHours' | 'intervalMinutes' | 'intervalSeconds'>): string {
+  const value = (source: string) => Math.max(0, Math.floor(Number(source) || 0));
+  const totalSeconds = Math.max(1,
+    value(parts.intervalDays) * 86_400
+      + value(parts.intervalHours) * 3_600
+      + value(parts.intervalMinutes) * 60
+      + value(parts.intervalSeconds));
+  const days = Math.floor(totalSeconds / 86_400);
+  const remainder = totalSeconds % 86_400;
+  const hours = Math.floor(remainder / 3_600);
+  const minutes = Math.floor((remainder % 3_600) / 60);
+  const seconds = remainder % 60;
+  const clock = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return days > 0 ? `${days}.${clock}` : clock;
+}
+
+export function intervalParts(interval?: string): { days: number; hours: number; minutes: number; seconds: number } | null {
   if (!interval) return null;
   const match = interval.match(/^(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})$/);
   if (!match) return null;
-  return Number(match[1] ?? 0) * 24 + Number(match[2]) + Number(match[3]) / 60 + Number(match[4]) / 3600;
+  return {
+    days: Number(match[1] ?? 0),
+    hours: Number(match[2]),
+    minutes: Number(match[3]),
+    seconds: Number(match[4]),
+  };
+}
+
+export function intervalHours(interval?: string): number | null {
+  const parts = intervalParts(interval);
+  if (!parts) return null;
+  return parts.days * 24 + parts.hours + parts.minutes / 60 + parts.seconds / 3600;
 }

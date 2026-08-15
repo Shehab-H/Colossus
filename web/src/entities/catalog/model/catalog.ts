@@ -96,6 +96,17 @@ export interface SourceLocation {
   kind: string;
 }
 
+export interface SourceSchemaColumn {
+  name: string;
+  sourceType: string;
+  nullable: boolean;
+}
+
+export interface SourceSchema {
+  columns: SourceSchemaColumn[];
+  warnings?: string[];
+}
+
 export interface SourcePreviewColumn {
   name: string;
   sourceType: string;

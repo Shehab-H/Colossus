@@ -25,6 +25,21 @@ public sealed class SourcePreviewService(
         return await adapters.Resolve(connection.Draft.Adapter).DiscoverAsync(context, ct);
     }
 
+    public async Task<SourceSchema> InspectSchemaAsync(
+        Guid connectionId,
+        string query,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            throw new CatalogValidationException(new Dictionary<string, string[]>
+            {
+                ["query"] = ["Enter a query or source location before inspecting columns."],
+            });
+        var (connection, context) = await ResolveConnectionAsync(connectionId, ct);
+        return await adapters.Resolve(connection.Draft.Adapter).InspectSchemaAsync(
+            new SourceSchemaRequest(context, query.Trim()), ct);
+    }
+
     public async Task<SourcePreview> PreviewDatasetAsync(
         Guid datasetId,
         SourcePreviewBudget? budget = null,
