@@ -1,4 +1,5 @@
 using Colossus.Application.Catalog;
+using Colossus.Application.Abstractions.Sources;
 using Microsoft.AspNetCore.Mvc;
 using System.Runtime.ExceptionServices;
 
@@ -8,6 +9,24 @@ internal static class CatalogControllerErrors
 {
     public static IActionResult ToResponse(this ControllerBase controller, Exception error)
     {
+        if (error is SourceOperationException source)
+        {
+            int status = source.Kind switch
+            {
+                SourceErrorKind.Connectivity => StatusCodes.Status502BadGateway,
+                SourceErrorKind.TransientFailure => StatusCodes.Status503ServiceUnavailable,
+                SourceErrorKind.Cancellation => StatusCodes.Status408RequestTimeout,
+                _ => StatusCodes.Status400BadRequest,
+            };
+            var problem = new ValidationProblemDetails(source.FieldErrors.ToDictionary())
+            {
+                Status = status,
+                Title = source.Message,
+            };
+            problem.Extensions["sourceErrorKind"] = source.Kind.ToString();
+            problem.Extensions["transient"] = source.Transient;
+            return controller.StatusCode(status, problem);
+        }
         if (error is CatalogNotFoundException) return controller.NotFound(new { error = error.Message });
         if (error is CatalogConcurrencyException or CatalogConflictException)
             return controller.Conflict(new { error = error.Message });

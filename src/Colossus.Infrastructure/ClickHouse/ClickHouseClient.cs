@@ -1,20 +1,38 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using Colossus.Application.Abstractions.Sources;
 using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Infrastructure.ClickHouse;
 
-/// <summary>Thin wrapper over the ClickHouse HTTP interface (port 8123): DDL, INSERT…SELECT, and
-/// FORMAT Parquet extracts. Plain HTTP keeps the dependency surface tiny.</summary>
+public sealed class ClickHouseRequestException(HttpStatusCode statusCode, string responseBody)
+    : Exception($"ClickHouse {(int)statusCode}: {responseBody}")
+{
+    public HttpStatusCode StatusCode { get; } = statusCode;
+    public string ResponseBody { get; } = responseBody;
+}
+
+public sealed class ClickHouseResponseTooLargeException(long maxBytes)
+    : Exception($"ClickHouse response exceeded the {maxBytes:N0}-byte limit.");
+
+/// <summary>Typed transport over ClickHouse's HTTP query interface for text, JSON, and streamed
+/// Parquet responses.</summary>
 public sealed class ClickHouseClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _baseUrl;
 
     public ClickHouseClient(ClickHouseOptions options)
+        : this(new HttpClient { Timeout = TimeSpan.FromMinutes(30) }, options)
     {
+    }
+
+    public ClickHouseClient(HttpClient http, ClickHouseOptions options)
+    {
+        _http = http;
+        _http.Timeout = TimeSpan.FromMinutes(30);
         _baseUrl = options.BaseUrl.TrimEnd('/');
-        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
         var token = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.User}:{options.Password}"));
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
     }
@@ -25,24 +43,66 @@ public sealed class ClickHouseClient : IDisposable
         await ThrowIfError(resp, ct);
     }
 
-    public async Task<string> QueryTextAsync(string sql, CancellationToken ct = default)
+    public Task<string> QueryTextAsync(string sql, CancellationToken ct = default) =>
+        QueryTextAsync(sql, maxBytes: 16 * 1024 * 1024, ct);
+
+    public async Task<string> QueryTextAsync(string sql, long maxBytes, CancellationToken ct = default)
     {
-        using var resp = await _http.PostAsync(_baseUrl + "/", new StringContent(sql, Encoding.UTF8), ct);
-        await ThrowIfError(resp, ct);
-        return await resp.Content.ReadAsStringAsync(ct);
+        using var request = QueryRequest(sql);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        await ThrowIfError(response, ct);
+        await using var source = await response.Content.ReadAsStreamAsync(ct);
+        using var destination = new MemoryStream();
+        var buffer = new byte[64 * 1024];
+        while (true)
+        {
+            int read = await source.ReadAsync(buffer, ct);
+            if (read == 0) break;
+            if (destination.Length + read > maxBytes)
+                throw new ClickHouseResponseTooLargeException(maxBytes);
+            await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+        }
+        return Encoding.UTF8.GetString(destination.GetBuffer(), 0, checked((int)destination.Length));
     }
 
-    public async Task QueryToFileAsync(string sql, string destPath, CancellationToken ct = default)
+    public async Task QueryToFileAsync(
+        string sql,
+        string destinationPath,
+        IProgress<SourceExtractProgress>? progress = null,
+        CancellationToken ct = default)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/")
+        using var request = QueryRequest(sql);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        await ThrowIfError(response, ct);
+
+        string destination = Path.GetFullPath(destinationPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        string partial = destination + $".partial-{Guid.NewGuid():N}";
+        try
         {
-            Content = new StringContent(sql, Encoding.UTF8),
-        };
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-        await ThrowIfError(resp, ct);
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destPath))!);
-        await using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write);
-        await resp.Content.CopyToAsync(fs, ct);
+            await using var source = await response.Content.ReadAsStreamAsync(ct);
+            await using var file = new FileStream(
+                partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var buffer = new byte[128 * 1024];
+            long written = 0;
+            while (true)
+            {
+                int read = await source.ReadAsync(buffer, ct);
+                if (read == 0) break;
+                await file.WriteAsync(buffer.AsMemory(0, read), ct);
+                written += read;
+                progress?.Report(new SourceExtractProgress(written));
+            }
+            await file.FlushAsync(ct);
+            file.Close();
+            File.Move(partial, destination, overwrite: true);
+            progress?.Report(new SourceExtractProgress(written, Completed: true));
+        }
+        finally
+        {
+            if (File.Exists(partial)) File.Delete(partial);
+        }
     }
 
     public async Task WaitUntilReadyAsync(TimeSpan timeout, CancellationToken ct = default)
@@ -62,11 +122,16 @@ public sealed class ClickHouseClient : IDisposable
         }
     }
 
-    private static async Task ThrowIfError(HttpResponseMessage resp, CancellationToken ct)
+    private HttpRequestMessage QueryRequest(string sql) => new(HttpMethod.Post, _baseUrl + "/")
     {
-        if (resp.IsSuccessStatusCode) return;
-        string body = await resp.Content.ReadAsStringAsync(ct);
-        throw new InvalidOperationException($"ClickHouse {(int)resp.StatusCode}: {body}");
+        Content = new StringContent(sql, Encoding.UTF8),
+    };
+
+    private static async Task ThrowIfError(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.IsSuccessStatusCode) return;
+        string body = await response.Content.ReadAsStringAsync(ct);
+        throw new ClickHouseRequestException(response.StatusCode, body);
     }
 
     public void Dispose() => _http.Dispose();

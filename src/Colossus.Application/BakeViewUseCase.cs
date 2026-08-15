@@ -28,6 +28,8 @@ public sealed class BakeViewUseCase(
     {
         var source = sources.Resolve(view.Source.Adapter);
 
+        view = await source.ResolveAsync(view, ct);
+
         progress?.Report(new BakeProgress(BakeStage.Probing, $"Probing {view.Id} through {source.Id}."));
         var probe = await source.ProbeAsync(view, ct);
         if (probe.Count == 0)
@@ -40,7 +42,13 @@ public sealed class BakeViewUseCase(
 
         string staging = store.StagingPath(view.Id);
         progress?.Report(new BakeProgress(BakeStage.Extracting, $"Extracting {probe.Count:N0} rows for {view.Id}."));
-        await source.ExtractAsync(view, probe.Bounds, staging, ct);
+        var extractionProgress = progress is null ? null : new InlineProgress<SourceExtractProgress>(value =>
+        {
+            if (!value.Completed)
+                progress.Report(new BakeProgress(BakeStage.Extracting,
+                    $"Extracting {view.Id}: {value.BytesWritten / 1_048_576.0:N1} MB received."));
+        });
+        await source.ExtractAsync(view, probe.Bounds, staging, extractionProgress, ct);
 
         string version = NewVersion(clock.GetUtcNow());
         string outputDir = store.VersionDirectory(view.Id, version);
@@ -88,7 +96,7 @@ public sealed class BakeViewUseCase(
             rc = rc with { CanonicalDictionaryOrders = CanonicalOrders(view, channelDomains) };
         }
 
-        progress?.Report(new BakeProgress(BakeStage.Reducing, $"Reducing {view.Id} with {plan.Reduction}."));
+        progress?.Report(new BakeProgress(BakeStage.Tiling, $"Reducing {view.Id} with {plan.Reduction}."));
         var result = reductions.Resolve(plan.Reduction).Reduce(rc);
 
         // Tile-transfer initiative (Phase 3): pack every tile's columns into one per-version archive, so a
@@ -102,14 +110,14 @@ public sealed class BakeViewUseCase(
         {
             var compression = compressor.CompressVersionTiles(outputDir);
             if (compression.Files > 0)
-                progress?.Report(new BakeProgress(BakeStage.Packaging, $"{view.Id}: brotli {compression.Files} tiles, " +
+                progress?.Report(new BakeProgress(BakeStage.Tiling, $"{view.Id}: brotli {compression.Files} tiles, " +
                     $"{compression.OriginalBytes / 1_048_576.0:N1} → {compression.CompressedBytes / 1_048_576.0:N1} MB " +
                     $"({compression.Ratio:0.00}x)"));
         }
         else
         {
             long packBytes = store.VersionArtifactSize(view.Id, version, renderPack.File);
-            progress?.Report(new BakeProgress(BakeStage.Packaging,
+            progress?.Report(new BakeProgress(BakeStage.Tiling,
                 $"{view.Id}: render pack {renderPack.Entries.Count} tiles, " +
                 $"{packBytes / 1_048_576.0:N1} MB at rest, first paint [{string.Join(", ", renderPack.FirstPaint)}]"));
         }
@@ -122,7 +130,7 @@ public sealed class BakeViewUseCase(
             : null;
 
         if (foldRoute is not null)
-            progress?.Report(new BakeProgress(BakeStage.Packaging, $"{view.Id}: fold route = {foldRoute.Execution} " +
+            progress?.Report(new BakeProgress(BakeStage.Tiling, $"{view.Id}: fold route = {foldRoute.Execution} " +
                 $"(worst tile {foldRoute.WorstTileBytes:N0} B vs budget {foldRoute.BudgetBytes:N0} B" +
                 (foldRoute.Forced ? ", forced" : "") + ")"));
 
@@ -153,6 +161,10 @@ public sealed class BakeViewUseCase(
             FactsParquet = result.FactsParquet,
             FoldRoute = foldRoute,
         }, ct);
+        progress?.Report(new BakeProgress(BakeStage.Verifying, $"Verifying {view.Id} release {version}."));
+        var written = await store.ReadManifestAsync(view.Id, version, ct);
+        if (written is null || written.Version != version || written.View.Id != view.Id)
+            throw new InvalidDataException($"Bake verification failed for {view.Id} release {version}.");
         progress?.Report(new BakeProgress(BakeStage.Publishing, $"Publishing {view.Id} release {version}."));
         store.PublishLatest(view.Id, version);
 
@@ -178,4 +190,9 @@ public sealed class BakeViewUseCase(
 
     private static string NewVersion(DateTimeOffset now) =>
         "v" + now.UtcDateTime.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
 }

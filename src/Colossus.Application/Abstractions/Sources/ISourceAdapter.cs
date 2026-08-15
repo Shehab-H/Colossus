@@ -11,7 +11,19 @@ public sealed record SourceBounds(Bbox Bounds, long Count, long DistinctGeometri
 /// extracts the canonical, spatially sorted staging table. Everything after the extract is source-agnostic.</summary>
 public interface ISourceAdapter
 {
-    string Id { get; }
+    SourceAdapterDescriptor Descriptor { get; }
+    string Id => Descriptor.Id;
+    Task<SourceConnectionValidation> ValidateConnectionAsync(
+        SourceConnectionContext connection, CancellationToken ct = default);
+    Task<IReadOnlyList<SourceLocation>> DiscoverAsync(
+        SourceConnectionContext connection, CancellationToken ct = default);
+    Task<SourcePreview> PreviewAsync(SourcePreviewRequest request, CancellationToken ct = default);
+    Task<ViewConfig> ResolveAsync(ViewConfig view, CancellationToken ct = default) => Task.FromResult(view);
     Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default);
-    Task ExtractAsync(ViewConfig view, Bbox bounds, string destinationParquet, CancellationToken ct = default);
+    Task ExtractAsync(
+        ViewConfig view,
+        Bbox bounds,
+        string destinationParquet,
+        IProgress<SourceExtractProgress>? progress = null,
+        CancellationToken ct = default);
 }

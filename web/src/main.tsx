@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client'
+import { QueryClientProvider } from '@tanstack/react-query'
 import '@fontsource/inter/latin-400.css'
 import '@fontsource/inter/latin-500.css'
 import '@fontsource/inter/latin-600.css'
@@ -7,11 +8,11 @@ import '@shared/ui/styles/index.scss'
 import '@app/styles.scss'
 import '@widgets/management-shell/management-shell.scss'
 import '@widgets/map-catalog/map-catalog.scss'
-import '@widgets/map-viewer/viewer-shell.scss'
 import '@pages/maps/maps.scss'
 import App from '@app/App'
 import { registerTileCache } from '@infrastructure/cache/tileCacheServiceWorker'
 import { initResourceTiming, installPerfGlobal, perfEnabled, setPerfEnabled } from '@shared/observability/perf'
+import { queryClient } from '@shared/query/queryClient'
 
 // ?perf=1 arms every lifecycle probe. Set before the first render — the tile loader reads this flag when
 // it posts to the decode workers, so a probe armed later would miss the opening tile set.
@@ -25,4 +26,8 @@ registerTileCache()
 
 // No <StrictMode>: its dev-only double-invoke double-mounts the react-map-gl `useControl` deck overlay,
 // leaving a stale second GL canvas. deck.gl + react-map-gl apps conventionally run without it.
-createRoot(document.getElementById('root')!).render(<App />)
+createRoot(document.getElementById('root')!).render(
+  <QueryClientProvider client={queryClient}>
+    <App />
+  </QueryClientProvider>,
+)

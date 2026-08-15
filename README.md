@@ -3,7 +3,7 @@
 Render very large datasets (10M–1000M+ rows) with **no aggregation or simplification** of raw marks — on a map or in any chart — over a single engine:
 
 ```
-source query (ClickHouse) → bake → Arrow IPC LOD tiles → static immutable serve → deck.gl binary attributes → GPU
+source adapter (ClickHouse, Trino, or raw Parquet) → bake → Arrow IPC LOD tiles → static immutable serve → deck.gl binary attributes → GPU
 ```
 
 A chart type is not a pipeline; it's `(mark + channel mapping) × reduction primitive`. Start at the
@@ -15,36 +15,42 @@ A chart type is not a pipeline; it's `(mark + channel mapping) × reduction prim
 |------|------|
 | `src/Colossus.Domain` | Domain models: catalog records, view snapshots, manifests, and tile math |
 | `src/Colossus.Application` | Use cases and ports: catalog, bake orchestration, source/reduction seams, fidelity verification |
-| `src/Colossus.Infrastructure` | Adapters: MySQL catalog, ClickHouse source, DuckDB reducers, Arrow tiles, and file storage |
-| `src/Colossus.Bake` | Console entrypoint: bake registered views / `verify` |
-| `src/Colossus.Server` | API host: product catalog, compatibility view API, and static tiles |
-| `tests/Colossus.Tests` | Unit, architecture, MySQL integration, and API tests |
+| `src/Colossus.Infrastructure` | Adapters: MySQL catalog, ClickHouse/Trino/raw-Parquet sources, DuckDB reducers, Arrow tiles, and file storage |
+| `src/Colossus.Bake` | Developer/repair CLI: bake registered views / `verify` |
+| `src/Colossus.Server` | API and worker host: product catalog, persistent bake scheduling, compatibility view API, and static tiles |
+| `tests/Colossus.Tests` | Unit, architecture, MySQL/scheduling integration, and API tests |
 | `web/` | Vite + React + deck.gl + MapLibre; config-driven renderer |
 | `views/` | Legacy view configs imported idempotently into the product catalog |
-| `docker/` | Local MySQL catalog and ClickHouse source services |
+| `docker/` | Local MySQL application database, ClickHouse, pinned Trino with an isolated PostgreSQL Iceberg test catalog, and Parquet-backed integration services |
 
 ## Dev quickstart
 
-Colossus reads from your own ClickHouse tables — there is no bundled data generator. Point a view at your
-data using the archived canonical [view configuration reference](docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md), then:
+Colossus reads from your own ClickHouse or Trino tables and server-configured Parquet providers—there is no bundled
+data generator. Configure a source in the `/sources` workspace or point a legacy view at your data using the
+archived canonical [view configuration reference](docs/archive/2026/2026-08-10-pre-index/VIEW_CONFIG.md), then:
 
 ```bash
-# 1. MySQL catalog + ClickHouse source
+# 1. MySQL application/catalog/job store + ClickHouse + Trino/Iceberg integration sources
 docker compose -f docker/docker-compose.yml up -d
 
-# 2. Bake a view's tiles
-dotnet run --project src/Colossus.Bake -- <view-id>
-
-# 3. Serve tiles + view API (Swagger UI at /swagger)
+# 2. Serve the API, persistent bake worker, and tiles (Swagger UI at /swagger)
 dotnet run --project src/Colossus.Server
 
-# 4. Frontend
+# 3. Frontend — create/manage maps and use Run now from /maps
 cd web && npm run dev
+
+# Optional repair path
+dotnet run --project src/Colossus.Bake -- <view-id>
 ```
 
-Runtime settings live in each host's `appsettings.json`. `ConnectionStrings:Database` selects the
-MySQL catalog; `Storage` owns the tile, staging, legacy-view, and media locations; `ClickHouse` owns source
-credentials. The checked-in development values match the Docker Compose services.
+Runtime settings live in each host's `appsettings.json`. `ConnectionStrings:Database` selects the single
+MySQL application database used by both the product catalog and Hangfire's prefixed infrastructure tables; `Scheduling` and
+`BakeExecution` own worker and run-coordination limits; `Storage` owns the tile, staging, legacy-view, and media locations; `ClickHouse` owns its source
+credentials; `Trino` owns coordinator defaults, bounded protocol limits, work storage, and administrator-owned
+header profiles; and `ParquetSources` declares administrator-owned local/HTTP/S3-compatible provider aliases.
+The checked-in `local` Parquet provider is confined to `datasets/parquet`, while the checked-in ClickHouse
+values match the Docker Compose service. The PostgreSQL service in Compose belongs only to the local Trino/Iceberg
+integration fixture; the Colossus application does not connect to it.
 
 Run the tests with `dotnet test`; verify a bake's fidelity invariant with
 `dotnet run --project src/Colossus.Bake -- verify`.

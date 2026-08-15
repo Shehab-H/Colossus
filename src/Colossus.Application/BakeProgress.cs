@@ -6,9 +6,10 @@ public enum BakeStage
 {
     Probing,
     Extracting,
-    Reducing,
-    Packaging,
+    Tiling,
+    Verifying,
     Publishing,
+    Cleanup,
     Completed,
 }
 

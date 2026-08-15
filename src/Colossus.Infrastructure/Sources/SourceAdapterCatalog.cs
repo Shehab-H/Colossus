@@ -17,6 +17,11 @@ public sealed class SourceAdapterCatalog : ISourceAdapterCatalog
         _adapters = registered.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
     }
 
+    public IReadOnlyList<SourceAdapterDescriptor> List() => _adapters.Values
+        .Select(adapter => adapter.Descriptor)
+        .OrderBy(descriptor => descriptor.Name, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
     public ISourceAdapter Resolve(string adapter) =>
         _adapters.TryGetValue(adapter, out var found)
             ? found

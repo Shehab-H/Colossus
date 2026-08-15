@@ -7,6 +7,7 @@ export type PublicationState =
   | 'archived';
 
 export type BakeRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type BakeRunStage = 'queued' | 'probing' | 'extracting' | 'tiling' | 'verifying' | 'publishing' | 'cleanup' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface GeometrySpec {
   kind: string;
@@ -44,6 +45,95 @@ export interface CatalogDataset {
   archived: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CatalogConnection {
+  id: string;
+  workspaceKey: string;
+  slug: string;
+  name: string;
+  adapter: string;
+  revision: number;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SourceConfigurationField {
+  key: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+  placeholder?: string;
+  allowedValues?: string[];
+}
+
+export interface SourceAdapterDescriptor {
+  id: string;
+  name: string;
+  capabilities: {
+    connectionValidation: boolean;
+    locationDiscovery: boolean;
+    schemaInspection: boolean;
+    boundedPreview: boolean;
+    canonicalExtraction: boolean;
+  };
+  configurationFields: SourceConfigurationField[];
+  geometryKinds: string[];
+  datasetInputLabel: string;
+  datasetInputDescription: string;
+  datasetInputPlaceholder: string;
+}
+
+export interface SourceConnectionValidation {
+  message: string;
+  details: Record<string, string>;
+}
+
+export interface SourceLocation {
+  namespace: string;
+  name: string;
+  kind: string;
+}
+
+export interface SourcePreviewColumn {
+  name: string;
+  sourceType: string;
+  nullable: boolean;
+  role: string;
+}
+
+export interface SourcePreview {
+  columns: SourcePreviewColumn[];
+  rows: Record<string, string | null>[];
+  geometry: {
+    kind: string;
+    geographic: boolean;
+    bounds: { minX: number; minY: number; maxX: number; maxY: number };
+    sampledRows: number;
+    distinctGeometries: number;
+  };
+  truncated: boolean;
+  resultBytes: number;
+  elapsed: string;
+  warnings?: string[];
+}
+
+export interface CreateConnectionInput {
+  definition: {
+    slug: string;
+    name: string;
+    adapter: string;
+    settings: Record<string, string>;
+  };
+  secrets: Record<string, string>;
+}
+
+export interface CreateDatasetInput {
+  slug: string;
+  name: string;
+  connectionId: string;
+  source: DatasetSource;
 }
 
 export interface MapDraft {
@@ -96,10 +186,21 @@ export interface ManagedBakeRun {
   id: string;
   draftRevision: number;
   status: BakeRunStatus;
+  stage: BakeRunStage;
+  progress: number;
+  statusMessage?: string;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  failureCategory?: string;
+  failureDetails?: string;
+  sourceRows?: number;
+  tileCount?: number;
+  artifactBytes?: number;
+  releaseId?: string;
+  cancellationRequested: boolean;
+  attempt: number;
 }
 
 export interface ManagedRelease {
@@ -145,4 +246,6 @@ export interface ApiValidationProblem {
   title?: string;
   error?: string;
   errors?: Record<string, string[]>;
+  sourceErrorKind?: string;
+  transient?: boolean;
 }

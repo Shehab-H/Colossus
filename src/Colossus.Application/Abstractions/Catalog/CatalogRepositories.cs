@@ -37,6 +37,7 @@ public interface IMapRepository
 public interface IBakePolicyRepository
 {
     Task<BakePolicy?> FindAsync(Guid mapId, CancellationToken ct = default);
+    Task<IReadOnlyList<BakePolicy>> ListAsync(CancellationToken ct = default);
     Task<BakePolicy> UpsertAsync(BakePolicy policy, long? expectedRevision, CancellationToken ct = default);
 }
 
@@ -45,10 +46,15 @@ public interface IBakeRunRepository
     Task<BakeRun> CreateAsync(BakeRun run, CancellationToken ct = default);
     Task<BakeRun?> FindAsync(Guid id, CancellationToken ct = default);
     Task<IReadOnlyList<BakeRun>> ListForMapAsync(Guid mapId, CancellationToken ct = default);
+    Task<IReadOnlyList<BakeRun>> ListIncompleteAsync(CancellationToken ct = default);
+    Task<BakeRun> UpdateAsync(BakeRun run, CancellationToken ct = default);
+    Task<BakeRun> RequestCancellationAsync(Guid id, DateTimeOffset requestedAt, CancellationToken ct = default);
+    Task<BakeRun> AttachBackgroundJobAsync(Guid id, string backgroundJobId, CancellationToken ct = default);
 }
 
 public interface IReleaseRepository
 {
     Task<CatalogRelease> CreateAsync(CatalogRelease release, CancellationToken ct = default);
+    Task<CatalogRelease?> FindForRunAsync(Guid runId, CancellationToken ct = default);
     Task<IReadOnlyList<CatalogRelease>> ListForMapAsync(Guid mapId, CancellationToken ct = default);
 }

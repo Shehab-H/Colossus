@@ -11,6 +11,7 @@ public interface IBakeStore
     string VersionDirectory(string viewId, string version);
     string VersionArtifactPath(string viewId, string version, string relativePath);
     long VersionArtifactSize(string viewId, string version, string relativePath);
+    long VersionSize(string viewId, string version);
     byte[] ReadVersionArtifact(string viewId, string version, string relativePath);
     Task WriteManifestAsync(Manifest manifest, CancellationToken ct = default);
     void PublishLatest(string viewId, string version);
@@ -19,4 +20,5 @@ public interface IBakeStore
     Task<Manifest?> ReadManifestAsync(string viewId, string version, CancellationToken ct = default);
     string TilePath(string viewId, string version, TileId tile);
     string CompanionTilePath(string viewId, string version, TileId tile);
+    void CleanupStaging(string viewId);
 }

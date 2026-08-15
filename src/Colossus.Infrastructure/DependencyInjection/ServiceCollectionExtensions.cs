@@ -4,12 +4,14 @@ using Colossus.Application.Abstractions.Catalog;
 using Colossus.Application.Abstractions.Reduction;
 using Colossus.Application.Abstractions.Sources;
 using Colossus.Application.Catalog;
+using Colossus.Application.Sources;
 using Colossus.Infrastructure.Baking;
 using Colossus.Infrastructure.Catalog;
 using Colossus.Infrastructure.ClickHouse;
 using Colossus.Infrastructure.Configuration;
 using Colossus.Infrastructure.Reduction;
 using Colossus.Infrastructure.Sources;
+using Colossus.Infrastructure.Trino;
 using Colossus.Infrastructure.Tiles;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,21 +34,36 @@ public static class ServiceCollectionExtensions
             .PostConfigure(o => o.ResolvePaths());
         services.AddOptions<RenderingOptions>()
             .Bind(configuration.GetSection(RenderingOptions.Section));
+        services.AddOptions<ParquetSourceOptions>()
+            .Bind(configuration.GetSection(ParquetSourceOptions.Section))
+            .PostConfigure(options => options.ResolvePaths());
+        services.AddOptions<TrinoOptions>()
+            .Bind(configuration.GetSection(TrinoOptions.Section))
+            .PostConfigure(options => options.ResolvePaths());
 
         // Ports → adapters. Catalogs and stores are stateless or cheap, so singletons.
-        services.AddSingleton(sp => new ClickHouseClient(sp.GetRequiredService<IOptions<ClickHouseOptions>>().Value));
+        services.AddHttpClient("Colossus.ClickHouse");
+        services.AddHttpClient("Colossus.Parquet");
+        services.AddHttpClient("Colossus.Trino", client => client.Timeout = TimeSpan.FromMinutes(30));
+        services.AddSingleton(sp => new ClickHouseClient(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("Colossus.ClickHouse"),
+            sp.GetRequiredService<IOptions<ClickHouseOptions>>().Value));
         services.AddSingleton<ISourceAdapter, ClickHouseAdapter>();
+        services.AddSingleton<ISourceAdapter, ParquetSourceAdapter>();
+        services.AddSingleton<ISourceAdapter, TrinoSourceAdapter>();
         services.AddSingleton<ISourceAdapterCatalog, SourceAdapterCatalog>();
         services.AddSingleton<IReductionCatalog, ReductionCatalog>();
         services.AddSingleton<ITileReader, ArrowTileReader>();
         services.AddSingleton<IStagingReader, DuckDbStagingReader>();
         services.AddSingleton<IBakeStore>(sp => new FileBakeStore(
             sp.GetRequiredService<IOptions<StorageOptions>>()));
+        string catalogConnection = configuration.GetConnectionString(DatabaseOptions.ConnectionStringName)
+            ?? throw new InvalidOperationException(
+                $"ConnectionStrings:{DatabaseOptions.ConnectionStringName} is required.");
         services.AddSingleton(sp => new MySqlDatabase(
-            configuration.GetConnectionString(DatabaseOptions.ConnectionStringName)
-                ?? throw new InvalidOperationException(
-                    $"ConnectionStrings:{DatabaseOptions.ConnectionStringName} is required."),
+            catalogConnection,
             sp.GetRequiredService<IOptions<DatabaseOptions>>().Value));
+        services.AddSingleton<IMapBakeLock>(_ => new MySqlMapBakeLock(catalogConnection));
         services.AddSingleton<IConnectionRepository>(sp => sp.GetRequiredService<MySqlDatabase>());
         services.AddSingleton<IDatasetRepository>(sp => sp.GetRequiredService<MySqlDatabase>());
         services.AddSingleton<IMapRepository>(sp => sp.GetRequiredService<MySqlDatabase>());
@@ -59,6 +76,7 @@ public static class ServiceCollectionExtensions
         // per tile that the serve layer answers with Content-Encoding. Additive; the plain tile stays.
         services.AddSingleton<ITileCompressor, BrotliTileCompressor>();
         services.AddSingleton<ITilePacker, ArrowTilePacker>();
+        services.AddSingleton<IBakePipeline, BakePipeline>();
 
         // R4 fold routing: a plain options record read from appsettings.
         var foldRouting = new FoldRoutingOptions();
@@ -74,6 +92,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<ProductCatalogService>();
         services.AddSingleton<MapManagementService>();
+        services.AddSingleton<BakeSchedulingService>();
+        var bakeExecution = new BakeRunExecutionOptions();
+        configuration.GetSection(BakeRunExecutionOptions.Section).Bind(bakeExecution);
+        bakeExecution.Normalize();
+        services.AddSingleton(bakeExecution);
+        services.AddSingleton<BakeRunExecutor>();
+        services.AddSingleton<SourcePreviewService>();
         services.AddSingleton<LegacyViewImporter>();
         services.AddSingleton<DatabaseBootstrapper>();
         services.AddSingleton<IViewCatalog, DatabaseViewCompatibility>();

@@ -27,6 +27,33 @@ and keeps dense-map behavior verified.
 
 [`src/architecture.test.ts`](src/architecture.test.ts) is the executable dependency rule.
 
+## Routing and server state
+
+React Router's data router owns route matching, parameters, legacy redirects, internal navigation, and route
+loading. Route objects live in `src/app`; pages receive only the parameters they need and do not inspect the
+browser pathname directly.
+
+TanStack Query owns remote catalog state:
+
+- entity API modules expose typed query-option factories and hierarchical cache keys;
+- route loaders prefetch those same options with `ensureQueryData` so navigation does not create request
+  waterfalls or a second cache;
+- feature API modules own mutations and the invalidation boundaries for the capabilities they implement;
+- pages own transient form, dialog, and presentation state only.
+
+Viewer camera and filter state remains URL-addressable feature state. It is updated through router navigation
+so browser history and React rendering agree on one location source of truth.
+
+## Bundle boundaries
+
+Management and viewer route modules are loaded independently. Viewer-only Sass and the renderer stack stay
+behind the viewer route; opening the control plane does not download MapLibre, deck.gl, Arrow, or Zstandard.
+
+Vite's Rolldown groups split renderer and columnar-data dependencies inside that lazy boundary. MapLibre
+remains one isolated lazy module because splitting its internals would add execution-order risk without
+improving control-plane startup. `scripts/verify-bundle.mjs`, run by `npm run build`, reads the Vite manifest
+and fails if the viewer stops being dynamic or the initial JavaScript graph exceeds 450 KiB.
+
 ## Design system
 
 The shared UI contract lives under `src/shared/ui`:

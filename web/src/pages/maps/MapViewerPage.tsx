@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
 import DeckGL from '@deck.gl/react';
 import { COORDINATE_SYSTEM, OrthographicView, type PickingInfo } from '@deck.gl/core';
 import { ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers';
@@ -40,7 +41,7 @@ import { filterSlots, filterRanges, anyActive } from '@features/map-viewer/engin
 import { colorScaleExtension } from '@features/map-viewer/engine/colorScaleExtension';
 import { coverTiles } from '@features/map-viewer/engine/tiling';
 import { initialViewState, type CameraState } from '@features/map-viewer/engine/viewport';
-import { replaceViewerState, type ViewerSurface } from '@features/map-viewer/model/viewRoute';
+import { urlWithViewerState, type ViewerSurface, type ViewerUrlState } from '@features/map-viewer/model/viewRoute';
 
 // One DataFilterExtension per filterSize, shared across all layers. A fresh instance per render would
 // defeat deck's prop diffing (it compares extension identity), forcing a shader relink each frame.
@@ -73,6 +74,7 @@ const inspectValue = (v: number | string | undefined): string =>
   v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v;
 
 export default function MapViewerPage({ mapId, surface }: { mapId: string; surface: ViewerSurface }) {
+  const navigate = useNavigate();
   const initialState = useMemo(() => readEmbedParams(), []);
   const isEmbed = surface === 'embed';
   const { theme, toggle } = useTheme();
@@ -103,6 +105,10 @@ export default function MapViewerPage({ mapId, surface }: { mapId: string; surfa
   const [selection, setSelection] = useState<Selection | null>(null);
   const [controlsOpen, setControlsOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
+  const replaceViewerUrl = useCallback((state: ViewerUrlState) => {
+    const next = new URL(urlWithViewerState(window.location.href, state));
+    void navigate(`${next.pathname}${next.search}${next.hash}`, { replace: true });
+  }, [navigate]);
 
   // Reset the camera in the same render the manifest lands, so tile selection never sees a new
   // manifest through the previous view's camera. An embed URL's camera (geo) overrides the default
@@ -290,8 +296,8 @@ export default function MapViewerPage({ mapId, surface }: { mapId: string; surfa
     if (isEmbed || !manifest) return;
     const filterChannels = carriedFilterableChannels(manifest);
     if (filterChannels.length > 0 && Object.keys(options).length === 0) return;
-    replaceViewerState({ color: colorChannel, theme, filters });
-  }, [isEmbed, manifest, options, colorChannel, theme, filters]);
+    replaceViewerUrl({ color: colorChannel, theme, filters });
+  }, [isEmbed, manifest, options, colorChannel, theme, filters, replaceViewerUrl]);
 
   useEffect(() => {
     if (isEmbed && manifest) {
@@ -380,7 +386,7 @@ export default function MapViewerPage({ mapId, surface }: { mapId: string; surfa
           onMoveEnd={(e: { viewState: CameraState }) => {
             setCamera(e.viewState);
             if (!isEmbed) {
-              replaceViewerState({
+              replaceViewerUrl({
                 camera: {
                   longitude: Number(e.viewState.longitude),
                   latitude: Number(e.viewState.latitude),

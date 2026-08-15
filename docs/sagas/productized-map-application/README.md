@@ -1,6 +1,6 @@
 # Saga 002 — Productized map application
 
-- **Status:** Active; frontend design-system migration underway before source preview
+- **Status:** Active; Hangfire bake scheduling complete, release publication and retention is next
 - **Created:** 2026-08-10
 - **Last verified:** 2026-08-14
 
@@ -45,11 +45,6 @@ The runtime separates into three surfaces:
 
 | Order | Item | Status | Estimated production work |
 | --- | --- | --- | ---: |
-| 4a | [Frontend design system and UI architecture](04a-frontend-design-system-and-ui-architecture.md) | Active | 4–6 engineering days |
-| 5 | [Source adapter and preview platform](05-source-adapter-and-preview-platform.md) | Candidate | 4–7 engineering days |
-| 6 | [Raw Parquet source adapter](06-raw-parquet-source-adapter.md) | Candidate | 4–6 engineering days |
-| 7 | [Trino source adapter](07-trino-source-adapter.md) | Candidate | 6–10 engineering days |
-| 8 | [Hangfire bake scheduling](08-hangfire-bake-scheduling.md) | Candidate | 5–8 engineering days |
 | 9 | [Release publication and retention](09-release-publication-and-retention.md) | Candidate | 5–8 engineering days |
 | 10 | [Operational and quality gates](10-operational-and-quality-gates.md) | Candidate | 3–5 engineering days |
 
@@ -75,6 +70,30 @@ Completed map management: [item 04 — map management application](../../archive
 established the `/maps` product home, durable create/edit/detail workflows, structured validation,
 run/schedule controls, browser-verified archival, and management read models for future job and release state.
 
+Completed frontend foundation: [item 04a — frontend design system and UI architecture](../../archive/2026/2026-08-14-productized-map-application/04a-frontend-design-system-and-ui-architecture.md)
+established the Vodafone-inspired Sass design system, enforced product layers, component workbench, React
+Router data routes, TanStack Query ownership, route-lazy viewer, and executable initial-bundle contract.
+
+Completed source platform: [item 05 — source adapter and preview platform](../../archive/2026/2026-08-14-productized-map-application/05-source-adapter-and-preview-platform.md)
+established adapter-declared capabilities, secret-safe connection validation and discovery, bounded canonical
+preview, extraction progress and cancellation, structured source errors, real ClickHouse contract coverage,
+and the `/sources` management workspace.
+
+Completed raw Parquet adapter: [item 06 — raw Parquet source adapter](../../archive/2026/2026-08-14-productized-map-application/06-raw-parquet-source-adapter.md)
+established configured local/HTTP/S3-compatible provider aliases, safe file/glob/partition resolution,
+fingerprinted immutable inputs, bounded DuckDB previews, canonical point/quadkey/WKT extraction, and
+byte-identical tile fidelity against ClickHouse.
+
+Completed Trino adapter: [item 07 — Trino source adapter](../../archive/2026/2026-08-14-productized-map-application/07-trino-source-adapter.md)
+established direct paginated statement execution, session state, bounded retry and cancellation, structured
+warnings/errors, deterministic typed geometry extraction, row/byte progress, and byte-identical fidelity
+against direct Parquet through a pinned Trino/Iceberg integration fixture.
+
+Completed bake scheduling: [item 08 — Hangfire bake scheduling](../../archive/2026/2026-08-14-productized-map-application/08-hangfire-bake-scheduling.md)
+established application-owned immutable run capture and execution, Hangfire persistence in the application MySQL database,
+recurrence reconciliation and missed-interval coalescing, crash-safe per-map exclusion, active cancellation,
+transient-only retry, durable progress/metrics/failures, and live management history.
+
 ## Evidence already established
 
 - [`BakeViewUseCase`](../../../src/Colossus.Application/BakeViewUseCase.cs) already orchestrates the core
@@ -93,11 +112,14 @@ run/schedule controls, browser-verified archival, and management read models for
 - The renderer now uses direct deck.gl tile-cover admission again; the rejected staged-admission experiment
   and its measurements remain only in the archive.
 
-The catalog, management, and viewer contracts are stable. Management, full viewer, and embed surfaces now use
+The catalog, management, viewer, and source-platform contracts are stable. Management, full viewer, and embed surfaces now use
 the shared Vodafone-inspired Sass design system and enforced page/widget/feature/entity boundaries. The
-Storybook workbench now enforces interactions, accessibility, and reviewed visual baselines in both themes;
-routing/data-ownership evaluation remains active in item 04a. Source discovery and preview are not yet adapter
-capabilities, and the bake host still runs synchronously from command-line arguments.
+Storybook workbench enforces interactions, accessibility, and reviewed visual baselines in both themes;
+React Router and TanStack Query now own navigation and remote product state, and the viewer remains isolated
+behind a verified lazy boundary. ClickHouse, raw Parquet, and Trino now pass the shared discovery,
+bounded-preview, canonical extraction, progress, cancellation, error, and cross-adapter tile-fidelity
+contracts. Normal bakes now run through the application-owned persistent queue; the synchronous bake host remains
+only as a developer and repair path.
 
 ## Global acceptance gates
 
@@ -116,9 +138,8 @@ capabilities, and the bake host still runs synchronously from command-line argum
 
 ## Next action
 
-Finish item 04a's routing/data-ownership evaluation and record a deliberate bundle-splitting decision, then
-begin item 05: define the source-adapter discovery and preview contract and connect it to the management
-workflow without leaking adapter-specific behavior into the map domain.
+Begin item 09: make release preparation/publication an isolated, verified, idempotent workflow and apply safe
+retention without deleting the current release or active work.
 
 ## Handoff memory
 

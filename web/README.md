@@ -34,4 +34,5 @@ npm run build:storybook
 ```
 
 Use `npm run test:visual:update` only when an intentional visual change has been reviewed. A fresh machine
-can install the visual-test browser with `npm run test:browser:install`.
+can install the visual-test browser with `npm run test:browser:install`. The production build also verifies
+that the viewer remains route-lazy and that the initial JavaScript graph stays within its documented budget.

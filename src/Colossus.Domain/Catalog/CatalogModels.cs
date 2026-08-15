@@ -57,12 +57,15 @@ public sealed record DatasetSource
     public required GeometrySpec Geometry { get; init; }
     public IReadOnlyList<ChannelSpec> Channels { get; init; } = Array.Empty<ChannelSpec>();
 
-    public SourceSpec ToSnapshot(string adapter) => new()
+    public SourceSpec ToSnapshot(
+        string adapter,
+        IReadOnlyDictionary<string, string>? settings = null) => new()
     {
         Adapter = adapter,
         Query = Query,
         Geometry = Geometry,
         Channels = Channels,
+        Settings = settings ?? new Dictionary<string, string>(),
     };
 
     public static DatasetSource FromSnapshot(SourceSpec source) => new()
@@ -133,7 +136,7 @@ public sealed record MapDraft
             Viewport = Viewport,
             Mark = Mark,
             Reduction = Reduction,
-            Source = dataset.Draft.Source.ToSnapshot(connection.Draft.Adapter),
+            Source = dataset.Draft.Source.ToSnapshot(connection.Draft.Adapter, connection.Draft.Settings),
             BakeFilters = BakeFilters,
             Filters = Filters,
             Measures = Measures,
@@ -189,7 +192,12 @@ public sealed record BakePolicy(
         if (MapId == Guid.Empty) throw new ArgumentException("bake policy map is required");
         if (Enabled && (Interval is null || Interval <= TimeSpan.Zero))
             throw new ArgumentException("an enabled bake policy requires a positive interval");
+        if (Enabled && Interval < TimeSpan.FromMinutes(1))
+            throw new ArgumentException("bake policy intervals must be at least one minute");
         if (string.IsNullOrWhiteSpace(TimeZoneId)) throw new ArgumentException("bake policy time zone is required");
+        try { _ = TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId); }
+        catch (TimeZoneNotFoundException e) { throw new ArgumentException($"unknown bake policy time zone '{TimeZoneId}'", e); }
+        catch (InvalidTimeZoneException e) { throw new ArgumentException($"invalid bake policy time zone '{TimeZoneId}'", e); }
         if (RetainSuccessfulReleases < 1)
             throw new ArgumentException("bake policy must retain at least one successful release");
     }
@@ -204,6 +212,20 @@ public enum BakeRunStatus
     Cancelled,
 }
 
+public enum BakeRunStage
+{
+    Queued,
+    Probing,
+    Extracting,
+    Tiling,
+    Verifying,
+    Publishing,
+    Cleanup,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
 public sealed record BakeRun(
     Guid Id,
     Guid MapId,
@@ -213,7 +235,31 @@ public sealed record BakeRun(
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt = null,
     DateTimeOffset? CompletedAt = null,
-    string? Error = null);
+    string? Error = null,
+    BakeRunStage Stage = BakeRunStage.Queued,
+    double Progress = 0,
+    string? StatusMessage = null,
+    long? SourceRows = null,
+    int? TileCount = null,
+    long? ArtifactBytes = null,
+    Guid? ReleaseId = null,
+    string? FailureCategory = null,
+    string? FailureDetails = null,
+    bool CancellationRequested = false,
+    int Attempt = 0,
+    string? BackgroundJobId = null,
+    DateTimeOffset? UpdatedAt = null)
+{
+    public bool IsTerminal => Status is BakeRunStatus.Succeeded or BakeRunStatus.Failed or BakeRunStatus.Cancelled;
+
+    public BakeRun ValidateState()
+    {
+        if (Id == Guid.Empty || MapId == Guid.Empty) throw new ArgumentException("bake run and map IDs are required");
+        if (Progress is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(Progress), "progress must be between 0 and 1");
+        if (Attempt < 0) throw new ArgumentOutOfRangeException(nameof(Attempt));
+        return this;
+    }
+}
 
 public sealed record CatalogRelease(
     Guid Id,
@@ -221,4 +267,5 @@ public sealed record CatalogRelease(
     Guid BakeRunId,
     string Version,
     string ArtifactLocation,
-    DateTimeOffset PublishedAt);
+    DateTimeOffset PublishedAt,
+    long? ArtifactBytes = null);

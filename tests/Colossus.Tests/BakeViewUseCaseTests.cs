@@ -48,8 +48,9 @@ public sealed class BakeViewUseCaseTests : IDisposable
         Assert.Equal(3, manifest!.SourceRows);
         Assert.Equal(3, manifest.TotalPoints);
         Assert.Equal(ReductionKind.RawPassthrough, manifest.Reduction);
-        Assert.Equal([BakeStage.Probing, BakeStage.Extracting, BakeStage.Reducing, BakeStage.Publishing, BakeStage.Completed],
+        Assert.Equal([BakeStage.Probing, BakeStage.Extracting, BakeStage.Extracting, BakeStage.Tiling, BakeStage.Verifying, BakeStage.Publishing, BakeStage.Completed],
             progress.Events.Select(e => e.Stage));
+        Assert.Contains(progress.Events, item => item.Message.Contains("2.0 MB received"));
     }
 
     private static ViewConfig View() => new()
@@ -72,16 +73,27 @@ public sealed class BakeViewUseCaseTests : IDisposable
 
     private sealed class RecordingSource : ISourceAdapter
     {
-        public string Id => "characterized";
+        public SourceAdapterDescriptor Descriptor { get; } = new(
+            "characterized", "Characterized", new(false, false, false, false, true), [], []);
         public string? ExtractDestination { get; private set; }
+
+        public Task<SourceConnectionValidation> ValidateConnectionAsync(
+            SourceConnectionContext connection, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<SourceLocation>> DiscoverAsync(
+            SourceConnectionContext connection, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<SourcePreview> PreviewAsync(
+            SourcePreviewRequest request, CancellationToken ct = default) => throw new NotSupportedException();
 
         public Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default) =>
             Task.FromResult(new SourceBounds(new Bbox(0, 0, 1, 1), Count: 3, DistinctGeometries: 3));
 
         public Task ExtractAsync(ViewConfig view, Bbox bounds, string destinationParquet,
+            IProgress<SourceExtractProgress>? progress = null,
             CancellationToken ct = default)
         {
             ExtractDestination = destinationParquet;
+            progress?.Report(new SourceExtractProgress(2 * 1024 * 1024));
+            progress?.Report(new SourceExtractProgress(2 * 1024 * 1024, Completed: true));
             return Task.CompletedTask;
         }
     }

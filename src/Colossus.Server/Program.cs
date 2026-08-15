@@ -4,6 +4,7 @@ using Colossus.Infrastructure.DependencyInjection;
 using Colossus.Infrastructure.Serialization;
 using Colossus.Server;
 using Colossus.Server.Configuration;
+using Colossus.Server.Scheduling;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
@@ -26,6 +27,7 @@ server.Normalize();
 
 builder.WebHost.UseUrls(server.ServerUrl);
 builder.Services.AddColossus(builder.Configuration);
+builder.Services.AddBakeScheduling(builder.Configuration);
 builder.Services.AddControllers().AddJsonOptions(o => ColossusJson.Apply(o.JsonSerializerOptions));
 // Tiles + the view API are public, immutable, read-only data fetched cross-origin from the SPA's own
 // subdomain. Any origin, and expose the range headers so a ranged facts.pack read (companion-scale R1/R5)

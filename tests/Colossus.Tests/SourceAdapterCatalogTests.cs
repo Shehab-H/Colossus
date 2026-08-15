@@ -35,10 +35,18 @@ public class SourceAdapterCatalogTests
 
     private sealed class StubAdapter(string id) : ISourceAdapter
     {
-        public string Id { get; } = id;
+        public SourceAdapterDescriptor Descriptor { get; } = new(
+            id, id, new(false, false, false, false, true), [], []);
+        public Task<SourceConnectionValidation> ValidateConnectionAsync(
+            SourceConnectionContext connection, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<SourceLocation>> DiscoverAsync(
+            SourceConnectionContext connection, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<SourcePreview> PreviewAsync(
+            SourcePreviewRequest request, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default) =>
             throw new NotSupportedException();
         public Task ExtractAsync(ViewConfig view, Bbox bounds, string destinationParquet,
+            IProgress<SourceExtractProgress>? progress = null,
             CancellationToken ct = default) => throw new NotSupportedException();
     }
 }

@@ -40,6 +40,10 @@ public sealed class FileBakeStore : IBakeStore
     public long VersionArtifactSize(string viewId, string version, string relativePath) =>
         new FileInfo(VersionArtifactPath(viewId, version, relativePath)).Length;
 
+    public long VersionSize(string viewId, string version) =>
+        Directory.EnumerateFiles(VersionDirectory(viewId, version), "*", SearchOption.AllDirectories)
+            .Sum(path => new FileInfo(path).Length);
+
     public byte[] ReadVersionArtifact(string viewId, string version, string relativePath) =>
         File.ReadAllBytes(VersionArtifactPath(viewId, version, relativePath));
 
@@ -79,6 +83,12 @@ public sealed class FileBakeStore : IBakeStore
 
     public string CompanionTilePath(string viewId, string version, TileId tile) =>
         Path.ChangeExtension(TilePath(viewId, version, tile), ".facts.arrow");
+
+    public void CleanupStaging(string viewId)
+    {
+        File.Delete(StagingPath(viewId));
+        File.Delete(MarksStagingPath(viewId));
+    }
 
     private static string Under(string root, string relativePath)
     {

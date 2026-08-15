@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useTheme } from '@shared/theme/useTheme';
 import ThemeToggle from '@shared/ui/ThemeToggle';
+import { RouteLink } from '@shared/navigation/RouteLink';
 
 export default function ManagementShell({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
   const { theme, toggle } = useTheme();
@@ -10,10 +11,10 @@ export default function ManagementShell({ children, actions }: { children: React
       <div className="management-brand-rail" aria-hidden="true" />
       <header className="management-header">
         <div className="management-header__inner">
-          <a className="management-brand" href="/maps" aria-label="Colossus Maps home">
+          <RouteLink className="management-brand" to="/maps" aria-label="Colossus Maps home">
             <span className="management-brand__mark" aria-hidden="true">C</span>
             <span className="management-brand__copy"><strong>Colossus</strong><small>Maps control plane</small></span>
-          </a>
+          </RouteLink>
           <div className="management-header__actions">
             {actions}
             <ThemeToggle theme={theme} onToggle={toggle} />

@@ -36,6 +36,40 @@ services:
       CLICKHOUSE_PASSWORD: colossus
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
 
+  trino-catalog:
+    image: postgres:17.2-bookworm
+    container_name: colossus-trino-catalog
+    environment:
+      POSTGRES_DB: iceberg
+      POSTGRES_USER: iceberg
+      POSTGRES_PASSWORD: iceberg
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iceberg -d iceberg"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - trino-catalog-data:/var/lib/postgresql/data
+      - ./trino/postgres/init.sql:/docker-entrypoint-initdb.d/001-iceberg.sql:ro
+
+  trino:
+    image: trinodb/trino:483
+    container_name: colossus-trino
+    ports:
+      - "8080:8080"
+    depends_on:
+      trino-catalog:
+        condition: service_healthy
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+      - ./trino/data:/data/colossus-fixtures
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/v1/info"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
 volumes:
   mysql-data:
   clickhouse-data:
+  trino-catalog-data:

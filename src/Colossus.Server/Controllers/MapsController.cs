@@ -14,7 +14,10 @@ public sealed record BakePolicyRequest(
 [ApiController]
 [Route("api/maps")]
 [Tags("Maps")]
-public sealed class MapsController(ProductCatalogService catalog, MapManagementService management) : ControllerBase
+public sealed class MapsController(
+    ProductCatalogService catalog,
+    MapManagementService management,
+    BakeSchedulingService scheduling) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] bool includeArchived, CancellationToken ct) =>
@@ -56,7 +59,14 @@ public sealed class MapsController(ProductCatalogService catalog, MapManagementS
     [HttpPost("{id:guid}/runs")]
     public async Task<IActionResult> RunNow(Guid id, CancellationToken ct)
     {
-        try { return Accepted(await management.RunNowAsync(id, ct)); }
+        try { return Accepted(MapManagementService.DescribeRun(await scheduling.RunNowAsync(id, ct))); }
+        catch (Exception e) { return this.ToResponse(e); }
+    }
+
+    [HttpPost("{id:guid}/runs/{runId:guid}/cancel")]
+    public async Task<IActionResult> CancelRun(Guid id, Guid runId, CancellationToken ct)
+    {
+        try { return Ok(MapManagementService.DescribeRun(await scheduling.CancelAsync(id, runId, ct))); }
         catch (Exception e) { return this.ToResponse(e); }
     }
 
@@ -83,7 +93,7 @@ public sealed class MapsController(ProductCatalogService catalog, MapManagementS
             var policy = new BakePolicy(
                 id, request.Enabled, request.Interval, request.TimeZoneId, request.AllowOverlap,
                 request.RetainSuccessfulReleases, Revision: 0, UpdatedAt: default);
-            return Ok(await catalog.SetBakePolicyAsync(policy, expectedRevision, ct));
+            return Ok(await scheduling.SetPolicyAsync(policy, expectedRevision, ct));
         }
         catch (Exception e) { return this.ToResponse(e); }
     }

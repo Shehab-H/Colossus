@@ -1,7 +1,13 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Colossus.Application.Abstractions.Sources;
+using Colossus.Domain.Catalog;
+using Colossus.Domain.Model;
+using Colossus.Infrastructure.Sources;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace Colossus.Tests;
@@ -11,6 +17,7 @@ public sealed class CatalogApiTests : IDisposable
     private readonly DirectoryInfo _dir = Directory.CreateTempSubdirectory("colossus-api-");
     private readonly MySqlTestDatabase _database = new();
     private readonly WebApplicationFactory<Program> _factory;
+    private readonly ApiSourceAdapter _sourceAdapter = new();
 
     public CatalogApiTests()
     {
@@ -18,7 +25,15 @@ public sealed class CatalogApiTests : IDisposable
         Directory.CreateDirectory(legacy);
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder
             .UseSetting("ConnectionStrings:Database", _database.ConnectionString)
-            .UseSetting("Storage:LegacyViewsDirectory", legacy));
+            .UseSetting("Scheduling:Enabled", "false")
+            .UseSetting("Storage:LegacyViewsDirectory", legacy)
+            .ConfigureServices(services =>
+            {
+                services.RemoveAll<ISourceAdapter>();
+                services.RemoveAll<ISourceAdapterCatalog>();
+                services.AddSingleton<ISourceAdapter>(_sourceAdapter);
+                services.AddSingleton<ISourceAdapterCatalog, SourceAdapterCatalog>();
+            }));
     }
 
     public void Dispose()
@@ -97,12 +112,22 @@ public sealed class CatalogApiTests : IDisposable
 
         var queued = await client.PostAsync($"/api/maps/{mapId}/runs", content: null);
         Assert.Equal(System.Net.HttpStatusCode.Accepted, queued.StatusCode);
+        using var queuedJson = JsonDocument.Parse(await queued.Content.ReadAsStringAsync());
+        Guid runId = queuedJson.RootElement.GetProperty("id").GetGuid();
 
         using (var detail = JsonDocument.Parse(await client.GetStringAsync($"/api/maps/{mapId}")))
         {
             Assert.Equal("queued", detail.RootElement.GetProperty("summary").GetProperty("publicationState").GetString());
             Assert.True(detail.RootElement.GetProperty("bakePolicy").GetProperty("enabled").GetBoolean());
             Assert.Equal("queued", Assert.Single(detail.RootElement.GetProperty("runs").EnumerateArray()).GetProperty("status").GetString());
+        }
+
+        var cancel = await client.PostAsync($"/api/maps/{mapId}/runs/{runId}/cancel", content: null);
+        cancel.EnsureSuccessStatusCode();
+        using (var cancelled = JsonDocument.Parse(await cancel.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal("cancelled", cancelled.RootElement.GetProperty("status").GetString());
+            Assert.True(cancelled.RootElement.GetProperty("cancellationRequested").GetBoolean());
         }
 
         var archived = await client.DeleteAsync($"/api/maps/{mapId}?expectedRevision=1");
@@ -132,6 +157,73 @@ public sealed class CatalogApiTests : IDisposable
         var errors = problem.RootElement.GetProperty("errors");
         Assert.True(errors.TryGetProperty("slug", out _));
         Assert.True(errors.TryGetProperty("datasetId", out _));
+    }
+
+    [Fact]
+    public async Task SourcePreviewEndpoints_ExposeCapabilitiesAndStructuredResultsWithoutSecrets()
+    {
+        using var client = _factory.CreateClient();
+        using var adapters = JsonDocument.Parse(await client.GetStringAsync("/api/source-adapters"));
+        var descriptor = Assert.Single(adapters.RootElement.EnumerateArray());
+        Assert.Equal("fixture", descriptor.GetProperty("id").GetString());
+        Assert.True(descriptor.GetProperty("capabilities").GetProperty("boundedPreview").GetBoolean());
+
+        var connectionResponse = await client.PostAsJsonAsync("/api/connections", new
+        {
+            definition = new
+            {
+                slug = "preview-fixture",
+                name = "Preview fixture",
+                adapter = "fixture",
+                settings = new { url = "https://fixture.example" },
+            },
+            secrets = new { password = "never-return-this" },
+        });
+        connectionResponse.EnsureSuccessStatusCode();
+        using var connection = JsonDocument.Parse(await connectionResponse.Content.ReadAsStringAsync());
+        Guid connectionId = connection.RootElement.GetProperty("id").GetGuid();
+
+        var testResponse = await client.PostAsync($"/api/connections/{connectionId}/test", null);
+        testResponse.EnsureSuccessStatusCode();
+        Assert.Equal("never-return-this", _sourceAdapter.LastConnection!.Secrets["password"]);
+        using var locations = JsonDocument.Parse(await client.GetStringAsync($"/api/connections/{connectionId}/locations"));
+        Assert.Equal("points", Assert.Single(locations.RootElement.EnumerateArray()).GetProperty("name").GetString());
+
+        var datasetResponse = await client.PostAsJsonAsync("/api/datasets", new
+        {
+            slug = "preview-fixture-data",
+            name = "Preview fixture data",
+            connectionId,
+            source = new
+            {
+                query = "SELECT lon, lat, value FROM points",
+                geometry = new { kind = "lonLat", lon = "lon", lat = "lat" },
+                channels = new[] { new { name = "value", column = "value", role = "measure", type = "f64" } },
+            },
+        });
+        datasetResponse.EnsureSuccessStatusCode();
+        using var dataset = JsonDocument.Parse(await datasetResponse.Content.ReadAsStringAsync());
+        Guid datasetId = dataset.RootElement.GetProperty("id").GetGuid();
+
+        var previewResponse = await client.PostAsync($"/api/datasets/{datasetId}/preview", null);
+        previewResponse.EnsureSuccessStatusCode();
+        string previewJson = await previewResponse.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("never-return-this", previewJson);
+        using var preview = JsonDocument.Parse(previewJson);
+        Assert.Equal(2, preview.RootElement.GetProperty("geometry").GetProperty("sampledRows").GetInt32());
+        Assert.Equal("31.2", preview.RootElement.GetProperty("rows")[0].GetProperty("x").GetString());
+
+        _sourceAdapter.PreviewError = new SourceOperationException(
+            SourceErrorKind.Type,
+            "The geometry mapping is invalid.",
+            new Dictionary<string, string[]> { ["source.geometry"] = ["Longitude and latitude columns appear swapped."] });
+        var invalidPreview = await client.PostAsync($"/api/datasets/{datasetId}/preview", null);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, invalidPreview.StatusCode);
+        using var problem = JsonDocument.Parse(await invalidPreview.Content.ReadAsStringAsync());
+        Assert.Equal("Type", problem.RootElement.GetProperty("sourceErrorKind").GetString());
+        Assert.Equal(
+            "Longitude and latitude columns appear swapped.",
+            problem.RootElement.GetProperty("errors").GetProperty("source.geometry")[0].GetString());
     }
 
     private static async Task<Guid> CreateDatasetAsync(HttpClient client)
@@ -186,5 +278,57 @@ public sealed class CatalogApiTests : IDisposable
         Assert.DoesNotContain("apiKey", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("secrets", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("settings", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class ApiSourceAdapter : ISourceAdapter
+    {
+        public SourceAdapterDescriptor Descriptor { get; } = new(
+            "fixture",
+            "Fixture source",
+            new(true, true, true, true, true),
+            [new SourceConfigurationField("url", "URL", true), new SourceConfigurationField("password", "Password", false, true)],
+            [GeometryKind.LonLat]);
+
+        public SourceConnectionContext? LastConnection { get; private set; }
+        public SourceOperationException? PreviewError { get; set; }
+
+        public Task<SourceConnectionValidation> ValidateConnectionAsync(
+            SourceConnectionContext connection, CancellationToken ct = default)
+        {
+            LastConnection = connection;
+            return Task.FromResult(new SourceConnectionValidation(
+                "Connection succeeded.", new Dictionary<string, string> { ["serverVersion"] = "fixture-1" }));
+        }
+
+        public Task<IReadOnlyList<SourceLocation>> DiscoverAsync(
+            SourceConnectionContext connection, CancellationToken ct = default)
+        {
+            LastConnection = connection;
+            return Task.FromResult<IReadOnlyList<SourceLocation>>([new("fixture", "points", "table")]);
+        }
+
+        public Task<SourcePreview> PreviewAsync(SourcePreviewRequest request, CancellationToken ct = default)
+        {
+            LastConnection = request.Connection;
+            if (PreviewError is not null) throw PreviewError;
+            return Task.FromResult(new SourcePreview(
+                [new("x", "Float64", false, "geometry"), new("y", "Float64", false, "geometry"), new("value", "Float64", false, "measure")],
+                [
+                    new Dictionary<string, string?> { ["x"] = "31.2", ["y"] = "30", ["value"] = "12" },
+                    new Dictionary<string, string?> { ["x"] = "31.3", ["y"] = "30.1", ["value"] = "14" },
+                ],
+                new SourceGeometryPreview(GeometryKind.LonLat, true, new Bbox(31.2, 30, 31.3, 30.1), 2, 2),
+                false, 128, TimeSpan.FromMilliseconds(2)));
+        }
+
+        public Task<SourceBounds> ProbeAsync(ViewConfig view, CancellationToken ct = default) =>
+            Task.FromResult(new SourceBounds(new Bbox(31.2, 30, 31.3, 30.1), 2, 2));
+
+        public Task ExtractAsync(
+            ViewConfig view,
+            Bbox bounds,
+            string destinationParquet,
+            IProgress<SourceExtractProgress>? progress = null,
+            CancellationToken ct = default) => Task.CompletedTask;
     }
 }

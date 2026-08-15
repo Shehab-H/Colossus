@@ -42,10 +42,21 @@ public sealed record ManagedBakeRun(
     Guid Id,
     long DraftRevision,
     BakeRunStatus Status,
+    BakeRunStage Stage,
+    double Progress,
+    string? StatusMessage,
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
-    string? Error);
+    string? Error,
+    string? FailureCategory,
+    string? FailureDetails,
+    long? SourceRows,
+    int? TileCount,
+    long? ArtifactBytes,
+    Guid? ReleaseId,
+    bool CancellationRequested,
+    int Attempt);
 
 public sealed record ManagedRelease(
     Guid Id,
@@ -106,12 +117,9 @@ public sealed class MapManagementService(
                 connection.Draft.Adapter,
                 dataset.Draft.Source),
             policy,
-            mapRuns.Select(ToRun).ToArray(),
+            mapRuns.Select(DescribeRun).ToArray(),
             mapReleases.Select(ToRelease).ToArray());
     }
-
-    public async Task<ManagedBakeRun> RunNowAsync(Guid mapId, CancellationToken ct = default) =>
-        ToRun(await catalog.CaptureBakeRunAsync(mapId, ct));
 
     private async Task<ManagedMapSummary> SummarizeAsync(CatalogMap map, CancellationToken ct)
     {
@@ -146,7 +154,7 @@ public sealed class MapManagementService(
                 _ => MapPublicationState.NeverBaked,
             };
         DateTimeOffset? nextRunAt = policy is { Enabled: true, Interval: { } interval }
-            ? policy.UpdatedAt + interval
+            ? (lastRun?.CreatedAt ?? policy.UpdatedAt) + interval
             : null;
 
         return new ManagedMapSummary(
@@ -162,19 +170,30 @@ public sealed class MapManagementService(
             lastRun?.Status,
             lastRun?.CompletedAt ?? lastRun?.StartedAt ?? lastRun?.CreatedAt,
             lastFailure?.Error,
-            OutputBytes: null,
+            currentRelease?.ArtifactBytes,
             policy?.Enabled ?? false,
             nextRunAt);
     }
 
-    private static ManagedBakeRun ToRun(BakeRun run) => new(
+    public static ManagedBakeRun DescribeRun(BakeRun run) => new(
         run.Id,
         run.DraftRevision,
         run.Status,
+        run.Stage,
+        run.Progress,
+        run.StatusMessage,
         run.CreatedAt,
         run.StartedAt,
         run.CompletedAt,
-        run.Error);
+        run.Error,
+        run.FailureCategory,
+        run.FailureDetails,
+        run.SourceRows,
+        run.TileCount,
+        run.ArtifactBytes,
+        run.ReleaseId,
+        run.CancellationRequested,
+        run.Attempt);
 
     private static ManagedRelease ToRelease(CatalogRelease release) => new(
         release.Id,
@@ -182,5 +201,5 @@ public sealed class MapManagementService(
         release.Version,
         release.ArtifactLocation,
         release.PublishedAt,
-        OutputBytes: null);
+        release.ArtifactBytes);
 }

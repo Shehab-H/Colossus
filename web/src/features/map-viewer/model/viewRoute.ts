@@ -72,7 +72,3 @@ export function urlWithViewerState(href: string, state: ViewerUrlState): string 
   }
   return url.toString();
 }
-
-export function replaceViewerState(state: ViewerUrlState): void {
-  window.history.replaceState(null, '', urlWithViewerState(window.location.href, state));
-}

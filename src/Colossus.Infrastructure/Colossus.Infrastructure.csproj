@@ -26,6 +26,8 @@
          Item C). Managed only — this repo has been burned by native extensions (SLAB-FORMAT §5). -->
     <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="NetTopologySuite" Version="2.6.0" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />
   </ItemGroup>

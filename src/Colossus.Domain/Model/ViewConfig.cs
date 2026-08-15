@@ -163,6 +163,17 @@ public sealed record SourceSpec
     public required string Query { get; init; }
     public required GeometrySpec Geometry { get; init; }
     public IReadOnlyList<ChannelSpec> Channels { get; init; } = Array.Empty<ChannelSpec>();
+    /// <summary>Non-secret connection settings captured with the immutable bake definition. Secrets are
+    /// resolved by the execution host and are never serialized into a view or manifest.</summary>
+    public IReadOnlyDictionary<string, string> Settings { get; init; } = new Dictionary<string, string>();
+    /// <summary>Adapter-neutral evidence of the exact logical inputs resolved for one bake.</summary>
+    public SourceInputSnapshot? InputSnapshot { get; init; }
+}
+
+public sealed record SourceInputSnapshot
+{
+    public required IReadOnlyList<string> Inputs { get; init; }
+    public required string Fingerprint { get; init; }
 }
 
 /// <summary>The spatial role, a tagged union on <see cref="GeometryKind"/>: only the chosen kind's

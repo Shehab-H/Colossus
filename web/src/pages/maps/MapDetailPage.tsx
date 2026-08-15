@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router';
 import type { ManagedMapDetail } from '@entities/catalog';
-import { archiveMap, getManagedMap, runMapNow, setBakePolicy } from '@entities/catalog';
+import { managedMapQuery } from '@entities/catalog';
+import { useArchiveMapMutation, useBakePolicyMutation, useCancelMapRunMutation, useRunMapMutation } from '@features/map-management/api/mapManagementMutations';
 import { hoursToInterval } from '@features/map-management/model/mapForm';
 import { embedHref, formatBytes, formatDate, publicationLabel, publicationTone, viewerHref } from '@features/map-management/model/presentation';
-import { Alert, Badge, Button, ButtonLink, ConfirmDialog, LoadingState, PageHeader, PaddedCard, StatCard, type BadgeTone } from '@shared/ui';
+import { Alert, Badge, Button, ConfirmDialog, LoadingState, PageHeader, PaddedCard, StatCard, type BadgeTone } from '@shared/ui';
+import { ButtonRouteLink } from '@shared/navigation/RouteLink';
 import ManagementShell from '@widgets/management-shell/ManagementShell';
 
 function publicationBadgeTone(state: ManagedMapDetail['summary']['publicationState']): BadgeTone {
@@ -12,52 +16,58 @@ function publicationBadgeTone(state: ManagedMapDetail['summary']['publicationSta
 }
 
 export default function MapDetailPage({ mapId }: { mapId: string }) {
-  const [detail, setDetail] = useState<ManagedMapDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const detailQuery = useQuery(managedMapQuery(mapId));
+  const runMutation = useRunMapMutation();
+  const cancelRunMutation = useCancelMapRunMutation();
+  const policyMutation = useBakePolicyMutation();
+  const archiveMutation = useArchiveMapMutation();
+  const detail = detailQuery.data ?? null;
+  const operationError = detailQuery.error ?? runMutation.error ?? cancelRunMutation.error ?? policyMutation.error ?? archiveMutation.error;
+  const [localError, setLocalError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
-
-  const load = useCallback(() => {
-    setError(null);
-    getManagedMap(mapId).then(setDetail, (reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [mapId]);
-
-  useEffect(load, [load]);
+  const error = localError ?? (operationError instanceof Error ? operationError.message : operationError ? String(operationError) : null);
+  const busy = runMutation.isPending ? 'run' : policyMutation.isPending ? 'schedule' : archiveMutation.isPending ? 'archive' : null;
 
   const runNow = async () => {
-    setBusy('run');
-    try { await runMapNow(mapId); load(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(null); }
+    setLocalError(null);
+    try { await runMutation.mutateAsync(mapId); }
+    catch { /* mutation state owns the rendered error */ }
   };
 
   const toggleSchedule = async () => {
     if (!detail) return;
-    setBusy('schedule');
+    setLocalError(null);
     const current = detail.bakePolicy;
     try {
-      await setBakePolicy(mapId, {
-        enabled: !(current?.enabled ?? false),
-        interval: current?.interval ?? hoursToInterval('24'),
-        timeZoneId: current?.timeZoneId ?? 'UTC',
-        allowOverlap: current?.allowOverlap ?? false,
-        retainSuccessfulReleases: current?.retainSuccessfulReleases ?? 3,
-      }, current?.revision);
-      load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(null); }
+      await policyMutation.mutateAsync({
+        mapId,
+        expectedRevision: current?.revision,
+        policy: {
+          enabled: !(current?.enabled ?? false),
+          interval: current?.interval ?? hoursToInterval('24'),
+          timeZoneId: current?.timeZoneId ?? 'UTC',
+          allowOverlap: current?.allowOverlap ?? false,
+          retainSuccessfulReleases: current?.retainSuccessfulReleases ?? 3,
+        },
+      });
+    } catch { /* mutation state owns the rendered error */ }
+  };
+
+  const cancelRun = async (runId: string) => {
+    setLocalError(null);
+    try { await cancelRunMutation.mutateAsync({ mapId, runId }); }
+    catch { /* mutation state owns the rendered error */ }
   };
 
   const archive = async () => {
     if (!detail) return;
-    setBusy('archive');
+    setLocalError(null);
     try {
-      await archiveMap(mapId, detail.summary.revision);
-      window.location.assign('/maps');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-      setBusy(null);
+      await archiveMutation.mutateAsync({ mapId, expectedRevision: detail.summary.revision });
+      await navigate('/maps');
+    } catch {
       setConfirmArchive(false);
     }
   };
@@ -67,11 +77,11 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
     const url = new URL(embedHref(detail.summary.slug), window.location.origin).toString();
     const snippet = `<iframe src="${url}" title="${detail.summary.title}" loading="lazy" style="width:100%;height:600px;border:0"></iframe>`;
     try { await navigator.clipboard.writeText(snippet); setCopied(true); }
-    catch { setError('The browser could not copy the embed snippet.'); }
+    catch { setLocalError('The browser could not copy the embed snippet.'); }
   };
 
   return (
-    <ManagementShell actions={<ButtonLink variant="ghost" href="/maps">All maps</ButtonLink>}>
+    <ManagementShell actions={<ButtonRouteLink variant="ghost" to="/maps">All maps</ButtonRouteLink>}>
       {error && <Alert tone="danger">{error}</Alert>}
       {!detail ? <LoadingState>Loading map details…</LoadingState> : (
         <div className="maps-detail">
@@ -80,8 +90,8 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
             title={detail.summary.title}
             description={<span className="maps-detail__identity"><Badge tone={publicationBadgeTone(detail.summary.publicationState)}>{publicationLabel(detail.summary.publicationState)}</Badge><code>{detail.summary.slug}</code><span>revision {detail.summary.revision}</span></span>}
             actions={<>
-              {!detail.summary.archived && <ButtonLink variant="secondary" href={`/maps/manage/${mapId}/edit`}>Edit</ButtonLink>}
-              {!detail.summary.archived && <ButtonLink variant="secondary" href={viewerHref(detail.summary.slug)}>Open viewer</ButtonLink>}
+              {!detail.summary.archived && <ButtonRouteLink variant="secondary" to={`/maps/manage/${mapId}/edit`}>Edit</ButtonRouteLink>}
+              {!detail.summary.archived && <ButtonRouteLink variant="secondary" to={viewerHref(detail.summary.slug)}>Open viewer</ButtonRouteLink>}
               {!detail.summary.archived && <Button variant="primary" onClick={() => void copyEmbed()}>{copied ? 'Embed copied' : 'Copy embed'}</Button>}
             </>}
           />
@@ -98,7 +108,7 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
 
           <div className="maps-detail__grid">
             <PaddedCard className="maps-detail__card maps-detail__card--preview">
-              <CardHeading eyebrow="Preview" title="Published map" action={<ButtonLink variant="ghost" size="sm" href={viewerHref(detail.summary.slug)}>Open full viewer</ButtonLink>} />
+              <CardHeading eyebrow="Preview" title="Published map" action={<ButtonRouteLink variant="ghost" size="sm" to={viewerHref(detail.summary.slug)}>Open full viewer</ButtonRouteLink>} />
               {detail.summary.archived ? <p className="maps-detail__note">Archived maps cannot open a new viewer.</p> : <iframe className="maps-detail__preview" src={embedHref(detail.summary.slug)} title={`${detail.summary.title} preview`} loading="lazy" />}
             </PaddedCard>
 
@@ -110,7 +120,7 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
                 ['Time zone', detail.bakePolicy?.timeZoneId ?? 'UTC'],
                 ['Retention', `${detail.bakePolicy?.retainSuccessfulReleases ?? 3} releases`],
               ]} />
-              {!detail.summary.archived && <div className="maps-detail__stack"><Button variant="primary" disabled={busy === 'run'} onClick={() => void runNow()}>{busy === 'run' ? 'Queueing…' : 'Run now'}</Button><Button variant="secondary" disabled={busy === 'schedule'} onClick={() => void toggleSchedule()}>{busy === 'schedule' ? 'Saving…' : detail.bakePolicy?.enabled ? 'Disable schedule' : 'Enable schedule'}</Button><p>Run now captures an immutable queued snapshot. Worker execution arrives with scheduling.</p></div>}
+              {!detail.summary.archived && <div className="maps-detail__stack"><Button variant="primary" disabled={busy === 'run'} onClick={() => void runNow()}>{busy === 'run' ? 'Queueing…' : 'Run now'}</Button><Button variant="secondary" disabled={busy === 'schedule'} onClick={() => void toggleSchedule()}>{busy === 'schedule' ? 'Saving…' : detail.bakePolicy?.enabled ? 'Disable schedule' : 'Enable schedule'}</Button><p>Run now captures an immutable snapshot and hands it to the persistent bake queue.</p></div>}
             </PaddedCard>
 
             <PaddedCard className="maps-detail__card">
@@ -121,7 +131,22 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
 
             <PaddedCard className="maps-detail__card maps-detail__card--wide">
               <CardHeading eyebrow="History" title="Bake runs" />
-              {detail.runs.length === 0 ? <p className="maps-detail__note">This map has never been queued.</p> : <div className="maps-detail__history">{detail.runs.map((run) => <div className="maps-detail__history-row" key={run.id}><Badge tone={run.status === 'failed' ? 'danger' : run.status === 'succeeded' ? 'success' : 'info'}>{run.status}</Badge><strong>Draft r{run.draftRevision}</strong><span>{formatDate(run.completedAt ?? run.startedAt ?? run.createdAt)}</span><span>{run.error}</span></div>)}</div>}
+              {detail.runs.length === 0 ? <p className="maps-detail__note">This map has never been queued.</p> : <div className="maps-detail__history">{detail.runs.map((run) => {
+                const active = run.status === 'queued' || run.status === 'running';
+                return <div className="maps-detail__run" key={run.id}>
+                  <div className="maps-detail__history-row">
+                    <Badge tone={run.status === 'failed' ? 'danger' : run.status === 'succeeded' ? 'success' : run.status === 'cancelled' ? 'neutral' : 'info'}>{run.status}</Badge>
+                    <strong>{run.stage} · {Math.round(run.progress * 100)}%</strong>
+                    <span>{formatDate(run.completedAt ?? run.startedAt ?? run.createdAt)}</span>
+                    {active && !run.cancellationRequested
+                      ? <Button variant="ghost" size="sm" disabled={cancelRunMutation.isPending} onClick={() => void cancelRun(run.id)}>Cancel</Button>
+                      : <span>{run.statusMessage ?? run.error}</span>}
+                  </div>
+                  {active && <progress className="maps-detail__progress" max={1} value={run.progress} aria-label={`${run.stage} progress`} />}
+                  {(run.failureCategory || run.failureDetails) && <Alert tone="danger"><strong>{run.failureCategory ?? 'Bake failure'}:</strong> {run.failureDetails ?? run.error}</Alert>}
+                  {(run.sourceRows !== undefined || run.tileCount !== undefined || run.artifactBytes !== undefined) && <p className="maps-detail__run-metrics">{run.sourceRows?.toLocaleString() ?? '—'} rows · {run.tileCount?.toLocaleString() ?? '—'} tiles · {formatBytes(run.artifactBytes)} · attempt {run.attempt}</p>}
+                </div>;
+              })}</div>}
             </PaddedCard>
 
             <PaddedCard className="maps-detail__card maps-detail__card--wide">

@@ -204,6 +204,13 @@ public sealed class MySqlDatabase :
         return await reader.ReadAsync(ct) ? ReadPolicy(reader) : null;
     }
 
+    async Task<IReadOnlyList<BakePolicy>> IBakePolicyRepository.ListAsync(CancellationToken ct)
+    {
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db, "SELECT * FROM bake_policies ORDER BY map_id;");
+        return await ReadAllAsync(cmd, ReadPolicy, ct);
+    }
+
     public async Task<BakePolicy> UpsertAsync(
         BakePolicy policy, long? expectedRevision, CancellationToken ct = default)
     {
@@ -245,20 +252,22 @@ public sealed class MySqlDatabase :
 
     public async Task<BakeRun> CreateAsync(BakeRun run, CancellationToken ct = default)
     {
+        run.ValidateState();
         const string sql = """
             INSERT INTO bake_runs
-                (id, map_id, draft_revision, definition_json, status, created_at, started_at, completed_at, error)
+                (id, map_id, draft_revision, definition_json, status, stage, progress, status_message,
+                 source_rows, tile_count, artifact_bytes, release_id, failure_category, failure_details,
+                 cancellation_requested, attempt, background_job_id, created_at, started_at, completed_at,
+                 updated_at, error)
             VALUES
-                ($id, $map, $revision, $definition, $status, $created, $started, $completed, $error);
+                ($id, $map, $revision, $definition, $status, $stage, $progress, $message,
+                 $rows, $tiles, $bytes, $release, $category, $details,
+                 $cancel, $attempt, $job, $created, $started, $completed, $updated, $error);
             """;
         try
         {
             await using var db = await OpenAsync(ct);
-            await using var cmd = Command(db, sql,
-                ("$id", run.Id), ("$map", run.MapId), ("$revision", run.DraftRevision),
-                ("$definition", Json(run.Definition)), ("$status", run.Status.ToString()),
-                ("$created", Timestamp(run.CreatedAt)), ("$started", NullableTimestamp(run.StartedAt)),
-                ("$completed", NullableTimestamp(run.CompletedAt)), ("$error", run.Error));
+            await using var cmd = RunCommand(db, sql, run);
             await cmd.ExecuteNonQueryAsync(ct);
             return run;
         }
@@ -269,12 +278,7 @@ public sealed class MySqlDatabase :
     }
 
     async Task<BakeRun?> IBakeRunRepository.FindAsync(Guid id, CancellationToken ct)
-    {
-        await using var db = await OpenAsync(ct);
-        await using var cmd = Command(db, "SELECT * FROM bake_runs WHERE id = $id;", ("$id", id));
-        await using var reader = await cmd.ExecuteReaderAsync(ct);
-        return await reader.ReadAsync(ct) ? ReadRun(reader) : null;
-    }
+        => await FindRunAsync(id, ct);
 
     async Task<IReadOnlyList<BakeRun>> IBakeRunRepository.ListForMapAsync(Guid mapId, CancellationToken ct)
     {
@@ -284,11 +288,71 @@ public sealed class MySqlDatabase :
         return await ReadAllAsync(cmd, ReadRun, ct);
     }
 
+    async Task<IReadOnlyList<BakeRun>> IBakeRunRepository.ListIncompleteAsync(CancellationToken ct)
+    {
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db,
+            "SELECT * FROM bake_runs WHERE status IN ('Queued', 'Running') ORDER BY created_at;");
+        return await ReadAllAsync(cmd, ReadRun, ct);
+    }
+
+    public async Task<BakeRun> UpdateAsync(BakeRun run, CancellationToken ct = default)
+    {
+        run.ValidateState();
+        const string sql = """
+            UPDATE bake_runs
+            SET status = $status, stage = $stage, progress = $progress, status_message = $message,
+                source_rows = $rows, tile_count = $tiles, artifact_bytes = $bytes, release_id = $release,
+                failure_category = $category, failure_details = $details,
+                cancellation_requested = cancellation_requested OR $cancel,
+                attempt = $attempt, background_job_id = COALESCE($job, background_job_id),
+                started_at = $started, completed_at = $completed, updated_at = $updated, error = $error
+            WHERE id = $id;
+            """;
+        await using var db = await OpenAsync(ct);
+        await using var cmd = RunCommand(db, sql, run);
+        if (await cmd.ExecuteNonQueryAsync(ct) == 0)
+            throw new CatalogNotFoundException($"Unknown bake run '{run.Id}'.");
+        return await FindRunAsync(run.Id, ct) ?? throw new CatalogNotFoundException($"Unknown bake run '{run.Id}'.");
+    }
+
+    public async Task<BakeRun> RequestCancellationAsync(
+        Guid id, DateTimeOffset requestedAt, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE bake_runs
+            SET cancellation_requested = 1,
+                stage = CASE WHEN status = 'Queued' THEN 'Cancelled' ELSE stage END,
+                completed_at = CASE WHEN status = 'Queued' THEN $requested ELSE completed_at END,
+                updated_at = $requested,
+                status_message = CASE WHEN status = 'Queued' THEN 'Cancelled before execution.' ELSE 'Cancellation requested.' END,
+                status = CASE WHEN status = 'Queued' THEN 'Cancelled' ELSE status END
+            WHERE id = $id AND status IN ('Queued', 'Running');
+            """;
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db, sql, ("$id", id), ("$requested", Timestamp(requestedAt)));
+        _ = await cmd.ExecuteNonQueryAsync(ct);
+        return await FindRunAsync(id, ct) ?? throw new CatalogNotFoundException($"Unknown bake run '{id}'.");
+    }
+
+    public async Task<BakeRun> AttachBackgroundJobAsync(
+        Guid id, string backgroundJobId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(backgroundJobId)) throw new ArgumentException("background job ID is required");
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db,
+            "UPDATE bake_runs SET background_job_id = COALESCE(background_job_id, $job) WHERE id = $id;",
+            ("$id", id), ("$job", backgroundJobId));
+        if (await cmd.ExecuteNonQueryAsync(ct) == 0)
+            throw new CatalogNotFoundException($"Unknown bake run '{id}'.");
+        return await FindRunAsync(id, ct) ?? throw new CatalogNotFoundException($"Unknown bake run '{id}'.");
+    }
+
     public async Task<CatalogRelease> CreateAsync(CatalogRelease release, CancellationToken ct = default)
     {
         const string sql = """
-            INSERT INTO releases (id, map_id, bake_run_id, version, artifact_location, published_at)
-            VALUES ($id, $map, $run, $version, $artifact, $published);
+            INSERT INTO releases (id, map_id, bake_run_id, version, artifact_location, published_at, artifact_bytes)
+            VALUES ($id, $map, $run, $version, $artifact, $published, $bytes);
             """;
         try
         {
@@ -296,7 +360,7 @@ public sealed class MySqlDatabase :
             await using var cmd = Command(db, sql,
                 ("$id", release.Id), ("$map", release.MapId), ("$run", release.BakeRunId),
                 ("$version", release.Version), ("$artifact", release.ArtifactLocation),
-                ("$published", Timestamp(release.PublishedAt)));
+                ("$published", Timestamp(release.PublishedAt)), ("$bytes", release.ArtifactBytes));
             await cmd.ExecuteNonQueryAsync(ct);
             return release;
         }
@@ -305,6 +369,14 @@ public sealed class MySqlDatabase :
             throw new CatalogConflictException(
                 $"Release '{release.Version}' already exists or its map/run relationship is invalid.", e);
         }
+    }
+
+    async Task<CatalogRelease?> IReleaseRepository.FindForRunAsync(Guid runId, CancellationToken ct)
+    {
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db, "SELECT * FROM releases WHERE bake_run_id = $run LIMIT 1;", ("$run", runId));
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRelease(reader) : null;
     }
 
     async Task<IReadOnlyList<CatalogRelease>> IReleaseRepository.ListForMapAsync(
@@ -344,6 +416,14 @@ public sealed class MySqlDatabase :
             ("$value", value), ("$workspace", workspace));
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadMap(reader) : null;
+    }
+
+    private async Task<BakeRun?> FindRunAsync(Guid id, CancellationToken ct)
+    {
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db, "SELECT * FROM bake_runs WHERE id = $id;", ("$id", id));
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRun(reader) : null;
     }
 
     private async Task<IReadOnlyList<T>> ListAsync<T>(
@@ -391,9 +471,9 @@ public sealed class MySqlDatabase :
             versionCommand.CommandText = "SELECT version FROM catalog_schema WHERE singleton_id = 1;";
             object? storedVersion = versionCommand.ExecuteScalar();
             long version = storedVersion is null ? 0 : Convert.ToInt64(storedVersion);
-            if (version > 1)
+            if (version > 2)
                 throw new InvalidOperationException(
-                    $"Database schema version {version} is newer than this application's supported version 1.");
+                    $"Database schema version {version} is newer than this application's supported version 2.");
             if (version == 0)
                 ExecuteSchemaStatement(db, "INSERT INTO catalog_schema (singleton_id, version) VALUES (1, 1);");
         }
@@ -470,9 +550,22 @@ public sealed class MySqlDatabase :
                 draft_revision BIGINT NOT NULL,
                 definition_json LONGTEXT NOT NULL,
                 status VARCHAR(32) NOT NULL,
+                stage VARCHAR(32) NOT NULL DEFAULT 'Queued',
+                progress DOUBLE NOT NULL DEFAULT 0,
+                status_message LONGTEXT NULL,
+                source_rows BIGINT NULL,
+                tile_count INT NULL,
+                artifact_bytes BIGINT NULL,
+                release_id CHAR(36) CHARACTER SET ascii NULL,
+                failure_category VARCHAR(64) NULL,
+                failure_details LONGTEXT NULL,
+                cancellation_requested BOOLEAN NOT NULL DEFAULT 0,
+                attempt INT NOT NULL DEFAULT 0,
+                background_job_id VARCHAR(191) NULL,
                 created_at VARCHAR(40) NOT NULL,
                 started_at VARCHAR(40) NULL,
                 completed_at VARCHAR(40) NULL,
+                updated_at VARCHAR(40) NULL,
                 error LONGTEXT NULL,
                 CONSTRAINT fk_bake_runs_map FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE RESTRICT,
                 UNIQUE KEY ux_bake_runs_map_id (map_id, id),
@@ -487,14 +580,68 @@ public sealed class MySqlDatabase :
                 version VARCHAR(191) NOT NULL,
                 artifact_location TEXT NOT NULL,
                 published_at VARCHAR(40) NOT NULL,
+                artifact_bytes BIGINT NULL,
                 CONSTRAINT fk_releases_map FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE RESTRICT,
                 CONSTRAINT fk_releases_run FOREIGN KEY (map_id, bake_run_id) REFERENCES bake_runs(map_id, id) ON DELETE RESTRICT,
                 UNIQUE KEY ux_releases_map_version (map_id, version),
+                UNIQUE KEY ux_releases_run (bake_run_id),
                 KEY ix_releases_map_published (map_id, published_at DESC)
             ) ENGINE=InnoDB;
             """,
         ];
         foreach (string statement in schema) ExecuteSchemaStatement(db, statement);
+        if (StoredSchemaVersion(db) < 2)
+        {
+            AddColumnIfMissing(db, "bake_runs", "stage", "VARCHAR(32) NOT NULL DEFAULT 'Queued'");
+            AddColumnIfMissing(db, "bake_runs", "progress", "DOUBLE NOT NULL DEFAULT 0");
+            AddColumnIfMissing(db, "bake_runs", "status_message", "LONGTEXT NULL");
+            AddColumnIfMissing(db, "bake_runs", "source_rows", "BIGINT NULL");
+            AddColumnIfMissing(db, "bake_runs", "tile_count", "INT NULL");
+            AddColumnIfMissing(db, "bake_runs", "artifact_bytes", "BIGINT NULL");
+            AddColumnIfMissing(db, "bake_runs", "release_id", "CHAR(36) CHARACTER SET ascii NULL");
+            AddColumnIfMissing(db, "bake_runs", "failure_category", "VARCHAR(64) NULL");
+            AddColumnIfMissing(db, "bake_runs", "failure_details", "LONGTEXT NULL");
+            AddColumnIfMissing(db, "bake_runs", "cancellation_requested", "BOOLEAN NOT NULL DEFAULT 0");
+            AddColumnIfMissing(db, "bake_runs", "attempt", "INT NOT NULL DEFAULT 0");
+            AddColumnIfMissing(db, "bake_runs", "background_job_id", "VARCHAR(191) NULL");
+            AddColumnIfMissing(db, "bake_runs", "updated_at", "VARCHAR(40) NULL");
+            AddColumnIfMissing(db, "releases", "artifact_bytes", "BIGINT NULL");
+            AddUniqueIndexIfMissing(db, "releases", "ux_releases_run", "bake_run_id");
+            ExecuteSchemaStatement(db, "UPDATE catalog_schema SET version = 2 WHERE singleton_id = 1;");
+        }
+    }
+
+    private static long StoredSchemaVersion(MySqlConnection db)
+    {
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT version FROM catalog_schema WHERE singleton_id = 1;";
+        return Convert.ToInt64(command.ExecuteScalar());
+    }
+
+    private static void AddColumnIfMissing(MySqlConnection db, string table, string column, string definition)
+    {
+        using var exists = db.CreateCommand();
+        exists.CommandText = """
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = @table AND column_name = @column;
+            """;
+        exists.Parameters.AddWithValue("@table", table);
+        exists.Parameters.AddWithValue("@column", column);
+        if (Convert.ToInt32(exists.ExecuteScalar()) == 0)
+            ExecuteSchemaStatement(db, $"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition};");
+    }
+
+    private static void AddUniqueIndexIfMissing(MySqlConnection db, string table, string index, string columns)
+    {
+        using var exists = db.CreateCommand();
+        exists.CommandText = """
+            SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE() AND table_name = @table AND index_name = @index;
+            """;
+        exists.Parameters.AddWithValue("@table", table);
+        exists.Parameters.AddWithValue("@index", index);
+        if (Convert.ToInt32(exists.ExecuteScalar()) == 0)
+            ExecuteSchemaStatement(db, $"ALTER TABLE `{table}` ADD UNIQUE KEY `{index}` ({columns});");
     }
 
     private static void ExecuteSchemaStatement(MySqlConnection db, string sql)
@@ -524,6 +671,17 @@ public sealed class MySqlDatabase :
         ("$interval", policy.Interval?.Ticks), ("$zone", policy.TimeZoneId),
         ("$overlap", policy.AllowOverlap), ("$retain", policy.RetainSuccessfulReleases),
         ("$revision", policy.Revision), ("$updated", Timestamp(policy.UpdatedAt)), ("$expected", expected));
+
+    private MySqlCommand RunCommand(MySqlConnection db, string sql, BakeRun run) => Command(db, sql,
+        ("$id", run.Id), ("$map", run.MapId), ("$revision", run.DraftRevision),
+        ("$definition", Json(run.Definition)), ("$status", run.Status.ToString()),
+        ("$stage", run.Stage.ToString()), ("$progress", run.Progress), ("$message", run.StatusMessage),
+        ("$rows", run.SourceRows), ("$tiles", run.TileCount), ("$bytes", run.ArtifactBytes),
+        ("$release", run.ReleaseId), ("$category", run.FailureCategory), ("$details", run.FailureDetails),
+        ("$cancel", run.CancellationRequested), ("$attempt", run.Attempt), ("$job", run.BackgroundJobId),
+        ("$created", Timestamp(run.CreatedAt)), ("$started", NullableTimestamp(run.StartedAt)),
+        ("$completed", NullableTimestamp(run.CompletedAt)), ("$updated", NullableTimestamp(run.UpdatedAt)),
+        ("$error", run.Error));
 
     private static object DbValue(object? value) => value switch
     {
@@ -579,7 +737,20 @@ public sealed class MySqlDatabase :
         ParseTimestamp(r.GetString(r.GetOrdinal("created_at"))),
         NullableTimestamp(r, "started_at"),
         NullableTimestamp(r, "completed_at"),
-        NullableString(r, "error"));
+        NullableString(r, "error"),
+        Enum.Parse<BakeRunStage>(r.GetString(r.GetOrdinal("stage"))),
+        r.GetDouble(r.GetOrdinal("progress")),
+        NullableString(r, "status_message"),
+        NullableInt64(r, "source_rows"),
+        NullableInt32(r, "tile_count"),
+        NullableInt64(r, "artifact_bytes"),
+        NullableGuid(r, "release_id"),
+        NullableString(r, "failure_category"),
+        NullableString(r, "failure_details"),
+        r.GetBoolean(r.GetOrdinal("cancellation_requested")),
+        r.GetInt32(r.GetOrdinal("attempt")),
+        NullableString(r, "background_job_id"),
+        NullableTimestamp(r, "updated_at"));
 
     private static CatalogRelease ReadRelease(MySqlDataReader r) => new(
         r.GetGuid(r.GetOrdinal("id")),
@@ -587,7 +758,8 @@ public sealed class MySqlDatabase :
         r.GetGuid(r.GetOrdinal("bake_run_id")),
         r.GetString(r.GetOrdinal("version")),
         r.GetString(r.GetOrdinal("artifact_location")),
-        ParseTimestamp(r.GetString(r.GetOrdinal("published_at"))));
+        ParseTimestamp(r.GetString(r.GetOrdinal("published_at"))),
+        NullableInt64(r, "artifact_bytes"));
 
     private static async Task<IReadOnlyList<T>> ReadAllAsync<T>(
         MySqlCommand cmd, Func<MySqlDataReader, T> materialize, CancellationToken ct)
@@ -607,5 +779,11 @@ public sealed class MySqlDatabase :
         reader.IsDBNull(reader.GetOrdinal(name)) ? null : ParseTimestamp(reader.GetString(reader.GetOrdinal(name)));
     private static string? NullableString(MySqlDataReader reader, string name) =>
         reader.IsDBNull(reader.GetOrdinal(name)) ? null : reader.GetString(reader.GetOrdinal(name));
+    private static long? NullableInt64(MySqlDataReader reader, string name) =>
+        reader.IsDBNull(reader.GetOrdinal(name)) ? null : reader.GetInt64(reader.GetOrdinal(name));
+    private static int? NullableInt32(MySqlDataReader reader, string name) =>
+        reader.IsDBNull(reader.GetOrdinal(name)) ? null : reader.GetInt32(reader.GetOrdinal(name));
+    private static Guid? NullableGuid(MySqlDataReader reader, string name) =>
+        reader.IsDBNull(reader.GetOrdinal(name)) ? null : reader.GetGuid(reader.GetOrdinal(name));
     private static bool IsConstraint(MySqlException e) => e.Number is 1062 or 1451 or 1452 or 3819;
 }

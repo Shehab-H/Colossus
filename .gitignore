@@ -21,6 +21,12 @@ web/test-results/
 # Operator-uploaded media is runtime data.
 /media/
 
+# Server-resolved local Parquet providers contain operator data, not source artifacts.
+/datasets/parquet/*
+!/datasets/parquet/.gitkeep
+/docker/trino/data/*
+!/docker/trino/data/.gitkeep
+
 # Env / local
 *.local
 .DS_Store

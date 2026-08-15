@@ -1,13 +1,20 @@
 import type {
   ApiValidationProblem,
   BakePolicy,
+  CatalogConnection,
   CatalogDataset,
+  CreateConnectionInput,
+  CreateDatasetInput,
   ManagedBakeRun,
   ManagedMapDetail,
   ManagedMapSummary,
   MapDraft,
   SaveBakePolicy,
   SavedMap,
+  SourceAdapterDescriptor,
+  SourceConnectionValidation,
+  SourceLocation,
+  SourcePreview,
 } from '../model/catalog';
 import { API_BASE } from '@shared/api/config';
 
@@ -36,12 +43,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 
-export const listManagedMaps = (includeArchived = false): Promise<ManagedMapSummary[]> =>
-  request(`/maps?includeArchived=${includeArchived}`);
+export const listManagedMaps = (includeArchived = false, signal?: AbortSignal): Promise<ManagedMapSummary[]> =>
+  request(`/maps?includeArchived=${includeArchived}`, { signal });
 
-export const getManagedMap = (id: string): Promise<ManagedMapDetail> => request(`/maps/${id}`);
+export const getManagedMap = (id: string, signal?: AbortSignal): Promise<ManagedMapDetail> =>
+  request(`/maps/${id}`, { signal });
 
-export const listDatasets = (): Promise<CatalogDataset[]> => request('/datasets');
+export const listDatasets = (signal?: AbortSignal): Promise<CatalogDataset[]> => request('/datasets', { signal });
+
+export const listConnections = (signal?: AbortSignal): Promise<CatalogConnection[]> =>
+  request('/connections', { signal });
+
+export const listSourceAdapters = (signal?: AbortSignal): Promise<SourceAdapterDescriptor[]> =>
+  request('/source-adapters', { signal });
+
+export const createConnection = (input: CreateConnectionInput): Promise<CatalogConnection> =>
+  request('/connections', { method: 'POST', body: JSON.stringify(input) });
+
+export const createDataset = (input: CreateDatasetInput): Promise<CatalogDataset> =>
+  request('/datasets', { method: 'POST', body: JSON.stringify(input) });
+
+export const testConnection = (connectionId: string): Promise<SourceConnectionValidation> =>
+  request(`/connections/${connectionId}/test`, { method: 'POST' });
+
+export const discoverSourceLocations = (connectionId: string): Promise<SourceLocation[]> =>
+  request(`/connections/${connectionId}/locations`);
+
+export const previewDataset = (datasetId: string): Promise<SourcePreview> =>
+  request(`/datasets/${datasetId}/preview`, { method: 'POST' });
 
 export const createMap = (definition: MapDraft): Promise<SavedMap> =>
   request('/maps', { method: 'POST', body: JSON.stringify(definition) });
@@ -63,3 +92,6 @@ export const setBakePolicy = (
 
 export const runMapNow = (id: string): Promise<ManagedBakeRun> =>
   request(`/maps/${id}/runs`, { method: 'POST' });
+
+export const cancelMapRun = (mapId: string, runId: string): Promise<ManagedBakeRun> =>
+  request(`/maps/${mapId}/runs/${runId}/cancel`, { method: 'POST' });

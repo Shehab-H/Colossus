@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import type { CatalogDataset } from '@entities/catalog';
-import { CatalogApiError, createMap, getManagedMap, listDatasets, setBakePolicy, updateMap } from '@entities/catalog';
+import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router';
+import { CatalogApiError, datasetsQuery, managedMapQuery, type CatalogDataset } from '@entities/catalog';
+import { useSaveManagedMapMutation } from '@features/map-management/api/mapManagementMutations';
 import { draftFromForm, emptyMapForm, formFromDraft, hoursToInterval, type MapFormState } from '@features/map-management/model/mapForm';
 import {
   Alert,
   Badge,
   Button,
-  ButtonLink,
   Checkbox,
   ConfirmDialog,
   Field,
@@ -17,45 +18,51 @@ import {
   Select,
   Textarea,
 } from '@shared/ui';
+import { ButtonRouteLink } from '@shared/navigation/RouteLink';
 import ManagementShell from '@widgets/management-shell/ManagementShell';
 
 const marks: MapFormState['mark'][] = ['point', 'polygon', 'line', 'arc', 'rect', 'heat', 'text'];
+const emptyDatasets: CatalogDataset[] = [];
 
 export default function MapEditorPage({ mapId }: { mapId?: string }) {
+  const navigate = useNavigate();
   const editing = Boolean(mapId);
+  const datasetsResult = useQuery(datasetsQuery());
+  const detailResult = useQuery({ ...managedMapQuery(mapId ?? ''), enabled: editing });
+  const saveMutation = useSaveManagedMapMutation();
+  const datasets = datasetsResult.data ?? emptyDatasets;
+  const detail = detailResult.data;
+  const loading = datasetsResult.isPending || (editing && detailResult.isPending);
+  const loadError = datasetsResult.error ?? detailResult.error;
   const [form, setForm] = useState<MapFormState>(emptyMapForm);
-  const [datasets, setDatasets] = useState<CatalogDataset[]>([]);
   const [mapRevision, setMapRevision] = useState<number | null>(null);
   const [policyRevision, setPolicyRevision] = useState<number | undefined>();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const dirtyRef = useRef(false);
+  const initializedRef = useRef<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    Promise.all([listDatasets(), mapId ? getManagedMap(mapId) : Promise.resolve(null)])
-      .then(([available, detail]) => {
-        if (!alive) return;
-        setDatasets(available);
-        if (detail) {
-          setForm(formFromDraft(detail.definition, detail.bakePolicy));
-          setMapRevision(detail.summary.revision);
-          setPolicyRevision(detail.bakePolicy?.revision);
-        } else {
-          setForm((current) => ({ ...current, datasetId: available[0]?.id ?? '' }));
-        }
-        setLoading(false);
-        dirtyRef.current = false;
-      }, (reason) => {
-        if (!alive) return;
-        setLoading(false);
-        setMessage(reason instanceof Error ? reason.message : String(reason));
-      });
-    return () => { alive = false; };
-  }, [mapId]);
+    if (loading || loadError || (editing && !detail)) return;
+    const initializationKey = editing ? `${mapId}:${detail!.summary.revision}` : 'new';
+    if (initializedRef.current === initializationKey) return;
+    initializedRef.current = initializationKey;
+    if (detail) {
+      setForm(formFromDraft(detail.definition, detail.bakePolicy));
+      setMapRevision(detail.summary.revision);
+      setPolicyRevision(detail.bakePolicy?.revision);
+    } else {
+      setForm({ ...emptyMapForm(), datasetId: datasets[0]?.id ?? '' });
+      setMapRevision(null);
+      setPolicyRevision(undefined);
+    }
+    dirtyRef.current = false;
+  }, [datasets, detail, editing, loadError, loading, mapId]);
+
+  useEffect(() => {
+    if (loadError) setMessage(loadError instanceof Error ? loadError.message : String(loadError));
+  }, [loadError]);
 
   useEffect(() => {
     const protect = (event: BeforeUnloadEvent) => {
@@ -87,20 +94,22 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
     setErrors(parsed.errors);
     setMessage(null);
     if (!parsed.draft || (editing && mapRevision === null)) return;
-    setSaving(true);
     try {
-      const saved = editing
-        ? await updateMap(mapId!, mapRevision!, parsed.draft)
-        : await createMap(parsed.draft);
-      await setBakePolicy(saved.id, {
-        enabled: form.scheduleEnabled,
-        interval: hoursToInterval(form.intervalHours),
-        timeZoneId: 'UTC',
-        allowOverlap: false,
-        retainSuccessfulReleases: Math.max(1, Number(form.retention) || 3),
-      }, policyRevision);
+      const saved = await saveMutation.mutateAsync({
+        mapId,
+        expectedRevision: mapRevision ?? undefined,
+        definition: parsed.draft,
+        policyRevision,
+        policy: {
+          enabled: form.scheduleEnabled,
+          interval: hoursToInterval(form.intervalHours),
+          timeZoneId: 'UTC',
+          allowOverlap: false,
+          retainSuccessfulReleases: Math.max(1, Number(form.retention) || 3),
+        },
+      });
       dirtyRef.current = false;
-      window.location.assign(`/maps/manage/${saved.id}`);
+      await navigate(`/maps/manage/${saved.id}`);
     } catch (reason) {
       if (reason instanceof CatalogApiError) {
         setErrors(reason.fieldErrors);
@@ -108,27 +117,25 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
       } else {
         setMessage(reason instanceof Error ? reason.message : String(reason));
       }
-    } finally {
-      setSaving(false);
     }
   };
 
   const leaveEditor = () => {
     dirtyRef.current = false;
-    window.location.assign(mapId ? `/maps/manage/${mapId}` : '/maps');
+    void navigate(mapId ? `/maps/manage/${mapId}` : '/maps');
   };
 
   const cancel = () => dirtyRef.current ? setConfirmCancel(true) : leaveEditor();
   const fieldError = (field: string) => errors[field]?.join(' ');
 
   return (
-    <ManagementShell actions={<ButtonLink variant="ghost" href={mapId ? `/maps/manage/${mapId}` : '/maps'}>Back to maps</ButtonLink>}>
+    <ManagementShell actions={<ButtonRouteLink variant="ghost" to={mapId ? `/maps/manage/${mapId}` : '/maps'}>Back to maps</ButtonRouteLink>}>
       <form className="maps-editor" onSubmit={(event) => void submit(event)}>
         <PageHeader
           eyebrow={editing ? 'Edit map' : 'New map'}
           title={editing ? form.title || form.slug : 'Create a map that is ready to scale.'}
           description="Configure the view against a durable dataset. Server validation remains authoritative."
-          actions={<><Button variant="secondary" onClick={cancel}>Cancel</Button><Button variant="primary" type="submit" disabled={saving || loading || datasets.length === 0}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Create map'}</Button></>}
+          actions={<><Button variant="secondary" onClick={cancel}>Cancel</Button><Button variant="primary" type="submit" disabled={saveMutation.isPending || loading || datasets.length === 0}>{saveMutation.isPending ? 'Saving…' : editing ? 'Save changes' : 'Create map'}</Button></>}
         />
 
         {message && <Alert tone="danger">{message}</Alert>}
@@ -153,6 +160,7 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
                 </Select>
               </Field>
               {datasets.length === 0 && <Alert>No datasets are available. Import or create a dataset before creating a map.</Alert>}
+              <div><ButtonRouteLink variant="ghost" size="sm" to="/sources">Manage and preview sources</ButtonRouteLink></div>
               {selectedDataset && (
                 <div className="maps-editor__dataset">
                   <div className="maps-editor__dataset-summary">
