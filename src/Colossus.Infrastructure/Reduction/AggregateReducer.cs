@@ -6,6 +6,7 @@ using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiles;
 using Colossus.Infrastructure.Tiling;
 using Axis = Colossus.Infrastructure.Tiling.TileSql.Axis;
+using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Infrastructure.Reduction;
 
@@ -14,7 +15,7 @@ namespace Colossus.Infrastructure.Reduction;
 /// zoomed-in picture at screen resolution — LOD is invisible. A tile is a leaf once everything in
 /// it is real, so effective resolution is uniform across the viewport at any zoom. All tile/grid math
 /// is rendered through <see cref="TileSql"/>; column names come from <see cref="TileSchema"/>.</summary>
-public sealed class AggregateReducer : IReductionStrategy
+public sealed class AggregateReducer(BakeResourceOptions? resources = null) : IReductionStrategy
 {
     public ReductionKind Kind => ReductionKind.Aggregate;
 
@@ -28,18 +29,20 @@ public sealed class AggregateReducer : IReductionStrategy
     {
         var tiles = new List<TileMeta>();
         long leafTotal = 0;
-        using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!);
-        LoadTagged(db, "t", ctx.StagingParquetPath, ctx.Root);
+        using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!, resources);
+        var stagingColumns = ParquetColumns(db, ctx.StagingParquetPath);
+        bool hasShape = stagingColumns.Contains(TileSchema.Geometry) && stagingColumns.Contains(TileSchema.PartOffsets);
+        LoadTagged(db, "t", ctx.StagingParquetPath, ctx.Root, hasShape, includeGeometryIdentity: false, ctx.MaxZoom);
 
         // Group regime: facts share each mark's geometry, so a fact's zreal equals its mark's. The slab
         // plan (layout from measured occupancy + axes) is decided once here, then every level's companion
         // is streamed into one facts.pack (companion-scale R1); leaf and internal levels alike.
         SlabPlan? plan = null;
         using SlabCompanionWriter? slab = ctx.Companion is { } companion
-            ? BuildSlabWriter(db, ctx, companion, out plan)
+            ? BuildSlabWriter(db, ctx, companion, hasShape, resources, out plan)
             : null;
 
-        BuildPyramid(db, ctx, tiles, ref leafTotal, slab, plan);
+        BuildPyramid(db, ctx, tiles, ref leafTotal, slab, plan, hasShape);
 
         var pack = slab?.Finish();
         // Fold the per-tile layout overrides the writer discovered into the slab metadata (SLAB-FORMAT §3).
@@ -81,11 +84,13 @@ public sealed class AggregateReducer : IReductionStrategy
     // pyramid makes and the companion mirrors are the same. The slab plan (layout from measured occupancy +
     // axes) is decided once here from the loaded facts/marks.
     private static SlabCompanionWriter BuildSlabWriter(
-        DuckDbSession db, ReductionContext ctx, CompanionSpec companion, out SlabPlan plan)
+        DuckDbSession db, ReductionContext ctx, CompanionSpec companion, bool hasShape,
+        BakeResourceOptions? resources, out SlabPlan plan)
     {
-        LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root);
+        LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root, hasShape, includeGeometryIdentity: true, ctx.MaxZoom);
         plan = SlabPlanner.Plan(db, companion, "facts", "t");
-        return new SlabCompanionWriter(ctx.OutputDirectory, plan);
+        return new SlabCompanionWriter(ctx.OutputDirectory, plan,
+            maxWorkingSetBytes: resources?.TileWorkingSetBytes ?? 0);
     }
 
     private static string[] Measures(ViewConfig view) => view.Source.Channels
@@ -105,8 +110,30 @@ public sealed class AggregateReducer : IReductionStrategy
     // Loads a parquet and tags each row with zreal = the first zoom whose ~1px grid cell the polygon's
     // extent still exceeds, i.e. the level at which it stops being sub-pixel and becomes real. Used for
     // the marks staging (the pyramid) and, in the group regime, the facts (the companions).
-    private static void LoadTagged(DuckDbSession db, string table, string parquetPath, Bbox root)
+    private static void LoadTagged(
+        DuckDbSession db,
+        string table,
+        string parquetPath,
+        Bbox root,
+        bool hasShape,
+        bool includeGeometryIdentity,
+        int pointRealZoom)
     {
+        string source = $"read_parquet('{Sql.Path(parquetPath)}')";
+        bool hasIdentity = !includeGeometryIdentity || ParquetColumns(db, parquetPath).Contains(MarkKey.GeometryIdentity);
+        string identity = includeGeometryIdentity && !hasIdentity
+            ? $", {MarkKey.GeometryIdentitySql(hasShape)} AS \"{MarkKey.GeometryIdentity}\""
+            : "";
+
+        // Points have no extent array. They stay point marks at every level; their exact source geometry
+        // becomes real at the planned depth, while coarser levels use the same sub-pixel grid collapse as
+        // shapes. This keeps the public mark representation unchanged.
+        if (!hasShape)
+        {
+            db.Exec($"CREATE TABLE {table} AS SELECT *{identity}, {pointRealZoom}::INTEGER AS zreal FROM {source}");
+            return;
+        }
+
         string coordsAt(int parity) =>
             $"list_filter({TileSchema.Geometry}, (v, i) -> i % 2 = {parity})";
         string extent = $"greatest(list_max({coordsAt(1)}) - list_min({coordsAt(1)}), " +
@@ -115,8 +142,8 @@ public sealed class AggregateReducer : IReductionStrategy
         db.Exec($"""
             CREATE TABLE {table} AS
             WITH s AS (
-              SELECT *, {extent} AS ext
-              FROM read_parquet('{Sql.Path(parquetPath)}')
+              SELECT *{identity}, {extent} AS ext
+              FROM {source}
             )
             SELECT *, CASE
               WHEN ext IS NULL OR ext <= 0 THEN {ZCap}
@@ -126,8 +153,18 @@ public sealed class AggregateReducer : IReductionStrategy
             """);
     }
 
+    private static HashSet<string> ParquetColumns(DuckDbSession db, string parquetPath)
+    {
+        var columns = new HashSet<string>(StringComparer.Ordinal);
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = $"SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('{Sql.Path(parquetPath)}'))";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) columns.Add(reader.GetString(0));
+        return columns;
+    }
+
     private static void BuildPyramid(DuckDbSession db, ReductionContext ctx,
-        List<TileMeta> tiles, ref long leafTotal, SlabCompanionWriter? slab, SlabPlan? plan)
+        List<TileMeta> tiles, ref long leafTotal, SlabCompanionWriter? slab, SlabPlan? plan, bool hasShape)
     {
         if (db.Scalar("SELECT count(*) FROM t") == 0) return;
         int zMax = (int)db.Scalar("SELECT max(zreal) FROM t");
@@ -148,7 +185,7 @@ public sealed class AggregateReducer : IReductionStrategy
                 """);
             var internals = db.LongPairs("SELECT tx, ty FROM internals");
 
-            string contentSql = ContentSql(ctx.Root, z, ctx.View, ctx.GroupRegime);
+            string contentSql = ContentSql(ctx.Root, z, ctx.View, ctx.GroupRegime, hasShape);
             Func<long, long, string> tilePath =
                 (wtx, wty) => Path.Combine(ctx.OutputDirectory, new TileId(z, (int)wtx, (int)wty).RelativePath);
 
@@ -199,7 +236,7 @@ public sealed class AggregateReducer : IReductionStrategy
     // collapse to one synthetic ~1px cell per occupied grid square, averaging each measure. In the group
     // regime the mark id and dict channels ride along too — a merged cell takes the grid key as its id
     // (matching its fact companion, MarkKey) and the mode of each dict channel.
-    private static string ContentSql(Bbox root, int z, ViewConfig view, bool groupRegime)
+    private static string ContentSql(Bbox root, int z, ViewConfig view, bool groupRegime, bool hasShape)
     {
         string tx = TileSql.TileIndex(root, z, Axis.X);
         string ty = TileSql.TileIndex(root, z, Axis.Y);
@@ -230,20 +267,24 @@ public sealed class AggregateReducer : IReductionStrategy
             dictMerged = string.Concat(dicts.Select(d => $", mode(\"{d}\") AS \"{d}\""));
         }
 
+        string geometryReal = hasShape ? $", {TileSchema.Geometry}, {TileSchema.PartOffsets}" : "";
+        string geometryMerged = hasShape
+            ? $", {ring} AS {TileSchema.Geometry}, [0, 5]::INTEGER[] AS {TileSchema.PartOffsets}"
+            : "";
+
         return $"""
             WITH v AS (
               SELECT t.*, {tx} AS tx, {ty} AS ty, {gx} AS gx, {gy} AS gy
               FROM t JOIN act ON {tx} = act.tx AND {ty} = act.ty
             )
-            SELECT tx, ty, {TileSchema.X}::FLOAT AS {TileSchema.X}, {TileSchema.Y}::FLOAT AS {TileSchema.Y},
-                   {TileSchema.Geometry}, {TileSchema.PartOffsets}{idReal}{measReal}{dictReal}
+            SELECT tx, ty, {TileSchema.X}::FLOAT AS {TileSchema.X}, {TileSchema.Y}::FLOAT AS {TileSchema.Y}
+                   {geometryReal}{idReal}{measReal}{dictReal}
             FROM v WHERE zreal <= {z}
             UNION ALL
             SELECT tx, ty,
                    ({x0} + {Sql.Lit(halfX)})::FLOAT AS {TileSchema.X},
-                   ({y0} + {Sql.Lit(halfY)})::FLOAT AS {TileSchema.Y},
-                   {ring} AS {TileSchema.Geometry},
-                   [0, 5]::INTEGER[] AS {TileSchema.PartOffsets}{idMerged}{measAvg}{dictMerged}
+                   ({y0} + {Sql.Lit(halfY)})::FLOAT AS {TileSchema.Y}
+                   {geometryMerged}{idMerged}{measAvg}{dictMerged}
             FROM v WHERE zreal > {z}
             GROUP BY tx, ty, gx, gy
             ORDER BY tx, ty

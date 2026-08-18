@@ -57,15 +57,22 @@ internal sealed class SlabCompanionWriter : IDisposable
     private readonly List<byte[]> _samples = new();
     private readonly Random _rng = new(1);
     private int _sampleSeen;
+    private readonly long _maxWorkingSetBytes;
+    private long _sampleBytes;
 
     /// <summary>Per-tile layout overrides discovered while writing, or null when every tile matched the view
     /// default. The reducer folds this into <see cref="CompanionSlab.TileLayouts"/>.</summary>
     public IReadOnlyDictionary<string, string>? TileLayouts => _tileLayouts.Count > 0 ? _tileLayouts : null;
 
-    public SlabCompanionWriter(string outputDirectory, SlabPlan plan, bool? layoutOverride = null)
+    public SlabCompanionWriter(
+        string outputDirectory,
+        SlabPlan plan,
+        bool? layoutOverride = null,
+        long maxWorkingSetBytes = 0)
     {
         _plan = plan;
         _layoutOverride = layoutOverride;
+        _maxWorkingSetBytes = Math.Max(0, maxWorkingSetBytes);
         _outputDir = outputDirectory;
         Directory.CreateDirectory(outputDirectory);
         _tempPath = Path.Combine(outputDirectory, FileName + ".tmp");
@@ -122,6 +129,9 @@ internal sealed class SlabCompanionWriter : IDisposable
 
         // The per-leaf-tile gate: this tile's own occupancy, not the view's, picks its layout.
         bool dense = _layoutOverride ?? _plan.TileDense(cellIds.Count, markCount);
+        long densePlaneBytes = (long)_plan.Cells * markCount * sizeof(float);
+        if (_layoutOverride is null && _maxWorkingSetBytes > 0 && densePlaneBytes > _maxWorkingSetBytes / 2)
+            dense = false;
         if (dense)
         {
             var slices = new Dictionary<string, int[]>(StringComparer.Ordinal);
@@ -221,8 +231,21 @@ internal sealed class SlabCompanionWriter : IDisposable
         if (len > MaxSampleBlock) return;
         _sampleSeen++;
         var copy = raw[..len];
-        if (_samples.Count < MaxSamples) _samples.Add(copy);
-        else { int j = _rng.Next(_sampleSeen); if (j < MaxSamples) _samples[j] = copy; }
+        long sampleBudget = _maxWorkingSetBytes > 0 ? _maxWorkingSetBytes / 4 : long.MaxValue;
+        if (_samples.Count < MaxSamples && _sampleBytes + copy.Length <= sampleBudget)
+        {
+            _samples.Add(copy);
+            _sampleBytes += copy.Length;
+        }
+        else if (_samples.Count > 0)
+        {
+            int j = _rng.Next(_sampleSeen);
+            if (j < _samples.Count && _sampleBytes - _samples[j].Length + copy.Length <= sampleBudget)
+            {
+                _sampleBytes += copy.Length - _samples[j].Length;
+                _samples[j] = copy;
+            }
+        }
     }
 
     // Prefix-sum each cell along the cumulative ordered axis: cell c gains cell (c - stride) whenever its

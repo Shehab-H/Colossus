@@ -21,10 +21,16 @@ public sealed class TrinoSourceAdapter : ISourceAdapter
     private readonly TrinoOptions _defaults;
     private readonly TrinoClient _client;
 
-    public TrinoSourceAdapter(IOptions<TrinoOptions> defaults, IHttpClientFactory clients)
+    private readonly BakeResourceOptions _resources;
+
+    public TrinoSourceAdapter(
+        IOptions<TrinoOptions> defaults,
+        IHttpClientFactory clients,
+        BakeResourceOptions? resources = null)
     {
         _defaults = defaults.Value;
         _client = new TrinoClient(clients.CreateClient("Colossus.Trino"));
+        _resources = resources ?? new BakeResourceOptions();
         var fields = new List<SourceConfigurationField>
         {
             new("url", "Coordinator URL", Required: true, Placeholder: _defaults.BaseUrl),
@@ -372,7 +378,10 @@ public sealed class TrinoSourceAdapter : ISourceAdapter
         string catalog = Name(Value(settings, "catalog") ?? _defaults.Catalog, "settings.catalog");
         string schema = Name(Value(settings, "schema") ?? _defaults.Schema, "settings.schema");
         string user = Header(Value(settings, "user") ?? _defaults.User, "settings.user");
-        var sessions = ParseSessionProperties(Value(settings, "sessionProperties"));
+        var sessions = new Dictionary<string, string>(
+            ParseSessionProperties(Value(settings, "sessionProperties")), StringComparer.Ordinal);
+        if (_resources.CpuCores > 0 && !sessions.ContainsKey("task_concurrency"))
+            sessions["task_concurrency"] = TrinoTaskConcurrency(_resources.CpuCores).ToString(CultureInfo.InvariantCulture);
         int retries = BoundedInt(settings, "maxRetries", _defaults.MaxRetries, 0, _defaults.MaxRetries);
         long pageBytes = BoundedLong(settings, "maxPageBytes", _defaults.MaxPageBytes, 64 * 1024, _defaults.MaxPageBytes);
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -440,7 +449,7 @@ public sealed class TrinoSourceAdapter : ISourceAdapter
         Directory.CreateDirectory(work);
         try
         {
-            using var db = DuckDbSession.OnDisk(work);
+            using var db = DuckDbSession.OnDisk(work, _resources);
             return await operation(db, ct);
         }
         finally
@@ -450,6 +459,13 @@ public sealed class TrinoSourceAdapter : ISourceAdapter
             if (resolved.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) && Directory.Exists(resolved))
                 Directory.Delete(resolved, recursive: true);
         }
+    }
+
+    private static int TrinoTaskConcurrency(int cpuCores)
+    {
+        int concurrency = 1;
+        while (concurrency <= cpuCores / 2) concurrency *= 2;
+        return concurrency;
     }
 
     private static CanonicalRow Canonicalize(

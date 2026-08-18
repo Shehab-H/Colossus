@@ -5,6 +5,7 @@ using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiles;
 using Colossus.Infrastructure.Tiling;
 using Axis = Colossus.Infrastructure.Tiling.TileSql.Axis;
+using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Infrastructure.Reduction;
 
@@ -14,7 +15,7 @@ namespace Colossus.Infrastructure.Reduction;
 /// of the rows it stands for — and subdivides. Only sub-pixel overlap is ever folded, so the reduction
 /// cannot introduce density steps between neighboring tiles; every input row still lands in exactly one
 /// leaf. Tiles carry whatever columns staging holds, so geometry, channels, and id flow through untouched.</summary>
-public sealed class QuadtreeLodReducer : IReductionStrategy
+public sealed class QuadtreeLodReducer(BakeResourceOptions? resources = null) : IReductionStrategy
 {
     public ReductionKind Kind => ReductionKind.QuadtreeLod;
 
@@ -22,7 +23,7 @@ public sealed class QuadtreeLodReducer : IReductionStrategy
     {
         var tiles = new List<TileMeta>();
         long leafTotal = 0;
-        using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!);
+        using var db = DuckDbSession.OnDisk(Path.GetDirectoryName(Path.GetFullPath(ctx.StagingParquetPath))!, resources);
         db.Exec($"CREATE TABLE t AS SELECT * FROM read_parquet('{Sql.Path(ctx.StagingParquetPath)}')");
         Build(db, ctx, new TileId(0, 0, 0), tiles, ref leafTotal);
         return new ReductionResult(tiles, leafTotal);

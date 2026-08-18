@@ -12,9 +12,14 @@ namespace Colossus.Infrastructure.Tiles;
 /// silently break that view. Packing therefore stays behind the <c>Rendering:PackTiles</c> setting: the flag
 /// is how a scratch view gets baked packed to develop the client against, while real views keep the Phase 1
 /// per-file layout. Delete the gate once the client half lands.</para></summary>
-public sealed class ArrowTilePacker(IOptions<RenderingOptions> options) : ITilePacker
+public sealed class ArrowTilePacker(
+    IOptions<RenderingOptions> options,
+    BakeResourceOptions? resources = null) : ITilePacker
 {
     public RenderPack? PackVersion(string versionDirectory, IReadOnlyList<TileMeta> tiles,
         IReadOnlyList<string> firstPaintChannels) =>
-        options.Value.PackTiles ? RenderPackWriter.Pack(versionDirectory, tiles, firstPaintChannels) : null;
+        options.Value.PackTiles
+            ? RenderPackWriter.Pack(versionDirectory, tiles, firstPaintChannels,
+                resources?.TileWorkingSetBytes ?? 0)
+            : null;
 }

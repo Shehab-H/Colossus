@@ -92,6 +92,104 @@ public class FactGrouperTests
         }
     }
 
+    [Fact]
+    public void GroupToMarks_DifferentShapesAtSameRepresentativePointRemainDistinct()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "colossus-grouper-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string factsPath = Path.Combine(dir, "facts.parquet");
+            string marksPath = Path.Combine(dir, "marks.parquet");
+            using (var db = DuckDbSession.InMemory())
+            {
+                db.Exec("""
+                    CREATE TABLE t (
+                      x FLOAT, y FLOAT, geometry FLOAT[], part_offsets INTEGER[],
+                      operator VARCHAR, quarter DATE, region VARCHAR, tests FLOAT, download_mbps FLOAT
+                    );
+                    INSERT INTO t VALUES
+                      (1,1, [0,0,2,0,2,2,0,2,0,0], [0,5], 'apex', DATE '2025-01-01', 'west', 10, 50),
+                      (1,1, [3,3,4,3,4,4,3,4,3,3], [0,5], 'apex', DATE '2025-01-01', 'east', 20, 60)
+                    """);
+                db.Exec($"COPY t TO '{Sql.Path(factsPath)}' (FORMAT PARQUET)");
+            }
+
+            new DuckDbFactGrouper().GroupToMarks(factsPath, marksPath, View());
+
+            using var verify = DuckDbSession.InMemory();
+            using var command = verify.Connection.CreateCommand();
+            command.CommandText = $"SELECT id FROM read_parquet('{Sql.Path(marksPath)}') ORDER BY id";
+            using var reader = command.ExecuteReader();
+            var ids = new List<string>();
+            while (reader.Read()) ids.Add(reader.GetString(0));
+            Assert.Equal(2, ids.Count);
+            Assert.All(ids, id =>
+            {
+                Assert.StartsWith("p:", id);
+                Assert.Equal(66, id.Length);
+            });
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void GroupToMarks_PointGeometryUsesTheSameOpaqueIdentityFormat()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "colossus-grouper-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string factsPath = Path.Combine(dir, "facts.parquet");
+            string marksPath = Path.Combine(dir, "marks.parquet");
+            using (var db = DuckDbSession.InMemory())
+            {
+                db.Exec("""
+                    CREATE TABLE t (
+                      x FLOAT, y FLOAT, operator VARCHAR, quarter DATE, region VARCHAR,
+                      tests FLOAT, download_mbps FLOAT
+                    );
+                    INSERT INTO t VALUES
+                      (1,1, 'apex', DATE '2025-01-01', 'west', 10, 50),
+                      (1,1, 'zenith', DATE '2025-01-01', 'west', 3, 90),
+                      (2,2, 'zenith', DATE '2025-01-01', 'east', 8, 20)
+                    """);
+                db.Exec($"COPY t TO '{Sql.Path(factsPath)}' (FORMAT PARQUET)");
+            }
+            var pointView = View() with
+            {
+                Mark = Mark.Point,
+                Source = View().Source with
+                {
+                    Geometry = new GeometrySpec { Kind = GeometryKind.LonLat, Lon = "lon", Lat = "lat" },
+                },
+            };
+
+            new DuckDbFactGrouper().GroupToMarks(factsPath, marksPath, pointView);
+
+            using var verify = DuckDbSession.InMemory();
+            using var command = verify.Connection.CreateCommand();
+            command.CommandText = $"SELECT id, total_tests FROM read_parquet('{Sql.Path(marksPath)}') ORDER BY total_tests";
+            using var reader = command.ExecuteReader();
+            var identities = new List<string>();
+            var totals = new List<float>();
+            while (reader.Read())
+            {
+                identities.Add(reader.GetString(0));
+                totals.Add(Convert.ToSingle(reader.GetValue(1), CultureInfo.InvariantCulture));
+            }
+            Assert.Equal([8f, 13f], totals);
+            Assert.All(identities, id => Assert.Equal(66, id.Length));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     private static double D(System.Data.Common.DbDataReader r, int i) =>
         Convert.ToDouble(r.GetValue(i), CultureInfo.InvariantCulture);
 

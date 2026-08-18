@@ -19,9 +19,10 @@ namespace Colossus.Infrastructure.ClickHouse;
 public sealed class ClickHouseAdapter(
     ClickHouseClient defaultClient,
     IHttpClientFactory httpClients,
-    IOptions<ClickHouseOptions> defaultOptions) : ISourceAdapter
+    IOptions<ClickHouseOptions> defaultOptions,
+    BakeResourceOptions? resources = null) : ISourceAdapter
 {
-    private const long ExternalSortThresholdBytes = 1L << 30;
+    private readonly BakeResourceOptions _resources = resources ?? new BakeResourceOptions();
 
     public SourceAdapterDescriptor Descriptor { get; } = new(
         Id: "clickhouse",
@@ -128,8 +129,12 @@ public sealed class ClickHouseAdapter(
     {
         try
         {
+            // Distinct geometry count only selects the reduction strategy; it is not a fidelity witness.
+            // The bounded-memory sketch prevents probing the original source from building an unbounded
+            // uniqExact hash set before streaming extraction has even started.
             string sql = $"SELECT min({TileSchema.X}), max({TileSchema.X}), min({TileSchema.Y}), max({TileSchema.Y}), " +
-                         $"count(), uniqExact(({TileSchema.X}, {TileSchema.Y})) FROM (\n{Bounds(view)}\n) FORMAT TabSeparated";
+                         $"count(), uniqCombined64(({TileSchema.X}, {TileSchema.Y})) FROM (\n{Bounds(view)}\n)" +
+                         ResourceSettings() + "\nFORMAT TabSeparated";
             string[] fields = (await defaultClient.QueryTextAsync(sql, ct)).Trim().Split('\t');
             double D(int index) => double.Parse(fields[index], CultureInfo.InvariantCulture);
             long L(int index) => long.Parse(fields[index], CultureInfo.InvariantCulture);
@@ -153,7 +158,7 @@ public sealed class ClickHouseAdapter(
         {
             await defaultClient.QueryToFileAsync(
                 CanonicalExtract(view, HilbertOrder(bounds))
-                + $"\nSETTINGS max_bytes_before_external_sort = {ExternalSortThresholdBytes}"
+                + ResourceSettings(includeSortSpill: true)
                 + "\nFORMAT Parquet",
                 destinationParquet,
                 progress,
@@ -164,6 +169,15 @@ public sealed class ClickHouseAdapter(
             if (error is OperationCanceledException && ct.IsCancellationRequested) throw;
             throw Classify(error, ct, "source.query");
         }
+    }
+
+    private string ResourceSettings(bool includeSortSpill = false)
+    {
+        var settings = new List<string>();
+        if (_resources.CpuCores > 0) settings.Add($"max_threads = {_resources.CpuCores}");
+        if (includeSortSpill)
+            settings.Add($"max_bytes_before_external_sort = {_resources.SourceSpillThresholdBytes}");
+        return settings.Count == 0 ? "" : "\nSETTINGS " + string.Join(",\n         ", settings);
     }
 
     private async Task<T> WithClientAsync<T>(

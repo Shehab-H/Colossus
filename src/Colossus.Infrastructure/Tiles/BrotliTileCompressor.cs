@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using Colossus.Application.Abstractions.Baking;
+using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Infrastructure.Tiles;
 
@@ -14,30 +15,34 @@ namespace Colossus.Infrastructure.Tiles;
 /// <c>Content-Encoding</c> does not compose with ranges (its blocks are compressed inside the archive
 /// instead).</para>
 ///
-/// <para>Quality 11 / window 24 (the maximum 16 MB window, sized to the worst ~16 MB tile): ~5.5x on large
-/// tiles, beating whole-file zstd-19 (~5.1x), at ~23 s for that worst tile — a batch-bake cost, parallelised
-/// across cores. Lossless by construction (a round-trip test pins it); the plain tile is never removed.</para></summary>
-public sealed class BrotliTileCompressor : ITileCompressor
+/// <para>Quality 11 is intentionally a batch-bake cost. Compression streams each tile through a fixed-size
+/// buffer and bounds file parallelism, so large tiles do not require duplicate whole-file byte arrays.
+/// Lossless by construction (a round-trip test pins it); the plain tile is never removed.</para></summary>
+public sealed class BrotliTileCompressor(BakeResourceOptions? resources = null) : ITileCompressor
 {
     /// <summary>Sibling suffix appended to a tile path (<c>z/x/y.arrow</c> → <c>z/x/y.arrow.br</c>).</summary>
     public const string SiblingSuffix = ".br";
     private const int Quality = 11; // measured best ratio; the bake is a batch job (see class remarks)
-    private const int Window = 24;  // 16 MB — the max window, covering the largest tile whole
 
-    public TileCompressionStats CompressVersionTiles(string versionDirectory) => CompressTree(versionDirectory);
+    public TileCompressionStats CompressVersionTiles(string versionDirectory) =>
+        CompressTree(versionDirectory, maxDegreeOfParallelism: resources?.CpuCores ?? 0);
 
     /// <summary>Compress every render tile under <paramref name="root"/> into a <c>.br</c> sibling, in parallel.
     /// Idempotent: a sibling at least as new as its tile is left as-is unless <paramref name="force"/>. A render
     /// tile is <c>*.arrow</c> excluding <c>*.facts.arrow</c>. Per-tile failures are counted and logged, never
     /// fatal — the plain tile is always the rollback rail.</summary>
-    public static TileCompressionStats CompressTree(string root, bool force = false)
+    public static TileCompressionStats CompressTree(
+        string root,
+        bool force = false,
+        int maxDegreeOfParallelism = 0)
     {
         if (!Directory.Exists(root)) return TileCompressionStats.None;
         var tiles = Directory.EnumerateFiles(root, "*.arrow", SearchOption.AllDirectories)
             .Where(IsRenderTile).ToArray();
 
         long files = 0, skipped = 0, original = 0, compressed = 0, failed = 0;
-        Parallel.ForEach(tiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, path =>
+        int degree = maxDegreeOfParallelism > 0 ? maxDegreeOfParallelism : Environment.ProcessorCount;
+        Parallel.ForEach(tiles, new ParallelOptions { MaxDegreeOfParallelism = degree }, path =>
         {
             try
             {
@@ -68,16 +73,17 @@ public sealed class BrotliTileCompressor : ITileCompressor
         if (!force && File.Exists(sibling) && File.GetLastWriteTimeUtc(sibling) >= src.LastWriteTimeUtc)
             return (src.Length, -1);
 
-        byte[] bytes = File.ReadAllBytes(arrowPath);
-        byte[] dest = new byte[BrotliEncoder.GetMaxCompressedLength(bytes.Length)];
-        if (!BrotliEncoder.TryCompress(bytes, dest, out int written, Quality, Window))
-            throw new IOException($"brotli compression overflowed its buffer for {arrowPath}");
-
         string tmp = sibling + ".tmp";
-        using (var fs = File.Create(tmp))
-            fs.Write(dest, 0, written);
+        using (var input = File.OpenRead(arrowPath))
+        using (var output = File.Create(tmp))
+        using (var brotli = new BrotliStream(output, new BrotliCompressionOptions
+        {
+            Quality = Quality,
+        }))
+            input.CopyTo(brotli, 128 * 1024);
+        long written = new FileInfo(tmp).Length;
         File.Move(tmp, sibling, overwrite: true);
-        return (bytes.Length, written);
+        return (src.Length, written);
     }
 
     // A render tile is z/x/y.arrow. Exclude z/x/y.facts.arrow — a fact companion (a whole-file legacy layout;

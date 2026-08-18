@@ -29,6 +29,16 @@ public class BakePlannerTests
         Assert.Equal(ReductionKind.RawPassthrough, Planner.Plan(Probe(Budget, Budget), View(Mark.Point)).Reduction);
 
     [Fact]
+    public void MeasuresUnderBudget_StillUseAggregateCompanionPipeline()
+    {
+        var view = View(Mark.Point) with
+        {
+            Measures = [new MeasureSpec { Name = "rows", Expr = "count()" }],
+        };
+        Assert.Equal(ReductionKind.Aggregate, Planner.Plan(Probe(10, 2), view).Reduction);
+    }
+
+    [Fact]
     public void AreaMarkOverBudget_Aggregates() =>
         Assert.Equal(ReductionKind.Aggregate, Planner.Plan(Probe(10_000_000, 10_000_000), View(Mark.Polygon)).Reduction);
 

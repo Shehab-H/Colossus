@@ -5,22 +5,25 @@ using Colossus.Domain.Model;
 using Colossus.Domain.Tiling;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Tiling;
+using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Infrastructure.Baking;
 
-/// <summary>Groups a group-regime view's facts into a marks table with one GROUP BY over the geometry
-/// key (the representative point). Emits <c>id</c>, geometry, perMark channels via <c>first()</c>, and
+/// <summary>Groups a group-regime view's facts into a marks table with one GROUP BY over a fingerprint
+/// of the canonical geometry. Emits <c>id</c>, geometry, perMark channels via <c>first()</c>, and
 /// every measure at the default context — flat aggregates in the main grouping, argmax/argmin via a
 /// per-dimension sub-grouping joined back. The measure SQL is rendered straight from the parsed AST;
 /// the client fold mirrors the same finalization over baked partials.</summary>
-public sealed class DuckDbFactGrouper : IFactGrouper
+public sealed class DuckDbFactGrouper(BakeResourceOptions? resources = null) : IFactGrouper
 {
     public FactGrouping GroupToMarks(string factsParquetPath, string marksParquetPath, ViewConfig view)
     {
         string workDir = Path.GetDirectoryName(Path.GetFullPath(marksParquetPath))!;
-        using var db = DuckDbSession.OnDisk(workDir);
+        using var db = DuckDbSession.OnDisk(workDir, resources);
         string facts = $"read_parquet('{Sql.Path(factsParquetPath)}')";
         var present = Columns(db, facts);
+        MaterializeGeometryIdentity(db, factsParquetPath, present);
+        present.Add(MarkKey.GeometryIdentity);
 
         var grouping = Classify(db, facts, view, present);
         string sql = BuildMarksSql(facts, view, grouping, present);
@@ -38,14 +41,38 @@ public sealed class DuckDbFactGrouper : IFactGrouper
         return cols;
     }
 
+    // The fingerprint is an internal staging column, not an authored channel or tile column. Persisting it
+    // once avoids re-serializing and hashing large geometry arrays in classification, grouping, every LOD
+    // level, and later server folds. The original staging file is replaced only after COPY succeeds.
+    private static void MaterializeGeometryIdentity(
+        DuckDbSession db, string factsParquetPath, ISet<string> present)
+    {
+        if (present.Contains(MarkKey.GeometryIdentity)) return;
+
+        bool hasShape = present.Contains(TileSchema.Geometry) && present.Contains(TileSchema.PartOffsets);
+        string temporary = factsParquetPath + $".identity-{Guid.NewGuid():N}.parquet";
+        try
+        {
+            db.Exec($"COPY (SELECT *, {MarkKey.GeometryIdentitySql(hasShape)} AS {Quote(MarkKey.GeometryIdentity)} " +
+                    $"FROM read_parquet('{Sql.Path(factsParquetPath)}')) " +
+                    $"TO '{Sql.Path(temporary)}' (FORMAT PARQUET)");
+            File.Move(temporary, factsParquetPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
     // A channel is perFact iff the number of distinct (mark, value) tuples exceeds the number of marks —
     // i.e. some mark carries more than one value. One pass over the facts for the whole classification.
     private static FactGrouping Classify(DuckDbSession db, string facts, ViewConfig view, ISet<string> present)
     {
         var channels = view.Source.Channels.Where(c => present.Contains(c.Name)).Select(c => c.Name).ToList();
-        var sb = new StringBuilder($"SELECT count(DISTINCT ({TileSchema.X}, {TileSchema.Y})) AS marks");
+        string key = Quote(MarkKey.GeometryIdentity);
+        var sb = new StringBuilder($"SELECT count(DISTINCT {key}) AS marks");
         foreach (var c in channels)
-            sb.Append($", count(DISTINCT ({TileSchema.X}, {TileSchema.Y}, {Quote(c)}))");
+            sb.Append($", count(DISTINCT ({key}, {Quote(c)}))");
         sb.Append($" FROM {facts}");
 
         using var cmd = db.Connection.CreateCommand();
@@ -60,9 +87,11 @@ public sealed class DuckDbFactGrouper : IFactGrouper
         return new FactGrouping(perMark, perFact);
     }
 
-    private static string BuildMarksSql(string facts, ViewConfig view, FactGrouping g, ISet<string> present)
+    private static string BuildMarksSql(
+        string facts, ViewConfig view, FactGrouping g, ISet<string> present)
     {
         var parsed = view.Measures!.Select(m => (m.Name, Ast: MeasureParser.Parse(m.Expr))).ToList();
+        string key = Quote(MarkKey.GeometryIdentity);
 
         var ctes = new List<string> { $"f AS (SELECT * FROM {facts})" };
         var argJoins = new List<string>();
@@ -72,25 +101,25 @@ public sealed class DuckDbFactGrouper : IFactGrouper
         {
             if (ast is not ArgExt arg) continue;
             string dim = $"dim{i}", am = $"am{i}", fn = arg.IsMax ? "arg_max" : "arg_min";
-            ctes.Add($"{dim} AS (SELECT {TileSchema.X}, {TileSchema.Y}, {Quote(arg.Dimension)} AS dv, " +
-                     $"{AggExpr(arg.Inner, null)} AS iv FROM f GROUP BY {TileSchema.X}, {TileSchema.Y}, {Quote(arg.Dimension)})");
-            ctes.Add($"{am} AS (SELECT {TileSchema.X}, {TileSchema.Y}, {fn}(dv, iv) AS {Quote(name)} " +
-                     $"FROM {dim} GROUP BY {TileSchema.X}, {TileSchema.Y})");
-            argJoins.Add($"JOIN {am} USING ({TileSchema.X}, {TileSchema.Y})");
+            ctes.Add($"{dim} AS (SELECT {key}, {Quote(arg.Dimension)} AS dv, " +
+                     $"{AggExpr(arg.Inner, null)} AS iv FROM f GROUP BY {key}, {Quote(arg.Dimension)})");
+            ctes.Add($"{am} AS (SELECT {key}, {fn}(dv, iv) AS {Quote(name)} " +
+                     $"FROM {dim} GROUP BY {key})");
+            argJoins.Add($"JOIN {am} USING ({key})");
             argCols.Add($"{am}.{Quote(name)}");
             i++;
         }
 
-        var marks = new StringBuilder($"SELECT {TileSchema.X}, {TileSchema.Y}");
+        var marks = new StringBuilder($"SELECT {key}, first({TileSchema.X}) AS {TileSchema.X}, first({TileSchema.Y}) AS {TileSchema.Y}");
         if (present.Contains(TileSchema.Geometry)) marks.Append($", first({TileSchema.Geometry}) AS {TileSchema.Geometry}");
         if (present.Contains(TileSchema.PartOffsets)) marks.Append($", first({TileSchema.PartOffsets}) AS {TileSchema.PartOffsets}");
         foreach (var ch in g.PerMarkChannels) marks.Append($", first({Quote(ch)}) AS {Quote(ch)}");
         foreach (var (name, ast) in parsed)
             if (ast is not ArgExt) marks.Append($", ({FlatMeasure(ast)})::FLOAT AS {Quote(name)}");
-        marks.Append($" FROM f GROUP BY {TileSchema.X}, {TileSchema.Y}");
+        marks.Append($" FROM f GROUP BY {key}");
         ctes.Add($"marks AS ({marks})");
 
-        var outSel = new StringBuilder($"SELECT {MarkKey.RealSql($"m.{TileSchema.X}", $"m.{TileSchema.Y}")} AS {TileSchema.Id}, m.*");
+        var outSel = new StringBuilder($"SELECT {MarkKey.RealSql($"m.{key}")} AS {TileSchema.Id}, m.* EXCLUDE ({key})");
         foreach (var c in argCols) outSel.Append($", {c}");
         outSel.Append($" FROM marks m {string.Join(" ", argJoins)}");
 

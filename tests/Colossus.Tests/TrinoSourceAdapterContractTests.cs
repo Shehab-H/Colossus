@@ -30,7 +30,10 @@ public sealed class TrinoSourceAdapterContractTests : IDisposable
             MaxPageBytes = 1_048_576,
             MaxRetries = 2,
         };
-        _adapter = new TrinoSourceAdapter(Options.Create(options), new HttpClientFactory(_handler));
+        _adapter = new TrinoSourceAdapter(
+            Options.Create(options),
+            new HttpClientFactory(_handler),
+            new BakeResourceOptions { CpuCores = 2, RamMb = 512 });
     }
 
     public void Dispose() => _directory.Delete(recursive: true);
@@ -62,6 +65,7 @@ public sealed class TrinoSourceAdapterContractTests : IDisposable
         Assert.True(progress.Events.Last().Completed);
         Assert.Equal(2, progress.Events.Last().RowsRead);
         Assert.True(_handler.CompletedPageGets >= 3);
+        Assert.Contains("task_concurrency=2", _handler.LastSessionHeader, StringComparison.Ordinal);
 
         using var db = DuckDbSession.InMemory();
         using var command = db.Connection.CreateCommand();
@@ -195,9 +199,12 @@ public sealed class TrinoSourceAdapterContractTests : IDisposable
         private int _querySequence;
         public int Deletes { get; private set; }
         public int CompletedPageGets { get; private set; }
+        public string LastSessionHeader { get; private set; } = "";
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (request.Headers.TryGetValues("X-Trino-Session", out var sessions))
+                LastSessionHeader = string.Join(',', sessions);
             if (request.Method == HttpMethod.Delete)
             {
                 Deletes++;

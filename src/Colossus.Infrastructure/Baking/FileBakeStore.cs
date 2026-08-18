@@ -25,6 +25,11 @@ public sealed class FileBakeStore : IBakeStore
     }
 
     public string StagingPath(string viewId) => Path.Combine(_stagingRoot, viewId + ".parquet");
+    public long StagingSize(string viewId)
+    {
+        string path = StagingPath(viewId);
+        return File.Exists(path) ? new FileInfo(path).Length : 0;
+    }
     public string MarksStagingPath(string viewId) => Path.Combine(_stagingRoot, viewId + ".marks.parquet");
 
     public string VersionDirectory(string viewId, string version)

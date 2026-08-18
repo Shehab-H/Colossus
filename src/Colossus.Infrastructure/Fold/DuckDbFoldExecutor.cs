@@ -50,7 +50,8 @@ public sealed class DuckDbFoldExecutor
         var sw = Stopwatch.StartNew();
         foreach (var (z, tiles) in tilesByZ)
         {
-            string sql = BuildLevelSql(manifest, factsParquetPath, z, tiles, grain, grainInfo, partials, measures, context);
+            string sql = BuildLevelSql(manifest, factsParquetPath, z, tiles, grain, grainInfo, partials,
+                measures, context, types.ContainsKey(MarkKey.GeometryIdentity));
             using var cmd = db.Connection.CreateCommand();
             cmd.CommandText = sql;
             using var reader = cmd.ExecuteReader();
@@ -116,7 +117,8 @@ public sealed class DuckDbFoldExecutor
 
     private string BuildLevelSql(Manifest manifest, string factsPath, int z, List<(int X, int Y)> tiles,
         IReadOnlyList<string> grain, Dictionary<string, (bool Temporal, string DuckType)> grainInfo,
-        IReadOnlyList<Partial> partials, List<ResolvedMeasure> measures, FoldContextDto context)
+        IReadOnlyList<Partial> partials, List<ResolvedMeasure> measures, FoldContextDto context,
+        bool hasGeometryIdentity)
     {
         var root = manifest.Root;
         string txExpr = TileSql.TileIndex(root, z, TileSql.Axis.X);
@@ -134,6 +136,7 @@ public sealed class DuckDbFoldExecutor
         string grainCols = string.Concat(grain.Select(g => $", \"{g}\""));
         string cellPartials = string.Concat(partials.Select(p => $", {FoldMeasureSql.CellPartialSql(p)}"));
         string ctxPred = FoldSql.ContextPredicate(context, grainInfo);
+        string realKey = hasGeometryIdentity ? MarkKey.RealSql() : MarkKey.LegacyRealSql();
 
         // The tiling half: place each fact in its tile and grid cell, key it to its mark (its real geometry
         // while the mark is real — zreal, tagged at bake — else the ~1px cell it merged into), assign mki in
@@ -150,7 +153,7 @@ public sealed class DuckDbFoldExecutor
                 FROM scoped
             ),
             tile AS (
-                SELECT f.*, CASE WHEN zreal <= {z} THEN {MarkKey.RealSql()} ELSE {MarkKey.MergedSql("gx", "gy")} END AS mk
+                SELECT f.*, CASE WHEN zreal <= {z} THEN {realKey} ELSE {MarkKey.MergedSql("gx", "gy")} END AS mk
                 FROM f JOIN req ON f.tx = req.rtx AND f.ty = req.rty
             ),
             marks AS (

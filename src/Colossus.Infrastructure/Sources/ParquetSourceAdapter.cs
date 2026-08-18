@@ -19,11 +19,16 @@ public sealed class ParquetSourceAdapter : ISourceAdapter
 {
     private readonly ParquetSourceOptions _options;
     private readonly ParquetSourceLocationResolver _locations;
+    private readonly BakeResourceOptions _resources;
 
-    public ParquetSourceAdapter(IOptions<ParquetSourceOptions> options, IHttpClientFactory httpClients)
+    public ParquetSourceAdapter(
+        IOptions<ParquetSourceOptions> options,
+        IHttpClientFactory httpClients,
+        BakeResourceOptions? resources = null)
     {
         _options = options.Value;
         _locations = new ParquetSourceLocationResolver(_options, httpClients);
+        _resources = resources ?? new BakeResourceOptions();
         Descriptor = new SourceAdapterDescriptor(
             Id: "parquet",
             Name: "Raw Parquet",
@@ -311,7 +316,7 @@ public sealed class ParquetSourceAdapter : ISourceAdapter
         Directory.CreateDirectory(work);
         try
         {
-            using var db = DuckDbSession.OnDisk(work);
+            using var db = DuckDbSession.OnDisk(work, _resources);
             ConfigureRemote(db, source);
             return await operation(db, ct);
         }

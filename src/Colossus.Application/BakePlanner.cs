@@ -33,20 +33,39 @@ public sealed class BakePlanner
     private const double CubeRowsPerShape = 4.0;
 
     private readonly int _tilePointBudget;
+    private readonly long _targetTileWorkingSetBytes;
 
-    public BakePlanner(int tilePointBudget = DefaultTilePointBudget) => _tilePointBudget = tilePointBudget;
-
-    public BakePlan Plan(SourceBounds probe, ViewConfig view)
+    public BakePlanner(int tilePointBudget = DefaultTilePointBudget, long targetTileWorkingSetBytes = 0)
     {
-        Bbox root = probe.Bounds.ToPaddedSquare();
-        var reduction = SelectReduction(probe, view);
-        int maxZoom = PlanMaxZoom(probe.DistinctGeometries);
-        return new BakePlan(reduction, maxZoom, _tilePointBudget, root);
+        _tilePointBudget = tilePointBudget;
+        _targetTileWorkingSetBytes = Math.Max(0, targetTileWorkingSetBytes);
     }
 
-    private ReductionKind SelectReduction(SourceBounds probe, ViewConfig view)
+    public BakePlan Plan(SourceBounds probe, ViewConfig view, long estimatedWorkingBytesPerRow = 0)
     {
-        if (probe.Count <= _tilePointBudget)
+        int tilePointBudget = TilePointBudget(estimatedWorkingBytesPerRow);
+        Bbox root = probe.Bounds.ToPaddedSquare();
+        var reduction = SelectReduction(probe, view, tilePointBudget);
+        int maxZoom = PlanMaxZoom(probe.DistinctGeometries, tilePointBudget);
+        return new BakePlan(reduction, maxZoom, tilePointBudget, root);
+    }
+
+    private int TilePointBudget(long estimatedWorkingBytesPerRow)
+    {
+        if (_targetTileWorkingSetBytes <= 0 || estimatedWorkingBytesPerRow <= 0) return _tilePointBudget;
+        long budget = _targetTileWorkingSetBytes / estimatedWorkingBytesPerRow;
+        return (int)Math.Clamp(budget, 1_000, _tilePointBudget);
+    }
+
+    private static ReductionKind SelectReduction(SourceBounds probe, ViewConfig view, int tilePointBudget)
+    {
+        // A measures view needs the aggregate reducer even when its mark count fits one tile: that reducer
+        // is the owner of the fact companion and retained fold-facts contracts. Raw passthrough would render
+        // the marks but silently omit the data needed when filters change the measures.
+        if (view.HasMeasures)
+            return ReductionKind.Aggregate;
+
+        if (probe.Count <= tilePointBudget)
             return ReductionKind.RawPassthrough;
 
         bool areaMark = view.Mark is Mark.Polygon or Mark.Rect or Mark.Heat;
@@ -65,9 +84,9 @@ public sealed class BakePlanner
     // reach the budget; the adaptive recursion stops earlier wherever a node is already under budget, so
     // a generous cap is free (sparse regions never use the extra depth). The margin absorbs non-uniform
     // density (dense cities vs. empty ocean).
-    private int PlanMaxZoom(long distinctShapes)
+    private static int PlanMaxZoom(long distinctShapes, int tilePointBudget)
     {
-        double perAxis = Math.Sqrt((double)distinctShapes / _tilePointBudget);
+        double perAxis = Math.Sqrt((double)distinctShapes / tilePointBudget);
         int z = (int)Math.Ceiling(Math.Log2(Math.Max(perAxis, 1))) + 5;
         return Math.Clamp(z, 1, 16);
     }

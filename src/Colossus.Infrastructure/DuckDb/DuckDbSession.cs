@@ -1,4 +1,5 @@
 using System.Globalization;
+using Colossus.Infrastructure.Configuration;
 using DuckDB.NET.Data;
 
 namespace Colossus.Infrastructure.DuckDb;
@@ -17,24 +18,33 @@ public sealed class DuckDbSession : IDisposable
         _dbPath = dbPath;
     }
 
-    public static DuckDbSession InMemory()
+    public static DuckDbSession InMemory(BakeResourceOptions? resources = null)
     {
         var connection = new DuckDBConnection("Data Source=:memory:");
         connection.Open();
-        return new DuckDbSession(connection, null);
+        var session = new DuckDbSession(connection, null);
+        session.Apply(resources);
+        return session;
     }
 
     /// <summary>File-backed session whose database and temp spill both live in <paramref name="workDirectory"/>.</summary>
-    public static DuckDbSession OnDisk(string workDirectory)
+    public static DuckDbSession OnDisk(string workDirectory, BakeResourceOptions? resources = null)
     {
-        string dbPath = Path.Combine(workDirectory, "reduce.duckdb");
+        string dbPath = Path.Combine(workDirectory, $"reduce-{Guid.NewGuid():N}.duckdb");
         DeleteDatabaseFiles(dbPath);
         var connection = new DuckDBConnection($"Data Source={Sql.Path(dbPath)}");
         connection.Open();
         var session = new DuckDbSession(connection, dbPath);
         session.Exec("SET preserve_insertion_order = false");
         session.Exec($"SET temp_directory = '{Sql.Path(workDirectory)}'");
+        session.Apply(resources);
         return session;
+    }
+
+    private void Apply(BakeResourceOptions? resources)
+    {
+        if (resources?.CpuCores > 0) Exec($"SET threads = {resources.CpuCores}");
+        if (resources?.DuckDbRamMb > 0) Exec($"SET memory_limit = '{resources.DuckDbRamMb}MB'");
     }
 
     public void Exec(string sql)

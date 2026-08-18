@@ -7,6 +7,7 @@ namespace Colossus.Application.Abstractions.Baking;
 public interface IBakeStore
 {
     string StagingPath(string viewId);
+    long StagingSize(string viewId);
     string MarksStagingPath(string viewId);
     string VersionDirectory(string viewId, string version);
     string VersionArtifactPath(string viewId, string version, string relativePath);

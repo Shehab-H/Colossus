@@ -110,10 +110,6 @@ public sealed record ViewConfig
         var names = new HashSet<string>(StringComparer.Ordinal);
         if (!HasMeasures) return names;
 
-        if (Source.Geometry.Kind != GeometryKind.Quadkey)
-            throw new ArgumentException(
-                $"view '{Id}': measures require keyed geometry (v0 supports 'quadkey'), not '{Source.Geometry.Kind}'");
-
         var numeric = Source.Channels.Where(c => IsNumeric(c.Type)).Select(c => c.Name).ToHashSet(StringComparer.Ordinal);
         var dict = Source.Channels.Where(c => c.Type == ChannelType.Dict).Select(c => c.Name).ToHashSet(StringComparer.Ordinal);
 

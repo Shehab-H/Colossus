@@ -40,6 +40,10 @@ public static class ServiceCollectionExtensions
         services.AddOptions<TrinoOptions>()
             .Bind(configuration.GetSection(TrinoOptions.Section))
             .PostConfigure(options => options.ResolvePaths());
+        var bakeResources = new BakeResourceOptions();
+        configuration.GetSection(BakeResourceOptions.Section).Bind(bakeResources);
+        bakeResources.Normalize();
+        services.AddSingleton(bakeResources);
 
         // Ports → adapters. Catalogs and stores are stateless or cheap, so singletons.
         services.AddHttpClient("Colossus.ClickHouse");
@@ -89,7 +93,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<Colossus.Infrastructure.Fold.DuckDbFoldExecutor>();
 
         // Use cases.
-        services.AddSingleton<BakePlanner>();
+        services.AddSingleton(_ => new BakePlanner(
+            targetTileWorkingSetBytes: bakeResources.TileWorkingSetBytes));
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<ProductCatalogService>();
         services.AddSingleton<MapManagementService>();

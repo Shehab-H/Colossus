@@ -211,16 +211,24 @@ public class ViewConfigTests
         Assert.Throws<ArgumentException>(() => ValidGroup(("m", "share(sum(tests)) where tests = '1'")).Validate());
 
     [Fact]
-    public void Measure_NonQuadkeyGeometry_Throws()
+    public void Measures_UseImplicitIdentityForEverySupportedGeometryKind()
     {
-        var view = ValidGroup(("m", "count()")) with
+        GeometrySpec[] geometries =
+        [
+            new() { Kind = GeometryKind.Xy, X = "x", Y = "y" },
+            new() { Kind = GeometryKind.LonLat, Lon = "lon", Lat = "lat" },
+            new() { Kind = GeometryKind.Quadkey, Column = "quadkey" },
+            new() { Kind = GeometryKind.Wkt, Column = "wkt" },
+        ];
+
+        foreach (var geometry in geometries)
         {
-            Source = ValidGroup(("m", "count()")).Source with
+            var view = ValidGroup(("m", "count()")) with
             {
-                Geometry = new GeometrySpec { Kind = GeometryKind.LonLat, Lon = "lon", Lat = "lat" },
-            },
-        };
-        Assert.Throws<ArgumentException>(view.Validate);
+                Source = ValidGroup(("m", "count()")).Source with { Geometry = geometry },
+            };
+            view.Validate();
+        }
     }
 
     [Fact]

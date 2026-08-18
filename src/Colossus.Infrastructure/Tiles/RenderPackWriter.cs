@@ -42,13 +42,15 @@ public static class RenderPackWriter
     public static RenderPack? Pack(
         string outputDirectory,
         IEnumerable<TileMeta> tiles,
-        IReadOnlyList<string> firstPaintChannels)
+        IReadOnlyList<string> firstPaintChannels,
+        long maxSampleBytes = 0)
     {
         string scratchPath = Path.Combine(outputDirectory, FileName + ".raw");
         var raw = new List<(string Key, string Group, long Offset, int Length)>();
         var samples = new List<byte[]>();
         var packedTiles = new List<string>();
         var firstPaintSeen = new List<string> { RenderPack.GeomGroup };
+        long sampleBytes = 0;
 
         try
         {
@@ -61,7 +63,12 @@ public static class RenderPackWriter
 
                     foreach (var (group, bytes) in SplitTile(tilePath, firstPaintChannels, firstPaintSeen))
                     {
-                        if (samples.Count < MaxSamples) samples.Add(bytes);
+                        if (samples.Count < MaxSamples &&
+                            (maxSampleBytes <= 0 || sampleBytes + bytes.LongLength <= maxSampleBytes))
+                        {
+                            samples.Add(bytes);
+                            sampleBytes += bytes.LongLength;
+                        }
                         long offset = scratch.Position;
                         scratch.Write(bytes, 0, bytes.Length);
                         raw.Add(($"{tile.Z}/{tile.X}/{tile.Y}", group, offset, bytes.Length));

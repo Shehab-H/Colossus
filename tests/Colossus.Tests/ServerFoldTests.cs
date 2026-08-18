@@ -1,8 +1,13 @@
 using System.Globalization;
 using System.Text.Json;
+using Apache.Arrow;
+using Apache.Arrow.Ipc;
 using Colossus.Domain.Measures;
+using Colossus.Domain.Model;
+using Colossus.Infrastructure;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Fold;
+using Colossus.Infrastructure.Tiling;
 using Xunit;
 
 namespace Colossus.Tests;
@@ -106,6 +111,70 @@ public class ServerFoldTests
             // The server folds only what the shared parser accepts, so the remote route's grammar is the
             // declared one by construction.
             Assert.Throws<MeasureParseException>(() => MeasureParser.Parse(expr));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Executor_FoldsLegacyAndGeometryIdentityFacts(bool geometryIdentity)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "colossus-fold-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string path = Path.Combine(directory, "facts.parquet");
+            string identity = geometryIdentity
+                ? $", {MarkKey.GeometryIdentitySql(hasShape: false)} AS \"{MarkKey.GeometryIdentity}\""
+                : "";
+            using (var db = DuckDbSession.InMemory())
+                db.Exec($"COPY (SELECT *{identity} FROM (VALUES " +
+                        "(1::FLOAT, 1::FLOAT, 0::INTEGER, 10::FLOAT), " +
+                        "(1::FLOAT, 1::FLOAT, 0::INTEGER, 3::FLOAT)) v(x, y, zreal, tests)) " +
+                        $"TO '{Sql.Path(path)}' (FORMAT PARQUET)");
+
+            var view = new ViewConfig
+            {
+                Id = "fold-identity",
+                Viewport = Viewport.Geo,
+                Mark = Mark.Point,
+                Source = new SourceSpec
+                {
+                    Query = "SELECT lon, lat, tests FROM t",
+                    Geometry = new GeometrySpec { Kind = GeometryKind.LonLat, Lon = "lon", Lat = "lat" },
+                    Channels =
+                    [
+                        new ChannelSpec { Name = "tests", Column = "tests", Role = ChannelRole.Measure, Type = ChannelType.F32 },
+                    ],
+                },
+                Measures = [new MeasureSpec { Name = "total_tests", Expr = "sum(tests)" }],
+            };
+            var manifest = new Manifest
+            {
+                Version = "v1",
+                View = view,
+                Reduction = ReductionKind.Aggregate,
+                Regime = "large",
+                Root = new Bbox(0, 0, 4, 4),
+                MinZoom = 0,
+                MaxZoom = 0,
+                TilePointBudget = 250_000,
+                TotalPoints = 1,
+                Tiles = [new TileMeta(0, 0, 0, 1, true)],
+                GrainChannels = [],
+            };
+
+            FoldResponse response = new DuckDbFoldExecutor().Fold(
+                manifest, path, ["total_tests"], new FoldContextDto(), ["0/0/0"]);
+            using var stream = new MemoryStream(response.Arrow);
+            using var arrow = new ArrowStreamReader(stream);
+            using RecordBatch batch = arrow.ReadNextRecordBatch()!;
+            Assert.Equal(1, batch.Length);
+            Assert.Equal(13f, ((FloatArray)batch.Column("total_tests")).GetValue(0)!.Value, 3);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
         }
     }
 

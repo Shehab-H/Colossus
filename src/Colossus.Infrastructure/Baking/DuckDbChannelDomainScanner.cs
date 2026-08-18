@@ -3,6 +3,7 @@ using System.Globalization;
 using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
 using Colossus.Infrastructure.DuckDb;
+using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Infrastructure.Baking;
 
@@ -10,7 +11,7 @@ namespace Colossus.Infrastructure.Baking;
 /// quantile grid, everything else gets its distinct values (capped). Purely schema-driven — the channel
 /// list and types come from the view config, never from the data's shape. A channel whose scan fails is
 /// simply omitted; the client falls back to its root-tile derivation.</summary>
-public sealed class DuckDbChannelDomainScanner : IChannelDomainScanner
+public sealed class DuckDbChannelDomainScanner(BakeResourceOptions? resources = null) : IChannelDomainScanner
 {
     // Options lists and categorical color domains stop being useful long before this; past the cap the
     // domain is marked truncated and the client treats it as absent.
@@ -26,7 +27,8 @@ public sealed class DuckDbChannelDomainScanner : IChannelDomainScanner
         var domains = new Dictionary<string, ChannelDomain>(StringComparer.Ordinal);
         if (view.Source.Channels.Count == 0) return domains;
 
-        using var db = DuckDbSession.InMemory();
+        string work = Path.GetDirectoryName(Path.GetFullPath(stagingParquetPath))!;
+        using var db = DuckDbSession.OnDisk(work, resources);
         db.Exec($"CREATE VIEW v AS SELECT * FROM read_parquet('{Sql.Path(stagingParquetPath)}')");
 
         foreach (var ch in view.Source.Channels)

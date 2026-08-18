@@ -38,8 +38,6 @@ public sealed class BakeViewUseCase(
             return BakeOutcome.Empty(view.Id);
         }
 
-        var plan = planner.Plan(probe, view);
-
         string staging = store.StagingPath(view.Id);
         progress?.Report(new BakeProgress(BakeStage.Extracting, $"Extracting {probe.Count:N0} rows for {view.Id}."));
         var extractionProgress = progress is null ? null : new InlineProgress<SourceExtractProgress>(value =>
@@ -49,6 +47,14 @@ public sealed class BakeViewUseCase(
                     $"Extracting {view.Id}: {value.BytesWritten / 1_048_576.0:N1} MB received."));
         });
         await source.ExtractAsync(view, probe.Bounds, staging, extractionProgress, ct);
+
+        // Parquet is compressed and Arrow/codecs can hold more than one representation while writing a
+        // tile. A deliberately conservative multiplier turns the RAM target into smaller tiles; the bake
+        // does more I/O and takes longer instead of treating memory pressure as a failed run.
+        long compressedBytesPerRow = Math.Max(1, store.StagingSize(view.Id) / Math.Max(1, probe.Count));
+        long estimatedWorkingBytesPerRow = Math.Max(64,
+            Math.Min(compressedBytesPerRow, long.MaxValue / 8) * 8);
+        var plan = planner.Plan(probe, view, estimatedWorkingBytesPerRow);
 
         string version = NewVersion(clock.GetUtcNow());
         string outputDir = store.VersionDirectory(view.Id, version);

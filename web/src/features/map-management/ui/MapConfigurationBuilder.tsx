@@ -57,7 +57,6 @@ export function MapConfigurationBuilder({
   const inspect = readObject<InspectConfig>(form.inspect);
   const bakePredicates = readArray<string>(form.bakeFilters);
   const availableChannels = [...channels.map((channel) => channel.name), ...measures.map((measure) => measure.name).filter(Boolean)];
-  const keyedGeometry = dataset?.draft.source.geometry.kind === 'quadkey';
 
   const write = <K extends 'bakeFilters' | 'filters' | 'measures' | 'encoding' | 'inspect'>(field: K, value: unknown, empty = false) => {
     onChange(field, (empty ? '' : JSON.stringify(value, null, 2)) as MapFormState[K]);
@@ -134,14 +133,13 @@ export function MapConfigurationBuilder({
       </section>
 
       <section className="maps-config__section">
-        <header className="maps-config__section-heading"><div><h3>Computed measures</h3><p>Each expression uses the closed per-geometry measure DSL, for example <code>sum(tests)</code> or <code>argmax(operator, sum(tests))</code>.</p></div><Button size="sm" variant="secondary" disabled={!keyedGeometry} onClick={() => write('measures', [...measures, { name: '', expr: '' }])}>Add measure</Button></header>
+        <header className="maps-config__section-heading"><div><h3>Computed measures</h3><p>Each expression uses the closed per-geometry measure DSL, for example <code>sum(tests)</code> or <code>argmax(operator, sum(tests))</code>.</p></div><Button size="sm" variant="secondary" onClick={() => write('measures', [...measures, { name: '', expr: '' }])}>Add measure</Button></header>
         <details className="maps-config__reference">
           <summary>Measure DSL reference</summary>
           <p><code>count()</code> · <code>sum(channel)</code> · <code>avg(channel)</code> · <code>wavg(value, weight)</code> · <code>min(channel)</code> · <code>max(channel)</code></p>
           <p><code>share(sum(channel)) where dimension = 'value'</code> · <code>argmax(dimension, sum(channel))</code> · <code>argmin(dimension, sum(channel))</code></p>
           <span>The geometry is the implicit group key. This is a closed fold grammar, not SQL.</span>
         </details>
-        {!keyedGeometry && <Alert>Computed measures require keyed geometry. The current engine supports them for quadkey datasets.</Alert>}
         {measures.length > 0 && <div className="maps-config__rows">
           {measures.map((measure, index) => <div className="maps-config__row maps-config__row--measure" key={index}>
             <Input aria-label={`Measure ${index + 1} name`} value={measure.name} placeholder="total_tests" onChange={(event) => updateMeasure(index, { name: event.target.value })} />

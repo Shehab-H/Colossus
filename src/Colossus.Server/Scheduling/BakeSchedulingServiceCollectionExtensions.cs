@@ -2,6 +2,7 @@ using Colossus.Application.Abstractions.Baking;
 using Hangfire;
 using Hangfire.MySql;
 using System.Transactions;
+using Colossus.Infrastructure.Configuration;
 
 namespace Colossus.Server.Scheduling;
 
@@ -13,6 +14,9 @@ public static class BakeSchedulingServiceCollectionExtensions
     {
         var options = new BakeSchedulingOptions();
         configuration.GetSection(BakeSchedulingOptions.Section).Bind(options);
+        var resources = new BakeResourceOptions();
+        configuration.GetSection(BakeResourceOptions.Section).Bind(resources);
+        resources.Normalize();
         if (!options.Enabled)
         {
             services.AddSingleton<IBakeJobScheduler, DisabledBakeJobScheduler>();
@@ -39,7 +43,11 @@ public static class BakeSchedulingServiceCollectionExtensions
             .UseStorage(storage));
         services.AddHangfireServer(server =>
         {
-            server.WorkerCount = Math.Max(1, options.WorkerCount);
+            // A configured envelope is host-wide. Until stages can share weighted leases, one active bake
+            // is the only honest way to prevent two workers from each consuming the full CPU/RAM target.
+            server.WorkerCount = resources.CpuCores > 0 || resources.RamMb > 0
+                ? 1
+                : Math.Max(1, options.WorkerCount);
             server.Queues = ["bakes"];
             server.CancellationCheckInterval = TimeSpan.FromMilliseconds(500);
             server.ShutdownTimeout = TimeSpan.FromSeconds(15);

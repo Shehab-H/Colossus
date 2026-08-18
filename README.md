@@ -52,8 +52,32 @@ The checked-in `local` Parquet provider is confined to `datasets/parquet`, while
 values match the Docker Compose service. The PostgreSQL service in Compose belongs only to the local Trino/Iceberg
 integration fixture; the Colossus application does not connect to it.
 
+### Bake hardware envelope
+
+`BakeResources` applies from the first source probe through extraction, reduction, packing, and compression.
+Zero keeps the engine defaults; set both values to trade elapsed time and staging-disk I/O for a smaller host
+footprint (`RamMb` must be at least 256 when enabled):
+
+```json
+"BakeResources": {
+  "CpuCores": 2,
+  "RamMb": 4096
+}
+```
+
+This is an out-of-core throughput envelope, not an "exceeded budget" failure rule. It reduces ClickHouse and
+Trino source-query parallelism, bounds local DuckDB threads, streams source results with backpressure, spills
+analytical work to the configured staging directories, derives smaller Arrow tiles from the extracted row
+footprint, bounds codec dictionary samples, and streams Brotli rather than duplicating whole tiles in RAM.
+When an envelope is active the scheduler runs one bake at a time so concurrent workers cannot each consume the
+full allowance. A smaller value therefore means a longer bake and more temporary disk use. Restart the server
+or CLI host after changing it, and provision staging space for spill files.
+
 Run the tests with `dotnet test`; verify a bake's fidelity invariant with
 `dotnet run --project src/Colossus.Bake -- verify`.
+
+For a production-style Ubuntu deployment, follow the
+[server deployment checklist](docs/sagas/productized-map-application/10-operational-and-quality-gates.md#server-deployment-checklist-ubuntu--nginx--systemd).
 
 ## Embedding maps
 

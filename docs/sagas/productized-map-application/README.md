@@ -2,7 +2,7 @@
 
 - **Status:** Active; Hangfire bake scheduling complete, release publication and retention is next
 - **Created:** 2026-08-10
-- **Last verified:** 2026-08-14
+- **Last verified:** 2026-08-18
 
 ## Objective
 
@@ -102,6 +102,8 @@ transient-only retry, durable progress/metrics/failures, and live management his
   can be source-agnostic, though the contract needs discovery/preview/progress capabilities.
 - [`FileBakeStore`](../../../src/Colossus.Infrastructure/Baking/FileBakeStore.cs) already writes immutable
   version directories and atomically flips `latest.json`.
+- Item 10 now carries the current single-host Ubuntu deployment checklist, including build, persistent
+  storage, systemd, Nginx/TLS, security, backup, smoke-test, upgrade, and rollback gates.
 - The web client already supports URL-addressable map state and a chromeless iframe mode.
 - The web client now has enforced `app`, `domain`, `features`, `infrastructure`, and `shared` boundaries while
   retaining the verified viewer behavior.

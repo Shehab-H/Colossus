@@ -10,6 +10,7 @@ using Colossus.Infrastructure.Baking;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Reduction;
 using Colossus.Infrastructure.Tiles;
+using Colossus.Infrastructure.Tiling;
 using Xunit;
 
 namespace Colossus.Tests;
@@ -49,17 +50,18 @@ public class GroupBakeTests : IDisposable
         },
     };
 
-    private (string OutDir, ReductionResult Result) GroupBake(string factsSql)
+    private (string OutDir, ReductionResult Result) GroupBake(string factsSql, ViewConfig? authored = null)
     {
+        authored ??= Authored;
         string factsPath = Path.Combine(_dir.FullName, "facts.parquet");
         string marksPath = Path.Combine(_dir.FullName, "marks.parquet");
         string outDir = Path.Combine(_dir.FullName, "tiles");
         using (var db = DuckDbSession.InMemory())
             db.Exec($"COPY ({factsSql}) TO '{Sql.Path(factsPath)}' (FORMAT PARQUET)");
 
-        var grouping = new DuckDbFactGrouper().GroupToMarks(factsPath, marksPath, Authored);
+        var grouping = new DuckDbFactGrouper().GroupToMarks(factsPath, marksPath, authored);
         var perFact = grouping.PerFactChannels.ToHashSet();
-        var grain = Authored.Source.Channels
+        var grain = authored.Source.Channels
             .Where(c => perFact.Contains(c.Name) && (c.Type == ChannelType.Dict || c.Type == ChannelType.Date))
             .ToList();
 
@@ -70,13 +72,13 @@ public class GroupBakeTests : IDisposable
             Root = new Bbox(0, 0, 4, 4),
             TilePointBudget = 250_000,
             MaxZoom = 8,
-            View = EffectiveView.For(Authored, grouping),
+            View = EffectiveView.For(authored, grouping),
             GroupRegime = true,
             Companion = new CompanionSpec
             {
                 FactsParquetPath = factsPath,
                 GrainChannels = grain,
-                Partials = MeasurePartials.For(Authored.Measures!.Select(m => MeasureParser.Parse(m.Expr))),
+                Partials = MeasurePartials.For(authored.Measures!.Select(m => MeasureParser.Parse(m.Expr))),
             },
         });
         return (outDir, result);
@@ -96,7 +98,12 @@ public class GroupBakeTests : IDisposable
 
         var tile = ReadArrow(Path.Combine(outDir, "0/0/0.arrow"));
         var tileIds = Ids(tile, TileSchema.Id);
-        Assert.Equal(new HashSet<string> { "p:1.0:1.0", "p:3.0:3.0" }, tileIds.ToHashSet());
+        Assert.Equal(2, tileIds.Length);
+        Assert.All(tileIds, id =>
+        {
+            Assert.StartsWith("p:", id);
+            Assert.Equal(66, id.Length);
+        });
 
         // The slab lives in facts.pack (no per-tile .facts.arrow file); the manifest-bound directory finds it.
         Assert.False(File.Exists(Path.Combine(outDir, "0/0/0.facts.arrow")));
@@ -107,10 +114,9 @@ public class GroupBakeTests : IDisposable
         // Σ cnt (or nnz) witnesses every fact reached the slab.
         Assert.Equal(4, SlabCompanionReader.Facts(tileData, slab));
 
-        // Default-context sum(tests) gathers to the right mark: p:1:1 = 10+5+3, p:3:3 = 8.
+        // Default-context sum(tests) gathers to the two geometry marks: 10+5+3 and 8.
         var byMark = PerMarkTotals(tileData, slab, tile.Length, "sum__tests");
-        Assert.Equal(18f, byMark[System.Array.IndexOf(tileIds, "p:1.0:1.0")], 3);
-        Assert.Equal(8f, byMark[System.Array.IndexOf(tileIds, "p:3.0:3.0")], 3);
+        Assert.Equal(new HashSet<float> { 18f, 8f }, byMark.ToHashSet());
         // Σ swp over the whole tile = 500+200+270+160.
         Assert.Equal(1130f, PerMarkTotals(tileData, slab, tile.Length, "swp__download_mbps__tests").Sum(), 3);
     }
@@ -138,6 +144,36 @@ public class GroupBakeTests : IDisposable
         Assert.Equal(4, SlabCompanionReader.Facts(tileData, slab)); // apex 2 + zenith 2 facts merged
         // sum(tests) folded across both merged marks: apex 10+20, zenith 3+8 → total 41.
         Assert.Equal(41f, PerMarkTotals(tileData, slab, tile.Length, "sum__tests").Sum(), 3);
+    }
+
+    [Fact]
+    public void PointGeometry_MeasuresRemainPointTiles_WithImplicitIdentity()
+    {
+        var pointView = Authored with
+        {
+            Mark = Mark.Point,
+            Source = Authored.Source with
+            {
+                Geometry = new GeometrySpec { Kind = GeometryKind.LonLat, Lon = "lon", Lat = "lat" },
+            },
+        };
+        var (outDir, result) = GroupBake("""
+            SELECT * FROM (VALUES
+              (1::FLOAT,1::FLOAT, 'apex',   DATE '2025-01-01', 10::FLOAT, 50::FLOAT),
+              (1::FLOAT,1::FLOAT, 'zenith', DATE '2025-01-01',  3::FLOAT, 90::FLOAT),
+              (3::FLOAT,3::FLOAT, 'zenith', DATE '2025-01-01',  8::FLOAT, 20::FLOAT))
+              v(x, y, operator, quarter, tests, download_mbps)
+            """, pointView);
+
+        var tile = ReadArrow(Path.Combine(outDir, "0/0/0.arrow"));
+        var columns = tile.Schema.FieldsList.Select(field => field.Name).ToHashSet(StringComparer.Ordinal);
+        Assert.Contains(TileSchema.X, columns);
+        Assert.Contains(TileSchema.Y, columns);
+        Assert.Contains(TileSchema.Id, columns);
+        Assert.DoesNotContain(TileSchema.Geometry, columns);
+        Assert.DoesNotContain(TileSchema.PartOffsets, columns);
+        Assert.DoesNotContain(MarkKey.GeometryIdentity, columns);
+        Assert.Equal(3, SlabCompanionReader.Facts(ReadSlab(outDir, result, "0/0/0"), result.CompanionSlab!));
     }
 
     // Default-context (all cells) per-mark total of a subtractable partial, layout-aware: sparse sums a
