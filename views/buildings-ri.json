@@ -12,6 +12,9 @@
       { "name": "vertices", "column": "vertices", "role": "measure", "type": "f32" }
     ]
   },
+  "filters": [
+    { "channel": "area_m2", "control": "range" }
+  ],
   "encoding": { "color": { "channel": "area_m2" } },
   "inspect": { "title": "area_m2", "channels": ["area_m2", "vertices"] }
 }

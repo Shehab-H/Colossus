@@ -37,7 +37,7 @@ public sealed class DuckDbFoldExecutor
         var types = ColumnTypes(db, factsParquetPath);
         var grainInfo = grain.ToDictionary(
             g => g,
-            g => (Temporal: IsTemporal(manifest, g), DuckType: types.GetValueOrDefault(g, "")),
+            g => (Temporal: IsTemporal(manifest, g), Numeric: IsNumeric(manifest, g), DuckType: types.GetValueOrDefault(g, "")),
             StringComparer.Ordinal);
 
         // One builder set for the whole response; tiles are concatenated in query order and the per-tile row
@@ -116,7 +116,7 @@ public sealed class DuckDbFoldExecutor
     }
 
     private string BuildLevelSql(Manifest manifest, string factsPath, int z, List<(int X, int Y)> tiles,
-        IReadOnlyList<string> grain, Dictionary<string, (bool Temporal, string DuckType)> grainInfo,
+        IReadOnlyList<string> grain, Dictionary<string, (bool Temporal, bool Numeric, string DuckType)> grainInfo,
         IReadOnlyList<Partial> partials, List<ResolvedMeasure> measures, FoldContextDto context,
         bool hasGeometryIdentity)
     {
@@ -186,6 +186,13 @@ public sealed class DuckDbFoldExecutor
     {
         var c = manifest.View.Source.Channels.FirstOrDefault(x => x.Name == channel);
         return c is not null && (c.Type == ChannelType.Date || c.Role == ChannelRole.Temporal);
+    }
+
+    private static bool IsNumeric(Manifest manifest, string channel)
+    {
+        var c = manifest.View.Source.Channels.FirstOrDefault(x => x.Name == channel);
+        return c?.Type is ChannelType.F32 or ChannelType.F64 or ChannelType.U8 or ChannelType.U16
+            or ChannelType.I32 or ChannelType.I64;
     }
 
     private static Dictionary<string, string> ColumnTypes(DuckDbSession db, string factsPath)

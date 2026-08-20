@@ -58,6 +58,12 @@ describe('filterSlots', () => {
     expect(filterSlots(manifest({}), { cat: ['x', 'y'] })!.specs[0].categories).toEqual(['x', 'y']);
   });
 
+  it('an explicit numeric range gets a numeric slot with full-extract bounds', () => {
+    const ranged = { ...view, filters: [{ channel: 'pop', control: 'range' as const }] };
+    const slot = filterSlots({ ...manifest({ pop: { min: -5, max: 900 } }), view: ranged })!.specs[0];
+    expect(slot).toEqual({ name: 'pop', kind: 'numeric', min: -5, max: 900 });
+  });
+
   it('null when there are no filterable channels', () => {
     const measuresOnly: ViewConfig = { ...view, source: { ...view.source, channels: [view.source.channels[0]] } };
     expect(filterSlots({ ...manifest({}), view: measuresOnly })).toBeNull();
@@ -90,6 +96,15 @@ describe('filterRanges', () => {
     expect(filterRanges(slots, { day: '2024-01-01..' })[1]).toEqual([dayNumberOfIso('2024-01-01'), MAX_SAFE_F32]);
     expect(filterRanges(slots, { day: '..2024-06-01' })[1]).toEqual([-MAX_SAFE_F32, dayNumberOfIso('2024-06-01')]);
     expect(filterRanges(slots, { day: '2024-01-01' })[1]).toEqual([dayNumberOfIso('2024-01-01'), dayNumberOfIso('2024-01-01')]); // legacy single day
+  });
+
+  it('numeric ranges are inclusive and use baked bounds for open sides', () => {
+    const numeric: FilterSlots = { specs: [{ name: 'pop', kind: 'numeric', min: -5, max: 900 }], size: 1 };
+    expect(filterRanges(numeric, { pop: '10..20' })[0]).toEqual([10, 20]);
+    expect(filterRanges(numeric, { pop: '10..' })[0]).toEqual([10, 900]);
+    expect(filterRanges(numeric, { pop: '..20' })[0]).toEqual([-5, 20]);
+    expect(filterRanges(numeric, { pop: '12.5' })[0]).toEqual([12.5, 12.5]);
+    expect(filterRanges(numeric, { pop: '20..10' })[0]).toEqual([-MAX_SAFE_F32, MAX_SAFE_F32]);
   });
 
   it('anyActive is false only when every slot is wide-open', () => {

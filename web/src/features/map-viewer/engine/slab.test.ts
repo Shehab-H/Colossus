@@ -127,6 +127,18 @@ function assertFold(actual: Record<string, Float32Array | Uint16Array>, expect_:
 }
 
 describe('slab fold (shared fixture)', () => {
+  test('numeric ordered axes resolve bounds numerically rather than lexically', () => {
+    const slab: CompanionSlab = {
+      layout: 'dense',
+      cells: 3,
+      occupancy: 1,
+      axes: [{ name: 'area', kind: 'ordered', valueType: 'number', cardinality: 3, cumulative: true, domain: ['2', '10', '100'] }],
+      partials: [{ name: 'cnt', type: 'i32' }],
+    };
+    const needs = denseNeeds(slab, { equals: {}, ranges: { area: { from: '3', to: '20' } } }, ['cnt']);
+    expect(needs).toEqual({ cells: { cnt: [1, 0] }, impossible: false });
+  });
+
   test('sparse, dense, and row-form folds all reproduce every fixture context', () => {
     expect(fx.folds.length).toBeGreaterThan(0);
     for (const c of fx.folds) {

@@ -225,12 +225,17 @@ function fromBlocks(blocks: Record<string, Table>): ColumnSource {
 export interface CompanionGrain {
   name: string;
   temporal: boolean;
+  numeric: boolean;
 }
 
 export const companionGrain = (manifest: Manifest): CompanionGrain[] =>
   (manifest.grainChannels ?? []).map((g) => {
     const ch = manifest.view.source.channels.find((c) => c.name === g);
-    return { name: g, temporal: ch?.role === 'temporal' || ch?.type === 'date' };
+    return {
+      name: g,
+      temporal: ch?.role === 'temporal' || ch?.type === 'date',
+      numeric: !!ch && NUMERIC_TYPES.has(ch.type),
+    };
   });
 
 /** One leaf tile's block in the companion pack — where to range-read it and how to decompress it.
@@ -269,10 +274,12 @@ export function decodeCompanion(table: Table, grain: CompanionGrain[]): Companio
 
   const dim: Record<string, CompanionDim> = {};
   const temporalDays: Record<string, Float32Array> = {};
+  const numericValues: Record<string, Float32Array> = {};
   for (const g of grain) {
     const col = table.getChild(g.name);
     if (!col) continue;
     if (g.temporal) temporalDays[g.name] = temporalDaysColumn(col, n);
+    else if (g.numeric) numericValues[g.name] = slotNumericValues(col, n);
     else dim[g.name] = dictFromArrow(col, plainString) ?? dictByScan(col, n);
   }
 
@@ -283,7 +290,7 @@ export function decodeCompanion(table: Table, grain: CompanionGrain[]): Companio
     const col = table.getChild(field.name);
     if (col) partial[field.name] = numericColumn(col);
   }
-  return { rowCount: n, mki, dim, temporalDays, partial };
+  return { rowCount: n, mki, dim, temporalDays, numericValues, partial };
 }
 
 /** How to fetch one tile's companion, resolved on the main thread and shipped to the worker: a slab tile
@@ -508,7 +515,9 @@ function buildSlotValues(
   const perMark = slots.specs.map((spec) => {
     const col = src.column(spec.name);
     if (!col) return new Float32Array(n).fill(MISSING_CODE); // tile lacks the column → kept by (all), matched by nothing
-    return spec.kind === 'temporal' ? slotDayNumbers(col, n) : slotCanonicalCodes(col, n, spec.categories);
+    if (spec.kind === 'temporal') return slotDayNumbers(col, n);
+    if (spec.kind === 'numeric') return slotNumericValues(col, n);
+    return slotCanonicalCodes(col, n, spec.categories);
   });
   return buildFilterValues(slots.size, count, perMark, polyStartIndices, vertexCount);
 }
@@ -532,6 +541,19 @@ function slotDayNumbers(col: Vector, n: number): Float32Array {
     return out;
   }
   for (let i = 0; i < n; i++) out[i] = dayNumber(col.get(i));
+  return out;
+}
+
+/** Per-mark numeric values for a range slot. Missing and non-finite values use the same sentinel as a
+ *  missing categorical value: `(all)` keeps them, while a real range bounded by the baked domain does
+ *  not accidentally match them. */
+function slotNumericValues(col: Vector, n: number): Float32Array {
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const raw = col.get(i);
+    const value = raw === null || raw === undefined ? NaN : Number(raw);
+    out[i] = Number.isFinite(value) ? value : MISSING_CODE;
+  }
   return out;
 }
 

@@ -3,7 +3,10 @@
 // (foldTile, below) recomputes each measure over a tile's fact partials under the active context.
 
 import type { ChannelSpec, ViewConfig } from '@domain/map/manifest';
-import { type DateRange, MAX_SAFE_F32, dayNumberOfIso, parseDateRange } from './dates';
+import { type DateRange, MAX_SAFE_F32, dayNumberOfIso, parseDateRange, parseNumericRange } from './dates';
+
+// Must mirror gpuFilter.MISSING_CODE without importing gpuFilter (which depends on channels → measures).
+const NUMERIC_MISSING = Math.fround(2.0e38);
 
 export interface WhereClause {
   channel: string;
@@ -163,10 +166,11 @@ export interface CompanionData {
   mki: Int32Array;
   dim: Record<string, CompanionDim>;
   temporalDays: Record<string, Float32Array>;
+  numericValues?: Record<string, Float32Array>;
   partial: Record<string, Float32Array>;
 }
 
-/** The active fold context: perFact equality selections + temporal ranges (VIEW_CONFIG §1). */
+/** The active fold context: perFact equality selections + ordered temporal/numeric ranges. */
 export interface FoldContext {
   equals: Record<string, string>;
   ranges: Record<string, DateRange>;
@@ -384,7 +388,7 @@ export const aggW = (a: Agg): string | undefined => (a.kind === 'wavg' ? a.weigh
  *  `impossible` short-circuits the whole fold (a selection no fact can satisfy — every mark unknown). */
 function compileContext(c: CompanionData, ctx: FoldContext) {
   const eqs: { codes: CompanionDim['codes']; want: number }[] = [];
-  const rgs: { days: Float32Array; lo: number; hi: number }[] = [];
+  const rgs: { values: Float32Array; lo: number; hi: number; numeric: boolean }[] = [];
   let impossible = false;
   for (const ch in ctx.equals) {
     const r = resolveDim(c, ch, ctx.equals[ch]);
@@ -392,16 +396,19 @@ function compileContext(c: CompanionData, ctx: FoldContext) {
     eqs.push(r);
   }
   for (const ch in ctx.ranges) {
-    const days = c.temporalDays[ch];
-    if (!days) {
+    const numeric = c.numericValues?.[ch];
+    const values = numeric ?? c.temporalDays[ch];
+    if (!values) {
       impossible = true;
       continue;
     }
     const r = ctx.ranges[ch];
+    const parsedNumeric = numeric ? parseNumericRange(`${r.from}..${r.to}`) : null;
     rgs.push({
-      days,
-      lo: r.from ? dayNumberOfIso(r.from) : -MAX_SAFE_F32,
-      hi: r.to ? dayNumberOfIso(r.to) : MAX_SAFE_F32,
+      values,
+      numeric: !!numeric,
+      lo: numeric ? (parsedNumeric?.lower ?? -MAX_SAFE_F32) : r.from ? dayNumberOfIso(r.from) : -MAX_SAFE_F32,
+      hi: numeric ? (parsedNumeric?.upper ?? MAX_SAFE_F32) : r.to ? dayNumberOfIso(r.to) : MAX_SAFE_F32,
     });
   }
   return { eqs, rgs, impossible };
@@ -428,8 +435,9 @@ export function foldTile(
     rows: for (let row = 0; row < c.rowCount; row++) {
       for (const e of eqs) if (e.codes[row] !== e.want) continue rows;
       for (const g of rgs) {
-        const day = g.days[row];
-        if (day < g.lo || day > g.hi) continue rows;
+        const value = g.values[row];
+        if (g.numeric && value === NUMERIC_MISSING) continue rows;
+        if (value < g.lo || value > g.hi) continue rows;
       }
       const mi = mki[row];
       if (mi < 0 || mi >= markCount) continue;
@@ -443,10 +451,11 @@ export function foldTile(
   return out;
 }
 
-/** Build the fold context from the active perFact filter selections: temporal channels become ranges,
- *  the rest equality selections. */
+/** Build the fold context from active perFact selections: dateRange/range controls become ordered ranges;
+ *  the rest are equality selections. */
 export function buildFoldContext(view: ViewConfig, context: Record<string, string>): FoldContext {
   const byName = new Map<string, ChannelSpec>(view.source.channels.map((ch) => [ch.name, ch]));
+  const controls = new Map(view.filters?.map((filter) => [filter.channel, filter.control] as const) ?? []);
   const equals: Record<string, string> = {};
   const ranges: Record<string, DateRange> = {};
   for (const [name, v] of Object.entries(context)) {
@@ -455,6 +464,9 @@ export function buildFoldContext(view: ViewConfig, context: Record<string, strin
     if (ch.role === 'temporal' || ch.type === 'date') {
       const r = parseDateRange(v);
       if (r) ranges[name] = r;
+    } else if (controls.get(name) === 'range') {
+      const r = parseNumericRange(v);
+      if (r) ranges[name] = { from: r.from, to: r.to };
     } else {
       equals[name] = v;
     }

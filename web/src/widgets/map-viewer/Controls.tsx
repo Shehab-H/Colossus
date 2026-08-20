@@ -1,5 +1,6 @@
-import type { ChannelSpec } from '@domain/map/manifest';
+import type { ChannelSpec, FilterSpec } from '@domain/map/manifest';
 import { ALL, makeDateRange, parseDateRange } from '@features/map-viewer/engine/channels';
+import { makeNumericRange } from '@features/map-viewer/engine/dates';
 import { Field, Input, Select } from '@shared/ui';
 
 export interface ControlsProps {
@@ -7,6 +8,7 @@ export interface ControlsProps {
   colorChannel: string;
   onColorChannelChange: (name: string) => void;
   channels: ChannelSpec[];
+  controls: Record<string, FilterSpec['control'] | null | undefined>;
   options: Record<string, string[]>;
   filters: Record<string, string>;
   onFilterChange: (name: string, value: string) => void;
@@ -28,17 +30,14 @@ export default function Controls(p: ControlsProps) {
 
       {p.channels.map((channel) => {
         const options = p.options[channel.name] ?? [];
-        if (channel.role === 'temporal') {
+        const control = p.controls[channel.name];
+        if (control === 'dateRange' || control === 'range') {
           return (
             <fieldset className="viewer-controls__field viewer-controls__fieldset" key={channel.name}>
               <legend>{channel.name}</legend>
-              <DateRange
-                name={channel.name}
-                value={p.filters[channel.name]}
-                min={options[0]}
-                max={options[options.length - 1]}
-                onChange={p.onFilterChange}
-              />
+              {control === 'range'
+                ? <NumericRange name={channel.name} value={p.filters[channel.name]} min={options[0]} max={options[options.length - 1]} onChange={p.onFilterChange} />
+                : <DateRange name={channel.name} value={p.filters[channel.name]} min={options[0]} max={options[options.length - 1]} onChange={p.onFilterChange} />}
             </fieldset>
           );
         }
@@ -55,6 +54,42 @@ export default function Controls(p: ControlsProps) {
           </Field>
         );
       })}
+    </div>
+  );
+}
+
+/** The numeric counterpart of DateRange. It deliberately uses the same `from..to` route value, so
+ *  filter state, embeds, GPU predicates, and reducer fold context all share one representation. */
+function NumericRange(p: {
+  name: string;
+  value: string | undefined;
+  min?: string;
+  max?: string;
+  onChange: (name: string, value: string) => void;
+}) {
+  const { from, to } = parseDateRange(p.value) ?? { from: '', to: '' };
+  return (
+    <div className="viewer-date-range">
+      <label htmlFor={`${p.name}-from`}>From</label>
+      <Input
+        id={`${p.name}-from`}
+        type="number"
+        step="any"
+        value={from}
+        min={p.min}
+        max={to || p.max}
+        onChange={(event) => p.onChange(p.name, makeNumericRange(event.target.value, to))}
+      />
+      <label htmlFor={`${p.name}-to`}>To</label>
+      <Input
+        id={`${p.name}-to`}
+        type="number"
+        step="any"
+        value={to}
+        min={from || p.min}
+        max={p.max}
+        onChange={(event) => p.onChange(p.name, makeNumericRange(from, event.target.value))}
+      />
     </div>
   );
 }

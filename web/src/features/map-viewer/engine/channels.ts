@@ -1,4 +1,4 @@
-import type { ChannelSpec, Manifest, ViewConfig } from '@domain/map/manifest';
+import type { ChannelSpec, FilterSpec, Manifest, ViewConfig } from '@domain/map/manifest';
 import { tileUrl } from '@infrastructure/api/mapApi';
 import { fetchArrowTable } from './arrow';
 import { parseMeasure } from './measures';
@@ -67,20 +67,33 @@ export function colorableChannels(manifest: Manifest): ChannelSpec[] {
   return [...view.source.channels.filter((c) => perMark.has(c.name)), ...measureChannelSpecs(view)];
 }
 
+export function defaultFilterControl(channel: ChannelSpec): FilterSpec['control'] | null {
+  if (channel.role === 'temporal' || channel.type === 'date') return 'dateRange';
+  if (channel.role === 'dimension' && channel.type === 'dict') return 'select';
+  return null;
+}
+
+export function filterControl(view: ViewConfig, channel: ChannelSpec): FilterSpec['control'] | null {
+  return view.filters?.find((filter) => filter.channel === channel.name)?.control ??
+    (view.filters === undefined ? defaultFilterControl(channel) : null);
+}
+
 export const filterableChannels = (view: ViewConfig): ChannelSpec[] => {
-  const candidates = view.source.channels.filter((channel) => channel.role === 'dimension' || channel.role === 'temporal');
-  if (view.filters === undefined) return candidates;
-  const byName = new Map(candidates.map((channel) => [channel.name, channel]));
+  if (view.filters === undefined) return view.source.channels.filter((channel) => defaultFilterControl(channel) !== null);
+  const byName = new Map(view.source.channels.map((channel) => [channel.name, channel]));
   return view.filters.map((filter) => byName.get(filter.channel)).filter((channel): channel is ChannelSpec => channel !== undefined);
 };
 
 /** The filterable channels a view can actually answer, so only live controls render. Group regime:
- *  all of them (perMark → GPU predicate, perFact → fold context). Row regime: the aggregate reducer
- *  drops dimension/temporal columns from its tiles (each cell averages every slice), so nothing is
- *  filterable — offering those controls would silently blank the view (every mark reads MISSING_CODE). */
+ *  all of them (perMark → GPU predicate, perFact → fold context). Row aggregate tiles drop categorical
+ *  and temporal source columns, but retain reducer-produced numeric measures; an explicitly configured
+ *  range can therefore predicate the rendered value while unavailable controls stay hidden. */
 export function carriedFilterableChannels(manifest: Manifest): ChannelSpec[] {
   if (isGroupRegime(manifest.view)) return filterableChannels(manifest.view);
-  return manifest.reduction === 'aggregate' ? [] : filterableChannels(manifest.view);
+  const channels = filterableChannels(manifest.view);
+  if (manifest.reduction !== 'aggregate') return channels;
+  return channels.filter((channel) =>
+    filterControl(manifest.view, channel) === 'range' && channel.role === 'measure' && isNumericChannel(channel));
 }
 
 /** The channels whose values ride in the render tiles for the GPU filter. Group regime: the perMark
@@ -189,7 +202,10 @@ export async function discoverOptions(manifest: Manifest): Promise<Record<string
   const missing: ChannelSpec[] = [];
   for (const ch of channels) {
     const baked = manifest.channelDomains?.[ch.name];
-    if (baked?.values && !baked.valuesTruncated) options[ch.name] = baked.values;
+    if (filterControl(manifest.view, ch) === 'range' && isNumericChannel(ch) &&
+        baked?.min !== undefined && baked.max !== undefined)
+      options[ch.name] = [String(baked.min), String(baked.max)];
+    else if (baked?.values && !baked.valuesTruncated) options[ch.name] = baked.values;
     else missing.push(ch);
   }
   if (missing.length === 0) return options;
@@ -197,6 +213,18 @@ export async function discoverOptions(manifest: Manifest): Promise<Record<string
   const { table: t } = await fetchArrowTable(tileUrl(manifest.view.id, manifest.version, 0, 0, 0));
   for (const ch of missing) {
     const col = t.getChild(ch.name);
+    if (filterControl(manifest.view, ch) === 'range' && isNumericChannel(ch)) {
+      let min = Infinity;
+      let max = -Infinity;
+      if (col) for (let i = 0; i < t.numRows; i++) {
+        const value = Number(col.get(i));
+        if (!Number.isFinite(value)) continue;
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+      options[ch.name] = Number.isFinite(min) ? [String(min), String(max)] : [];
+      continue;
+    }
     const set = new Set<string>();
     if (col) for (let i = 0; i < t.numRows; i++) set.add(String(col.get(i)));
     options[ch.name] = [...set].sort();

@@ -25,6 +25,10 @@ public static class GroupRegimeArtifacts
     public static GroupArtifacts Build(ViewConfig authored, FactGrouping grouping,
         string factsPath, string marksPath, IChannelDomainScanner scanner)
     {
+        var numericRanges = (authored.Filters ?? [])
+            .Where(filter => filter.Control == ControlKind.Range)
+            .Select(filter => filter.Channel)
+            .ToHashSet(Ord);
         var renderView = EffectiveView.For(authored, grouping);
         var marksDomains = scanner.Scan(marksPath, renderView);
         var factsDomains = scanner.Scan(factsPath, authored);
@@ -42,7 +46,7 @@ public static class GroupRegimeArtifacts
         foreach (var (measure, dim) in argmaxDim)                     // argmax colour domain = its dim's
             if (factsDomains.TryGetValue(dim, out var dd)) domains[measure] = dd;
         foreach (var c in authored.Source.Channels)                  // perFact filter options
-            if (perFact.Contains(c.Name) && IsGrain(c) && factsDomains.TryGetValue(c.Name, out var fd))
+            if (perFact.Contains(c.Name) && IsGrain(c, numericRanges) && factsDomains.TryGetValue(c.Name, out var fd))
                 domains[c.Name] = fd;
 
         // Canonical dict order = the baked domain values when the scan is complete. An argmax measure and
@@ -55,7 +59,9 @@ public static class GroupRegimeArtifacts
         foreach (var name in renderView.DictionaryEncodedChannels())
             if (Order(name) is { } o) renderOrders[name] = o;
 
-        var grainChannels = authored.Source.Channels.Where(c => perFact.Contains(c.Name) && IsGrain(c)).ToList();
+        var grainChannels = authored.Source.Channels
+            .Where(c => perFact.Contains(c.Name) && IsGrain(c, numericRanges))
+            .ToList();
         var companionOrders = new Dictionary<string, IReadOnlyList<string>>(Ord);
         foreach (var c in grainChannels)
             if (c.Type == ChannelType.Dict && Order(c.Name) is { } o) companionOrders[c.Name] = o;
@@ -74,6 +80,7 @@ public static class GroupRegimeArtifacts
             grainChannels.Select(c => c.Name).ToList());
     }
 
-    private static bool IsGrain(ChannelSpec c) =>
-        c.Type == ChannelType.Dict || c.Type == ChannelType.Date || c.Role == ChannelRole.Temporal;
+    private static bool IsGrain(ChannelSpec c, IReadOnlySet<string> numericRanges) =>
+        c.Type == ChannelType.Dict || c.Type == ChannelType.Date || c.Role == ChannelRole.Temporal ||
+        numericRanges.Contains(c.Name);
 }

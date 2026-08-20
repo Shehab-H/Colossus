@@ -167,6 +167,13 @@ describe('decodeTile filterValues (GPU filter slots)', () => {
     expect(dn.filterValues![0]).toBe(Math.fround(NULL_DAY));
   });
 
+  it('keeps raw numeric values in a numeric range slot', () => {
+    const t = roundTrip({ x: xs, y: ys, pop: makeVector(new Float32Array([-2.5, 10, 42])) });
+    const view = pointView([{ name: 'pop', column: 'pop', role: 'measure', type: 'f32' }]);
+    const slots: FilterSlots = { specs: [{ name: 'pop', kind: 'numeric', min: -2.5, max: 42 }], size: 1 };
+    expect([...decodeTile(view, t, slots).filterValues!]).toEqual([-2.5, 10, 42]);
+  });
+
   it('interleaves multiple slots per mark in slot order', () => {
     const t = roundTrip({ x: xs, y: ys, feature: utf8Vec(['a', 'b', 'a']), day: makeVector(new Int32Array([0, 19723, 0])) });
     const view = pointView([
@@ -387,7 +394,7 @@ describe('decodeCompanion', () => {
       },
       measures: [{ name: 'total_tests', expr: 'sum(tests)' }],
     },
-    grainChannels: ['operator', 'quarter'],
+    grainChannels: ['operator', 'quarter', 'tests'],
   } as unknown as Manifest;
 
   it('splits mki, grain dims (codes), grain temporal (day numbers), and partial columns', () => {
@@ -395,6 +402,7 @@ describe('decodeCompanion', () => {
       mki: makeVector(new Int32Array([0, 0, 1])),
       operator: utf8Vec(['apex', 'zenith', 'apex']),
       quarter: utf8Vec(['2025-01-01', '2025-01-01', '2025-04-01']),
+      tests: makeVector(new Float32Array([10, 3, 20])),
       sum__tests: makeVector(new Float32Array([10, 3, 20])),
     });
     const c = decodeCompanion(table, companionGrain(manifest));
@@ -405,6 +413,7 @@ describe('decodeCompanion', () => {
     expect([...c.dim.operator.codes]).toEqual([0, 1, 0]);
     const day = (iso: string) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86400000);
     expect([...c.temporalDays.quarter]).toEqual([day('2025-01-01'), day('2025-01-01'), day('2025-04-01')]);
+    expect([...c.numericValues!.tests]).toEqual([10, 3, 20]);
     expect([...c.partial.sum__tests]).toEqual([10, 3, 20]);
   });
 

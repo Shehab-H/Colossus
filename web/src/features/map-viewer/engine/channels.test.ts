@@ -104,11 +104,25 @@ describe('authored filter curation', () => {
     expect(filterableChannels({ ...view, filters: [] })).toEqual([]);
   });
 
+  it('uses numeric min/max as the two input bounds for an explicit range', async () => {
+    const ranged = { ...view, filters: [{ channel: 'pop', control: 'range' as const }] };
+    const o = await discoverOptions({ ...manifest({ pop: { min: -12.5, max: 900 } }), view: ranged });
+    expect(o).toEqual({ pop: ['-12.5', '900'] });
+    expect(fetchArrowTable).not.toHaveBeenCalled();
+  });
+
   it('uses the explicit filter order and excludes unselected channels', () => {
     expect(filterableChannels({
       ...view,
       filters: [{ channel: 'day', control: 'dateRange' }],
     }).map((channel) => channel.name)).toEqual(['day']);
+  });
+
+  it('maps an explicitly selected numeric source channel into the curated list', () => {
+    expect(filterableChannels({
+      ...view,
+      filters: [{ channel: 'pop', control: 'range' }],
+    }).map((channel) => channel.name)).toEqual(['pop']);
   });
 });
 

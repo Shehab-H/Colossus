@@ -195,9 +195,9 @@ public sealed record RenderPack
     ///
     /// <para>The slot rule must match the client's <c>predicateChannels</c> exactly, because a slot column
     /// the client cannot find reads as <c>MISSING_CODE</c> — matched by nothing — so an omission here does
-    /// not fail loudly, it silently blanks the view on the first filter selection. Slots come from channel
-    /// <b>roles</b> (dimension/temporal), not from the authored <c>filters</c> list, which is routinely null
-    /// even for views with live filter controls.</para></summary>
+    /// not fail loudly, it silently blanks the view on the first filter selection. An omitted authored
+    /// filter list preserves the automatic dimension/temporal controls; an explicit list may additionally
+    /// opt numeric source channels into range controls.</para></summary>
     public static IReadOnlyList<string> FirstPaintChannels(
         ViewConfig view, ReductionKind reduction, IReadOnlyList<string>? perFactChannels = null)
     {
@@ -208,18 +208,26 @@ public sealed record RenderPack
         }
         Add(view.Encoding?.Color?.Channel);
 
-        // Row regime + aggregate: the reducer drops dimension/temporal columns (each cell averages every
-        // slice), so the view carries no filter slots at all — mirrors carriedFilterableChannels.
+        var byName = view.Source.Channels.ToDictionary(c => c.Name, StringComparer.Ordinal);
+        var controls = view.Filters?.ToDictionary(f => f.Channel, f => f.Control, StringComparer.Ordinal);
+        IEnumerable<ChannelSpec> filterable = view.Filters is null
+            ? view.Source.Channels.Where(c => c.Role is ChannelRole.Dimension or ChannelRole.Temporal)
+            : view.Filters.Select(f => byName.GetValueOrDefault(f.Channel)).OfType<ChannelSpec>();
+
+        // Row-regime aggregate tiles drop dimensions/temporals, but they do carry reducer-produced numeric
+        // measures (real mark value or merged-cell mean). Explicit numeric range filters can predicate that
+        // rendered value; every other row-aggregate filter remains unavailable.
         bool groupRegime = view.HasMeasures;
-        if (!groupRegime && reduction == ReductionKind.Aggregate) return ordered;
+        if (!groupRegime && reduction == ReductionKind.Aggregate)
+            filterable = filterable.Where(c =>
+                controls?.GetValueOrDefault(c.Name) == ControlKind.Range && c.Role == ChannelRole.Measure);
 
         // Group regime: a perFact selection is fold context, never a GPU predicate, so those columns are
         // not slots and stay lazy.
         var perFact = groupRegime && perFactChannels is not null
             ? new HashSet<string>(perFactChannels, StringComparer.Ordinal)
             : [];
-        foreach (var c in view.Source.Channels
-                     .Where(c => c.Role is ChannelRole.Dimension or ChannelRole.Temporal)
+        foreach (var c in filterable
                      .Where(c => !perFact.Contains(c.Name))
                      .Take(GpuFilterSlots))
             Add(c.Name);

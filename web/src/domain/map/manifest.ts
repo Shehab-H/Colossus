@@ -202,6 +202,8 @@ export interface FoldRoute {
 export interface SlabAxis {
   name: string;
   kind: 'categorical' | 'ordered';
+  /** Ordered-axis comparison semantics. Absent means the legacy ISO-date/string ordering. */
+  valueType?: 'date' | 'number';
   cardinality: number;
   cumulative: boolean;
   domain: string[];

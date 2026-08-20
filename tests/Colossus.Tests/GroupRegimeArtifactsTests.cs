@@ -39,6 +39,12 @@ public class GroupRegimeArtifactsTests : IDisposable
             new MeasureSpec { Name = "total_tests", Expr = "sum(tests)" },
             new MeasureSpec { Name = "dominant_operator", Expr = "argmax(operator, sum(tests))" },
         },
+        Filters = new[]
+        {
+            new FilterSpec { Channel = "operator", Control = ControlKind.Select },
+            new FilterSpec { Channel = "quarter", Control = ControlKind.DateRange },
+            new FilterSpec { Channel = "tests", Control = ControlKind.Range },
+        },
     };
 
     [Fact]
@@ -75,8 +81,9 @@ public class GroupRegimeArtifactsTests : IDisposable
         Assert.Equal(operators, art.RenderCanonicalOrders!["dominant_operator"]);
         Assert.Equal(operators, art.Companion.CanonicalDictionaryOrders!["operator"]);
 
-        Assert.Equal(new[] { "operator", "quarter" }, art.GrainChannels);
+        Assert.Equal(new[] { "operator", "quarter", "tests" }, art.GrainChannels);
         Assert.Contains("operator", art.FactChannels.PerFact);
+        Assert.Contains("tests", art.FactChannels.PerFact);
         Assert.True(art.CompanionTilesExpected());
     }
 }

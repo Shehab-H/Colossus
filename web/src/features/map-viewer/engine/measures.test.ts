@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
+import type { ViewConfig } from '@domain/map/manifest';
 import {
   ARGMAX_UNKNOWN,
   type CompanionData,
   type FoldContext,
+  buildFoldContext,
   foldTile,
   type MeasureExpr,
   parseMeasure,
@@ -46,6 +48,7 @@ describe('foldTile', () => {
     mki: new Int32Array([0, 0, 0, 1]),
     dim: { operator: { codes: new Uint8Array([0, 0, 1, 1]), dict: ['apex', 'zenith'] } },
     temporalDays: { quarter: new Float32Array([day('2025-01-01'), day('2025-04-01'), day('2025-01-01'), day('2025-01-01')]) },
+    numericValues: { tests: new Float32Array([10, 5, 3, 8]) },
     partial: {
       sum__tests: new Float32Array([10, 5, 3, 8]),
       swp__download_mbps__tests: new Float32Array([500, 200, 270, 160]),
@@ -85,10 +88,38 @@ describe('foldTile', () => {
     expect(r.dominant_operator[0]).toBe(0); // apex 10 still beats zenith 3
   });
 
+  test('numeric range context restricts the reducer input facts with inclusive endpoints', () => {
+    const r = fold({ equals: {}, ranges: { tests: { from: '5', to: '10' } } });
+    expect([...r.total_tests]).toEqual([15, 8]); // 10, 5 and 8 survive; 3 does not
+  });
+
+  test('an active open numeric range does not admit a missing numeric grain value', () => {
+    const withMissing = {
+      ...companion,
+      numericValues: { tests: Float32Array.from([10, 5, 2.0e38, 8]) },
+    };
+    const r = foldTile(withMissing, measures, { equals: {}, ranges: { tests: { from: '5', to: '' } } }, 2, domains);
+    expect([...r.total_tests]).toEqual([15, 8]);
+  });
+
   test('a selection outside the companion dictionary empties every mark', () => {
     const r = fold({ equals: { operator: 'nimbus' }, ranges: {} });
     expect(r.total_tests[0]).toBeNaN();
     expect(r.total_tests[1]).toBeNaN();
     expect([...r.dominant_operator]).toEqual([ARGMAX_UNKNOWN, ARGMAX_UNKNOWN]);
+  });
+});
+
+describe('buildFoldContext', () => {
+  test('maps an explicit numeric range to the same ordered context representation as dates', () => {
+    const view: ViewConfig = {
+      id: 'g', viewport: 'geo', mark: 'polygon',
+      source: {
+        adapter: 'test', query: '', geometry: { kind: 'quadkey' },
+        channels: [{ name: 'tests', column: 'tests', role: 'measure', type: 'f32' }],
+      },
+      filters: [{ channel: 'tests', control: 'range' }],
+    };
+    expect(buildFoldContext(view, { tests: '5..10' })).toEqual({ equals: {}, ranges: { tests: { from: '5', to: '10' } } });
   });
 });

@@ -14,7 +14,7 @@ namespace Colossus.Infrastructure.Tiles;
 /// drive the axis's canonical value rendering (<see cref="SlabAxisValue"/>).</summary>
 internal sealed record SlabAxisPlan(
     string Name, bool Categorical, IReadOnlyList<string> Domain, int Stride, bool Cumulative,
-    bool Temporal = false, string DuckType = "")
+    bool Temporal = false, string DuckType = "", bool Numeric = false)
 {
     public int Cardinality => Domain.Count;
 }
@@ -85,7 +85,8 @@ internal sealed class SlabPlan
         Cells = Cells,
         Occupancy = Occupancy,
         Axes = [.. Axes.Select(a => new SlabAxis(a.Name,
-            a.Categorical ? "categorical" : "ordered", a.Cardinality, a.Cumulative, a.Domain))],
+            a.Categorical ? "categorical" : "ordered", a.Cardinality, a.Cumulative, a.Domain,
+            a.Temporal ? "date" : a.Numeric ? "number" : null))],
         Partials = [.. Partials.Select(p => new SlabPartial(p.Name, p.Kind == PartialKind.Count ? "i32" : "f32"))],
     };
 
@@ -124,11 +125,12 @@ internal static class SlabPlanner
         {
             bool cat = ch.Type == ChannelType.Dict;
             bool temporal = !cat && (ch.Type == ChannelType.Date || ch.Role == ChannelRole.Temporal);
-            string duckType = temporal ? ColumnType(db, factsTable, ch.Name) : "";
+            bool numeric = !cat && !temporal;
+            string duckType = !cat ? ColumnType(db, factsTable, ch.Name) : "";
             IReadOnlyList<string> domain = cat
                 ? companion.CanonicalDictionaryOrders?.GetValueOrDefault(ch.Name) ?? ScanDomain(db, factsTable, ch.Name, cat, temporal, duckType)
                 : ScanDomain(db, factsTable, ch.Name, cat, temporal, duckType);
-            (cat ? categorical : ordered).Add(new SlabAxisPlan(ch.Name, cat, domain, 1, false, temporal, duckType));
+            (cat ? categorical : ordered).Add(new SlabAxisPlan(ch.Name, cat, domain, 1, false, temporal, duckType, numeric));
         }
 
         // Cell order: categorical axes (grain order) outer, ordered axes (grain order) inner/fastest. Only

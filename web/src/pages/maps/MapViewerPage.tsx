@@ -36,7 +36,7 @@ import { tileDeckData } from '@features/map-viewer/engine/deckData';
 import type { Manifest } from '@domain/map/manifest';
 import { columnValue, type TileData } from '@features/map-viewer/engine/tileData';
 import { isSlab } from '@features/map-viewer/engine/slab';
-import { carriedFilterableChannels, colorableChannels, splitFilters } from '@features/map-viewer/engine/channels';
+import { carriedFilterableChannels, colorableChannels, filterControl, splitFilters } from '@features/map-viewer/engine/channels';
 import { filterSlots, filterRanges, anyActive } from '@features/map-viewer/engine/gpuFilter';
 import { colorScaleExtension } from '@features/map-viewer/engine/colorScaleExtension';
 import { coverTiles } from '@features/map-viewer/engine/tiling';
@@ -433,6 +433,7 @@ export default function MapViewerPage({ mapId, surface }: { mapId: string; surfa
       colorChannel={colorChannel}
       onColorChannelChange={setColorChannel}
       channels={carriedFilterableChannels(manifest)}
+      controls={Object.fromEntries(carriedFilterableChannels(manifest).map((channel) => [channel.name, filterControl(manifest.view, channel)]))}
       options={options}
       filters={filters}
       onFilterChange={(name, value) => setFilters((current) => ({ ...current, [name]: value }))}

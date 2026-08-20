@@ -14,6 +14,11 @@ export interface DateRange {
   to: string;
 }
 
+export interface NumericRange extends DateRange {
+  lower?: number;
+  upper?: number;
+}
+
 /** Parse a temporal filter value into its (inclusive, possibly open) bounds, or null for "no predicate". */
 export function parseDateRange(value: string | undefined): DateRange | null {
   if (!value || value === ALL) return null;
@@ -28,6 +33,20 @@ export function parseDateRange(value: string | undefined): DateRange | null {
 export function makeDateRange(from: string, to: string): string {
   return from || to ? `${from}${RANGE_SEP}${to}` : ALL;
 }
+
+/** Parse the same open-ended `from..to` route representation as dates, validating finite numeric
+ *  endpoints. A bare number is an exact-value range. Invalid transient input is treated as inactive. */
+export function parseNumericRange(value: string | undefined): NumericRange | null {
+  const range = parseDateRange(value);
+  if (!range) return null;
+  const lower = range.from ? Number(range.from) : undefined;
+  const upper = range.to ? Number(range.to) : undefined;
+  if ((lower !== undefined && !Number.isFinite(lower)) || (upper !== undefined && !Number.isFinite(upper))) return null;
+  if (lower !== undefined && upper !== undefined && lower > upper) return null;
+  return { ...range, lower, upper };
+}
+
+export const makeNumericRange = makeDateRange;
 
 /** Whether a normalized YYYY-MM-DD value falls within a range. Lexicographic comparison of that fixed
  *  form equals chronological order, so no date parsing is needed on the per-row hot path. */

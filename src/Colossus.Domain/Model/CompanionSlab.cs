@@ -34,7 +34,13 @@ public sealed record CompanionSlab
 /// order; ordered: the sorted bin list) — self-contained so the client needn't re-derive it (the manifest's
 /// temporal channelDomain only records min/max). <see cref="Cumulative"/> marks the one ordered axis whose
 /// dense subtractable planes are prefix-summed.</summary>
-public sealed record SlabAxis(string Name, string Kind, int Cardinality, bool Cumulative, IReadOnlyList<string> Domain);
+public sealed record SlabAxis(
+    string Name,
+    string Kind,
+    int Cardinality,
+    bool Cumulative,
+    IReadOnlyList<string> Domain,
+    string? ValueType = null);
 
 /// <summary>A slab partial plane's name (the row-form partial name) and element type ("f32" or "i32").</summary>
 public sealed record SlabPartial(string Name, string Type);

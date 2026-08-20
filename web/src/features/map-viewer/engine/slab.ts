@@ -183,7 +183,7 @@ export function denseNeeds(
   for (const ch in ctx.ranges) {
     const i = ai(ch);
     if (i < 0 || axes[i].kind !== 'ordered') { impossible = true; continue; }
-    const [l, h] = resolveBins(axes[i].domain, ctx.ranges[ch].from, ctx.ranges[ch].to);
+    const [l, h] = resolveBins(axes[i], ctx.ranges[ch].from, ctx.ranges[ch].to);
     if (l > h) impossible = true;
     else if (i === cumAi) { lo = l; hi = h; }
     else rgs.push({ stride: strides[i], card: axes[i].cardinality, lo: l, hi: h });
@@ -277,13 +277,21 @@ export function mergeSlab(prev: SlabData, next: SlabData): void {
 
 const axisIndex = (axes: SlabAxis[], channel: string): number => axes.findIndex((a) => a.name === channel);
 
-/** Resolve an ordered range to [loBin, hiBin] over the axis's sorted domain (chronological == lexical on
- *  ISO). loBin > hiBin ⇒ empty. Open bounds span the full axis. */
-function resolveBins(domain: string[], from: string, to: string): [number, number] {
+/** Resolve an ordered range to [loBin, hiBin] over the axis's sorted domain. ISO dates compare
+ *  lexically; numeric axes compare parsed numbers so, for example, 10 correctly follows 2. */
+function resolveBins(axis: SlabAxis, from: string, to: string): [number, number] {
+  const domain = axis.domain;
   let lo = 0;
   let hi = domain.length - 1;
-  if (from) while (lo < domain.length && domain[lo] < from) lo++;
-  if (to) while (hi >= 0 && domain[hi] > to) hi--;
+  if (axis.valueType === 'number') {
+    const lower = from ? Number(from) : undefined;
+    const upper = to ? Number(to) : undefined;
+    if (lower !== undefined) while (lo < domain.length && Number(domain[lo]) < lower) lo++;
+    if (upper !== undefined) while (hi >= 0 && Number(domain[hi]) > upper) hi--;
+  } else {
+    if (from) while (lo < domain.length && domain[lo] < from) lo++;
+    if (to) while (hi >= 0 && domain[hi] > to) hi--;
+  }
   return [lo, hi];
 }
 
@@ -303,7 +311,7 @@ function compileCellMask(s: SlabData, ctx: FoldContext): { mask: Uint8Array; imp
     const ai = axisIndex(s.axes, ch);
     if (ai < 0 || s.axes[ai].kind !== 'ordered') { impossible = true; continue; }
     const r = ctx.ranges[ch];
-    const [lo, hi] = resolveBins(s.axes[ai].domain, r.from, r.to);
+    const [lo, hi] = resolveBins(s.axes[ai], r.from, r.to);
     if (lo > hi) impossible = true;
     else rgs.push({ stride: s.strides[ai], card: s.axes[ai].cardinality, lo, hi });
   }
@@ -485,7 +493,7 @@ function compileDenseContext(s: SlabData, ctx: FoldContext, cumAi: number, T: nu
   for (const ch in ctx.ranges) {
     const ai = axisIndex(s.axes, ch);
     if (ai < 0 || s.axes[ai].kind !== 'ordered') { impossible = true; continue; }
-    const [l, h] = resolveBins(s.axes[ai].domain, ctx.ranges[ch].from, ctx.ranges[ch].to);
+    const [l, h] = resolveBins(s.axes[ai], ctx.ranges[ch].from, ctx.ranges[ch].to);
     if (l > h) impossible = true;
     else if (ai === cumAi) { lo = l; hi = h; }
     else rgs.push({ stride: s.strides[ai], card: s.axes[ai].cardinality, lo: l, hi: h });

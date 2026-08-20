@@ -179,7 +179,7 @@ public class ViewConfigTests
     }
 
     [Fact]
-    public void Filters_RequireUniqueDimensionOrTemporalChannels()
+    public void Filters_RequireUniqueChannelsAndCompatibleControls()
     {
         (ValidGroup() with
         {
@@ -190,10 +190,10 @@ public class ViewConfigTests
             ],
         }).Validate();
 
-        Assert.Throws<ArgumentException>(() => (ValidGroup() with
+        (ValidGroup() with
         {
             Filters = [new FilterSpec { Channel = "tests", Control = ControlKind.Range }],
-        }).Validate());
+        }).Validate();
         Assert.Throws<ArgumentException>(() => (ValidGroup() with
         {
             Filters =
@@ -202,7 +202,44 @@ public class ViewConfigTests
                 new FilterSpec { Channel = "operator", Control = ControlKind.MultiSelect },
             ],
         }).Validate());
+
+        Assert.Throws<ArgumentException>(() => (ValidGroup() with
+        {
+            Filters = [new FilterSpec { Channel = "tests", Control = ControlKind.Select }],
+        }).Validate());
+        Assert.Throws<ArgumentException>(() => (ValidGroup() with
+        {
+            Filters = [new FilterSpec { Channel = "operator", Control = ControlKind.Range }],
+        }).Validate());
+        Assert.Throws<ArgumentException>(() => (ValidGroup() with
+        {
+            Filters = [new FilterSpec { Channel = "tests", Control = ControlKind.DateRange }],
+        }).Validate());
     }
+
+    [Theory]
+    [InlineData("10..20")]
+    [InlineData("10..")]
+    [InlineData("..20")]
+    [InlineData("12.5")]
+    [InlineData("-1.25..2e3")]
+    public void NumericRange_DefaultAcceptsInclusiveOpenOrExactBounds(string value) =>
+        (ValidGroup() with
+        {
+            Filters = [new FilterSpec { Channel = "tests", Control = ControlKind.Range, Default = value }],
+        }).Validate();
+
+    [Theory]
+    [InlineData("..")]
+    [InlineData("20..10")]
+    [InlineData("nope..20")]
+    [InlineData("NaN..20")]
+    [InlineData("1..Infinity")]
+    public void NumericRange_DefaultRejectsInvalidBounds(string value) =>
+        Assert.Throws<ArgumentException>(() => (ValidGroup() with
+        {
+            Filters = [new FilterSpec { Channel = "tests", Control = ControlKind.Range, Default = value }],
+        }).Validate());
 
     [Fact]
     public void BakeFilters_RejectEmptyPredicates() =>

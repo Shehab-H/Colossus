@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using Colossus.Domain.Measures;
 
 namespace Colossus.Domain.Model;
@@ -67,17 +68,29 @@ public sealed record ViewConfig
 
         if (Filters is { } filters)
         {
-            var filterable = Source.Channels
-                .Where(channel => channel.Role is ChannelRole.Dimension or ChannelRole.Temporal)
-                .Select(channel => channel.Name)
-                .ToHashSet(StringComparer.Ordinal);
+            var byName = Source.Channels.ToDictionary(channel => channel.Name, StringComparer.Ordinal);
             var configured = new HashSet<string>(StringComparer.Ordinal);
             foreach (var filter in filters)
             {
-                if (string.IsNullOrWhiteSpace(filter.Channel) || !filterable.Contains(filter.Channel))
-                    throw new ArgumentException($"view '{Id}': filter channel '{filter.Channel}' is not a declared dimension or temporal channel");
+                if (string.IsNullOrWhiteSpace(filter.Channel) || !byName.TryGetValue(filter.Channel, out var channel))
+                    throw new ArgumentException($"view '{Id}': filter channel '{filter.Channel}' is not a declared source channel");
                 if (!configured.Add(filter.Channel))
                     throw new ArgumentException($"view '{Id}': filter channel '{filter.Channel}' is configured more than once");
+                bool compatible = filter.Control switch
+                {
+                    ControlKind.Select or ControlKind.MultiSelect =>
+                        channel.Role == ChannelRole.Dimension && channel.Type == ChannelType.Dict,
+                    ControlKind.DateRange =>
+                        channel.Role == ChannelRole.Temporal || channel.Type == ChannelType.Date,
+                    ControlKind.Range => IsNumeric(channel.Type),
+                    _ => false,
+                };
+                if (!compatible)
+                    throw new ArgumentException(
+                        $"view '{Id}': filter control '{filter.Control}' is incompatible with channel " +
+                        $"'{filter.Channel}' ({channel.Role}/{channel.Type})");
+                if (filter.Control == ControlKind.Range && filter.Default is { } rangeDefault)
+                    ValidateNumericRangeDefault(rangeDefault, filter.Channel);
             }
         }
 
@@ -168,6 +181,29 @@ public sealed record ViewConfig
 
     private static bool IsNumeric(ChannelType t) => t is ChannelType.F32 or ChannelType.F64
         or ChannelType.U8 or ChannelType.U16 or ChannelType.I32 or ChannelType.I64;
+
+    private void ValidateNumericRangeDefault(string value, string channel)
+    {
+        int separator = value.IndexOf("..", StringComparison.Ordinal);
+        string from = separator < 0 ? value : value[..separator];
+        string to = separator < 0 ? value : value[(separator + 2)..];
+        if (string.IsNullOrWhiteSpace(from) && string.IsNullOrWhiteSpace(to))
+            throw new ArgumentException($"view '{Id}': range filter '{channel}' default must contain at least one bound");
+
+        double? Parse(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ||
+                !double.IsFinite(parsed))
+                throw new ArgumentException($"view '{Id}': range filter '{channel}' default contains an invalid number '{text}'");
+            return parsed;
+        }
+
+        double? lower = Parse(from);
+        double? upper = Parse(to);
+        if (lower > upper)
+            throw new ArgumentException($"view '{Id}': range filter '{channel}' default lower bound must not exceed its upper bound");
+    }
 }
 
 /// <summary>A source is a query plus a role mapping — never a bare table.</summary>

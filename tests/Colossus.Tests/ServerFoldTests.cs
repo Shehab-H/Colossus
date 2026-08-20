@@ -32,10 +32,10 @@ public class ServerFoldTests
         File.ReadAllText(Path.Combine(FindRepoRoot(), "tests", "fixtures", "measure-cases.json")));
 
     // The fixture's grain: operator (dict) + quarter (temporal DATE) — what the cells are keyed by.
-    private static readonly Dictionary<string, (bool Temporal, string DuckType)> Grain = new(StringComparer.Ordinal)
+    private static readonly Dictionary<string, (bool Temporal, bool Numeric, string DuckType)> Grain = new(StringComparer.Ordinal)
     {
-        ["operator"] = (false, "VARCHAR"),
-        ["quarter"] = (true, "DATE"),
+        ["operator"] = (false, false, "VARCHAR"),
+        ["quarter"] = (true, false, "DATE"),
     };
 
     private static List<ResolvedMeasure> FixtureMeasures() =>
@@ -112,6 +112,33 @@ public class ServerFoldTests
             // declared one by construction.
             Assert.Throws<MeasureParseException>(() => MeasureParser.Parse(expr));
         }
+    }
+
+    [Fact]
+    public void NumericRange_ContextPredicateFiltersRawReducerFactsInclusively()
+    {
+        var grain = new Dictionary<string, (bool Temporal, bool Numeric, string DuckType)>(StringComparer.Ordinal)
+        {
+            ["tests"] = (false, true, "FLOAT"),
+        };
+        var context = new FoldContextDto
+        {
+            Ranges = new Dictionary<string, FoldRangeDto>(StringComparer.Ordinal)
+            {
+                ["tests"] = new() { From = "5", To = "10" },
+            },
+        };
+        string predicate = FoldSql.ContextPredicate(context, grain);
+
+        using var db = DuckDbSession.InMemory();
+        db.Exec("CREATE TABLE facts (tests FLOAT); INSERT INTO facts VALUES (3), (5), (10), (12), (NULL)");
+        using var command = db.Connection.CreateCommand();
+        command.CommandText = $"SELECT tests FROM facts WHERE {predicate} ORDER BY tests";
+        using var reader = command.ExecuteReader();
+        var actual = new List<float>();
+        while (reader.Read()) actual.Add(reader.GetFloat(0));
+
+        Assert.Equal([5f, 10f], actual);
     }
 
     [Theory]

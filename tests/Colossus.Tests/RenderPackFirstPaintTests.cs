@@ -54,6 +54,17 @@ public class RenderPackFirstPaintTests
     }
 
     [Fact]
+    public void Aggregate_row_regime_carries_an_explicit_numeric_measure_range_slot()
+    {
+        var view = View(Ch("color", ChannelRole.Measure), Ch("value", ChannelRole.Measure), Ch("cat", ChannelRole.Dimension)) with
+        {
+            Filters = [new FilterSpec { Channel = "value", Control = ControlKind.Range }],
+        };
+
+        Assert.Equal(["color", "value"], RenderPack.FirstPaintChannels(view, ReductionKind.Aggregate));
+    }
+
+    [Fact]
     public void Group_regime_excludes_perFact_channels_from_slots()
     {
         // A perFact selection is fold context, never a GPU predicate — those columns stay lazy.

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using Colossus.Domain.Measures;
 
 namespace Colossus.Infrastructure.Fold;
@@ -96,7 +97,9 @@ internal static class FoldSql
     /// over the same recorded domain, so both routes select the same bins whatever the adapter's date
     /// storage. A context channel absent from the grain can match no cell: the whole fold is impossible
     /// (every mark → NaN / unknown), like the client's `impossible` short-circuit.</summary>
-    public static string ContextPredicate(FoldContextDto ctx, Dictionary<string, (bool Temporal, string DuckType)> grain)
+    public static string ContextPredicate(
+        FoldContextDto ctx,
+        Dictionary<string, (bool Temporal, bool Numeric, string DuckType)> grain)
     {
         var terms = new List<string>();
         foreach (var (ch, val) in ctx.Equals_ ?? [])
@@ -107,9 +110,28 @@ internal static class FoldSql
         foreach (var (ch, r) in ctx.Ranges ?? [])
         {
             if (!grain.TryGetValue(ch, out var info)) return "false";
-            string iso = Tiles.SlabAxisValue.Sql($"\"{ch}\"", categorical: false, info.Temporal, info.DuckType);
-            if (!string.IsNullOrEmpty(r.From)) terms.Add($"{iso} >= {FoldMeasureSql.StrLit(r.From!)}");
-            if (!string.IsNullOrEmpty(r.To)) terms.Add($"{iso} <= {FoldMeasureSql.StrLit(r.To!)}");
+            if (info.Numeric)
+            {
+                string value = $"CAST(\"{ch}\" AS DOUBLE)";
+                if (!string.IsNullOrEmpty(r.From))
+                {
+                    if (!double.TryParse(r.From, NumberStyles.Float, CultureInfo.InvariantCulture, out double lower) ||
+                        !double.IsFinite(lower)) return "false";
+                    terms.Add($"{value} >= {Sql.Dbl(lower)}");
+                }
+                if (!string.IsNullOrEmpty(r.To))
+                {
+                    if (!double.TryParse(r.To, NumberStyles.Float, CultureInfo.InvariantCulture, out double upper) ||
+                        !double.IsFinite(upper)) return "false";
+                    terms.Add($"{value} <= {Sql.Dbl(upper)}");
+                }
+            }
+            else
+            {
+                string iso = Tiles.SlabAxisValue.Sql($"\"{ch}\"", categorical: false, info.Temporal, info.DuckType);
+                if (!string.IsNullOrEmpty(r.From)) terms.Add($"{iso} >= {FoldMeasureSql.StrLit(r.From!)}");
+                if (!string.IsNullOrEmpty(r.To)) terms.Add($"{iso} <= {FoldMeasureSql.StrLit(r.To!)}");
+            }
         }
         return terms.Count == 0 ? "true" : string.Join(" AND ", terms);
     }

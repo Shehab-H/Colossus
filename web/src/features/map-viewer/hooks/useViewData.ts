@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ColorSpec, Manifest } from '@domain/map/manifest';
 import { loadManifest } from '@infrastructure/api/mapApi';
-import { ALL, activeFilters as pickActive, carriedFilterableChannels, colorChannelName, describeColorDomain, discoverOptions, isGroupRegime } from '../engine/channels';
+import { ALL, activeFilters as pickActive, carriedFilterableChannels, colorChannelName, describeColorDomain, discoverOptions, filterControl, isGroupRegime } from '../engine/channels';
 import { describeLegend, type ColorDomain } from '@domain/map/colorScale';
 import { buildColorLut } from '../engine/colorLut';
 import { activateTileVersion } from '@infrastructure/cache/tileCacheServiceWorker';
@@ -57,9 +57,12 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
         const defaults: Record<string, string> = {};
         for (const ch of carriedFilterableChannels(m)) {
           const opts = o[ch.name] ?? [];
-          const pick = ch.role === 'temporal' ? opts[opts.length - 1] : opts[0];
+          const control = filterControl(m.view, ch);
+          const pick = control === 'dateRange' ? opts[opts.length - 1] : opts[0];
           const authored = m.view.filters?.find((filter) => filter.channel === ch.name)?.default;
-          defaults[ch.name] = authored ?? (slice ? pick ?? ALL : ALL);
+          // Numeric ranges are opt-in predicates, never an implicit polygon slice. Starting at the
+          // dataset minimum would otherwise create an accidental exact-value filter.
+          defaults[ch.name] = authored ?? (slice && control !== 'range' ? pick ?? ALL : ALL);
         }
         setFilters({ ...defaults, ...seed?.filters });
       })

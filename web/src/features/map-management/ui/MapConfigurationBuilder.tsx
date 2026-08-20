@@ -8,7 +8,7 @@ import { ColorEncodingEditor } from './ColorEncodingEditor';
 
 interface FilterConfig {
   channel: string;
-  control: 'select' | 'dateRange';
+  control: 'select' | 'dateRange' | 'range';
   default?: string;
 }
 
@@ -39,11 +39,12 @@ export function MapConfigurationBuilder({
   onChange: <K extends keyof MapFormState>(field: K, value: MapFormState[K]) => void;
 }) {
   const channels = dataset?.draft.source.channels ?? [];
-  const filterable = channels.filter((channel) => channel.role === 'dimension' || channel.role === 'temporal');
+  const filterable = channels.filter((channel) => filterControlFor(channel) !== null);
+  const automaticCandidates = filterable.filter((channel) => channel.role === 'temporal' || channel.type === 'date' || (channel.role === 'dimension' && channel.type === 'dict'));
   const automaticFilters = !form.filters.trim();
   const filters = readArray<FilterConfig>(form.filters);
   const effectiveFilters = automaticFilters
-    ? filterable.map((channel) => ({ channel: channel.name, control: channel.role === 'temporal' ? 'dateRange' : 'select' }) as FilterConfig)
+    ? automaticCandidates.map((channel) => ({ channel: channel.name, control: filterControlFor(channel)! }) as FilterConfig)
     : filters;
   const measures = readArray<MeasureConfig>(form.measures);
   const encodingResult = readObjectResult<EncodingConfig>(form.encoding);
@@ -63,7 +64,7 @@ export function MapConfigurationBuilder({
   const setFilterEnabled = (channelName: string, enabled: boolean) => {
     const channel = filterable.find((candidate) => candidate.name === channelName);
     const next = effectiveFilters.filter((filter) => filter.channel !== channelName);
-    if (enabled && channel) next.push({ channel: channelName, control: channel.role === 'temporal' ? 'dateRange' : 'select' });
+    if (enabled && channel) next.push({ channel: channelName, control: filterControlFor(channel)! });
     write('filters', next);
   };
 
@@ -109,18 +110,18 @@ export function MapConfigurationBuilder({
       </section>
 
       <section className="maps-config__section">
-        <header className="maps-config__section-heading"><div><h3>Interactive filters</h3><p>Choose the carried dimensions and temporal channels exposed in the map controls.</p></div>{!automaticFilters && <Button size="sm" variant="ghost" onClick={() => write('filters', undefined, true)}>Use automatic controls</Button>}</header>
-        {automaticFilters && <div className="maps-config__mode-note"><strong>Automatic controls</strong><span>All dimension and temporal channels are enabled. Change a selection to create an explicit curated list.</span></div>}
-        {filterable.length === 0 ? <div className="maps-config__empty">This dataset has no dimension or temporal channels.</div> : (
+        <header className="maps-config__section-heading"><div><h3>Interactive filters</h3><p>Choose categorical, temporal, and numeric source channels exposed in the map controls.</p></div>{!automaticFilters && <Button size="sm" variant="ghost" onClick={() => write('filters', undefined, true)}>Use automatic controls</Button>}</header>
+        {automaticFilters && <div className="maps-config__mode-note"><strong>Automatic controls</strong><span>Categorical dimensions and temporal channels are enabled. Numeric ranges are opt-in; select one to create an explicit curated list.</span></div>}
+        {filterable.length === 0 ? <div className="maps-config__empty">This dataset has no supported interactive-filter channels.</div> : (
           <div className="maps-config__rows">
             {filterable.map((channel) => {
               const filter = effectiveFilters.find((candidate) => candidate.channel === channel.name);
               return <div className="maps-config__row maps-config__row--filter" key={channel.name}>
                 <label className="maps-config__toggle"><input type="checkbox" checked={Boolean(filter)} onChange={(event) => setFilterEnabled(channel.name, event.target.checked)} /><span><strong>{channel.name}</strong><small>{channel.role} · {channel.type}</small></span></label>
                 <Select aria-label={`${channel.name} filter control`} disabled={!filter} value={filter?.control ?? ''} onChange={(event) => updateFilter(channel.name, { control: event.target.value as FilterConfig['control'] })}>
-                  {(channel.role === 'temporal' ? ['dateRange'] : ['select']).map((control) => <option key={control} value={control}>{controlLabel(control)}</option>)}
+                  {[filterControlFor(channel)!].map((control) => <option key={control} value={control}>{controlLabel(control)}</option>)}
                 </Select>
-                <Input aria-label={`${channel.name} default value`} disabled={!filter} value={filter?.default ?? ''} placeholder="Optional default" onChange={(event) => updateFilter(channel.name, { default: event.target.value || undefined })} />
+                <Input aria-label={`${channel.name} default value`} disabled={!filter} value={filter?.default ?? ''} placeholder={filter?.control === 'range' ? 'Optional: min..max' : 'Optional default'} onChange={(event) => updateFilter(channel.name, { default: event.target.value || undefined })} />
               </div>;
             })}
           </div>
@@ -222,5 +223,15 @@ function readObjectResult<T extends object>(source: string): { value: Partial<T>
 
 function controlLabel(control: string): string {
   if (control === 'dateRange') return 'Date range';
+  if (control === 'range') return 'Numeric range';
   return 'Single select';
+}
+
+const NUMERIC_TYPES = new Set(['f32', 'f64', 'u8', 'u16', 'i32', 'i64']);
+
+function filterControlFor(channel: { role: string; type: string }): FilterConfig['control'] | null {
+  if (channel.role === 'temporal' || channel.type === 'date') return 'dateRange';
+  if (channel.role === 'dimension' && channel.type === 'dict') return 'select';
+  if (channel.role !== 'identity' && NUMERIC_TYPES.has(channel.type)) return 'range';
+  return null;
 }

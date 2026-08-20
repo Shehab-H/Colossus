@@ -1,6 +1,6 @@
 import type { Manifest } from '@domain/map/manifest';
-import { predicateChannels, canonicalCategories, parseDateRange, ALL } from './channels';
-import { MAX_SAFE_F32, NULL_DAY, dayNumber, dayNumberOfIso } from './dates';
+import { predicateChannels, canonicalCategories, filterControl, parseDateRange, ALL } from './channels';
+import { MAX_SAFE_F32, NULL_DAY, dayNumber, dayNumberOfIso, parseNumericRange } from './dates';
 
 // GPU filtering: every filter is a numeric range on one float slot of a DataFilterExtension. A filter
 // change is then a uniform update (filterRange/filterEnabled layer props) — no fetch, decode, or
@@ -18,8 +18,10 @@ const UNKNOWN_CATEGORY_RANGE: [number, number] = [-2, -2];
 
 export interface SlotSpec {
   name: string;
-  kind: 'temporal' | 'dimension';
+  kind: 'temporal' | 'numeric' | 'dimension';
   categories?: string[]; // dimension slots: the canonical category order; codes index this array
+  min?: number; // numeric slots: baked full-extract bounds, used for open-ended predicates
+  max?: number;
 }
 
 export interface FilterSlots {
@@ -27,7 +29,7 @@ export interface FilterSlots {
   size: 1 | 2 | 3 | 4;
 }
 
-/** The filter slots for a view: one per predicate-capable channel (a dimension/temporal channel whose
+/** The filter slots for a view: one per predicate-capable channel (categorical, temporal, or numeric) whose
  *  values the render tiles actually carry — perFact context channels fold instead, and row-regime
  *  aggregate tiles carry no dimensions at all), in a deterministic order, capped at 4
  *  (DataFilterExtension's max). Dimension slots carry the canonical category order (baked domain, else
@@ -42,16 +44,28 @@ export function filterSlots(manifest: Manifest, options?: Record<string, string[
         `channels past the 4th are not filtered.`,
     );
   const specs: SlotSpec[] = channels.slice(0, 4).map((ch) => {
-    const temporal = ch.role === 'temporal' || ch.type === 'date';
-    if (temporal) return { name: ch.name, kind: 'temporal' as const };
+    const control = filterControl(manifest.view, ch);
+    if (control === 'dateRange') return { name: ch.name, kind: 'temporal' as const };
+    if (control === 'range') {
+      const domain = manifest.channelDomains?.[ch.name];
+      const discovered = options?.[ch.name];
+      const fallbackMin = discovered?.[0] === undefined ? undefined : Number(discovered[0]);
+      const fallbackMax = discovered?.[discovered.length - 1] === undefined ? undefined : Number(discovered[discovered.length - 1]);
+      return {
+        name: ch.name,
+        kind: 'numeric' as const,
+        min: domain?.min ?? (Number.isFinite(fallbackMin) ? fallbackMin : undefined),
+        max: domain?.max ?? (Number.isFinite(fallbackMax) ? fallbackMax : undefined),
+      };
+    }
     return { name: ch.name, kind: 'dimension' as const, categories: canonicalCategories(manifest, ch.name) ?? options?.[ch.name] };
   });
   return { specs, size: specs.length as 1 | 2 | 3 | 4 };
 }
 
-/** The per-slot filter ranges for the active selection, in slot order. An absent/`(all)` selection or a
- *  temporal value with no real bounds is wide-open; a dimension equality is [code, code] (unknown value
- *  → [-2,-2]); an open-ended date side uses the ± sentinel. */
+/** The per-slot filter ranges for the active selection, in slot order. An absent/`(all)` selection is
+ *  wide-open; categorical equality is [code, code], while date and numeric controls use inclusive,
+ *  possibly open endpoints. */
 export function filterRanges(slots: FilterSlots, filters: Record<string, string>): [number, number][] {
   return slots.specs.map((spec) => {
     const value = filters[spec.name];
@@ -60,6 +74,11 @@ export function filterRanges(slots: FilterSlots, filters: Record<string, string>
       const r = parseDateRange(value);
       if (!r) return OPEN_RANGE;
       return [r.from ? dayNumberOfIso(r.from) : -MAX_SAFE_F32, r.to ? dayNumberOfIso(r.to) : MAX_SAFE_F32];
+    }
+    if (spec.kind === 'numeric') {
+      const r = parseNumericRange(value);
+      if (!r) return OPEN_RANGE;
+      return [r.lower ?? spec.min ?? -MAX_SAFE_F32, r.upper ?? spec.max ?? MAX_SAFE_F32];
     }
     const code = spec.categories?.indexOf(value) ?? -1;
     return code < 0 ? UNKNOWN_CATEGORY_RANGE : [code, code];
