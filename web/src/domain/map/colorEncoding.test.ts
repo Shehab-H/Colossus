@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   colorChannelOption,
+  colorSpecForChannel,
   defaultScheme,
   measureColorOption,
   previewSpec,
@@ -33,5 +34,20 @@ describe('color encoding authoring', () => {
       channel: 'operator', type: 'categorical', scheme: 'okabeIto', range: ['bad', '#fff'],
       unknown: 'broken', overrides: { A: '#123456', '': '#fff', B: 'bad' },
     })).toMatchObject({ range: undefined, unknown: undefined, overrides: { A: '#123456' } });
+  });
+
+  it('keeps one categorical palette across KPI measures over the same dimension', () => {
+    const authored = {
+      channel: 'dominant_by_download', type: 'categorical' as const,
+      palette: { apex: '#d55e00', nimbus: '#0072b2' }, unknown: '#6b7280',
+    };
+    expect(colorSpecForChannel(
+      authored,
+      'dominant_by_latency',
+      ['apex', 'nimbus'],
+      ['nimbus', 'apex'],
+    )).toEqual({ ...authored, channel: 'dominant_by_latency' });
+    expect(colorSpecForChannel(authored, 'avg_download', ['apex', 'nimbus'])).toEqual({ channel: 'avg_download' });
+    expect(colorSpecForChannel(authored, 'region', ['apex', 'nimbus'], ['north', 'south'])).toEqual({ channel: 'region' });
   });
 });

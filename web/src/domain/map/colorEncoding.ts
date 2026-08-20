@@ -36,6 +36,29 @@ export function recommendedColorSpec(channel: ColorChannelOption): ColorSpec {
     : { channel: channel.name, type: 'linear', scheme: DEFAULT_SEQUENTIAL };
 }
 
+/** Retarget an authored categorical style to another channel that produces the same category set.
+ *  Argmax/argmin measures over one dimension are distinct KPI choices but share the dimension's
+ *  semantic palette (for example, Apex must stay red whether dominance is by download or latency).
+ *  Numeric targets and unrelated categorical domains keep the normal inferred style. */
+export function colorSpecForChannel(
+  authored: ColorSpec | undefined,
+  channel: string,
+  authoredCategories?: string[],
+  targetCategories?: string[],
+): ColorSpec {
+  if (!authored || authored.channel === channel) return authored ?? { channel };
+  const categorical = authored.type === 'categorical' || authored.type === 'ordinal' ||
+    authored.palette !== undefined || authored.overrides !== undefined;
+  if (!categorical || !sameCategories(authoredCategories, targetCategories)) return { channel };
+  return { ...authored, channel };
+}
+
+function sameCategories(left?: string[], right?: string[]): boolean {
+  if (!left || !right || left.length !== right.length) return false;
+  const values = new Set(left);
+  return values.size === left.length && right.every(value => values.has(value));
+}
+
 export const NUMERIC_SCALE_TYPES: ScaleType[] = [
   'linear', 'log', 'sqrt', 'diverging', 'quantize', 'quantile', 'threshold', 'categorical',
 ];

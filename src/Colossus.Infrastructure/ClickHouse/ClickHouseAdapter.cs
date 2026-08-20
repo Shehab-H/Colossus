@@ -425,6 +425,13 @@ public sealed class ClickHouseAdapter(
         if (error is SourceOperationException sourceError) return sourceError;
         if (error is OperationCanceledException && ct.IsCancellationRequested)
             return new SourceOperationException(SourceErrorKind.Cancellation, "The source operation was cancelled.", innerException: error);
+        if (error is ClickHouseIncompleteResponseException incomplete)
+            return new SourceOperationException(
+                SourceErrorKind.TransientFailure,
+                incomplete.Message,
+                new Dictionary<string, string[]> { [field] = [incomplete.Detail] },
+                transient: true,
+                innerException: incomplete);
         if (error is HttpRequestException)
             return new SourceOperationException(
                 SourceErrorKind.Connectivity,

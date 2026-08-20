@@ -36,6 +36,7 @@ services:
         hard: 262144
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.d/disable-heavy-system-logs.xml:/etc/clickhouse-server/config.d/disable-heavy-system-logs.xml:ro
     environment:
       CLICKHOUSE_DB: colossus
       CLICKHOUSE_USER: colossus

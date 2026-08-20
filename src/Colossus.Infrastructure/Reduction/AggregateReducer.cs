@@ -39,7 +39,7 @@ public sealed class AggregateReducer(BakeResourceOptions? resources = null) : IR
         // is streamed into one facts.pack (companion-scale R1); leaf and internal levels alike.
         SlabPlan? plan = null;
         using SlabCompanionWriter? slab = ctx.Companion is { } companion
-            ? BuildSlabWriter(db, ctx, companion, hasShape, resources, out plan)
+            ? BuildSlabWriter(db, ctx, companion, resources, out plan)
             : null;
 
         BuildPyramid(db, ctx, tiles, ref leafTotal, slab, plan, hasShape);
@@ -50,47 +50,305 @@ public sealed class AggregateReducer(BakeResourceOptions? resources = null) : IR
         if (slabMeta is not null && slab?.TileLayouts is { } tileLayouts)
             slabMeta = slabMeta with { TileLayouts = tileLayouts };
         return new ReductionResult(tiles, leafTotal, pack, slabMeta,
-            ctx.Companion is not null ? WriteFoldFacts(db, ctx) : null);
-    }
-
-    // R4: the server fold's input, written here because this is where the facts are already tagged with
-    // zreal. The fold needs each fact's (x, y), the LOD level that decides real-vs-merged, the grain, and
-    // the measure channels — never the geometry, which existed only to derive zreal. Dropping it and
-    // baking zreal in turns every fold from "re-read and re-measure every polygon" into a column scan, and
-    // ordering by x lets a viewport's bbox prune row groups. Returns the file name for the manifest.
-    private static string WriteFoldFacts(DuckDbSession db, ReductionContext ctx)
-    {
-        string[] derived = [TileSchema.Geometry, TileSchema.PartOffsets, "ext"];
-        var present = Columns(db, "facts");
-        var drop = derived.Where(present.Contains).Select(c => $"\"{c}\"").ToArray();
-        string exclude = drop.Length > 0 ? $" EXCLUDE ({string.Join(", ", drop)})" : "";
-        string path = Path.Combine(ctx.OutputDirectory, FoldFactsFile);
-        db.Exec($"COPY (SELECT *{exclude} FROM facts ORDER BY {TileSchema.X}, {TileSchema.Y}) " +
-                $"TO '{Sql.Path(path)}' (FORMAT PARQUET)");
-        return FoldFactsFile;
-    }
-
-    private static HashSet<string> Columns(DuckDbSession db, string table)
-    {
-        var cols = new HashSet<string>(StringComparer.Ordinal);
-        using var cmd = db.Connection.CreateCommand();
-        cmd.CommandText = $"SELECT column_name FROM (DESCRIBE SELECT * FROM {table})";
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) cols.Add(r.GetString(0));
-        return cols;
+            ctx.Companion is not null ? FoldFactsFile : null);
     }
 
     // Facts share each mark's geometry, so a fact's zreal equals its mark's — the merge decision the marks
     // pyramid makes and the companion mirrors are the same. The slab plan (layout from measured occupancy +
     // axes) is decided once here from the loaded facts/marks.
     private static SlabCompanionWriter BuildSlabWriter(
-        DuckDbSession db, ReductionContext ctx, CompanionSpec companion, bool hasShape,
+        DuckDbSession db, ReductionContext ctx, CompanionSpec companion,
         BakeResourceOptions? resources, out SlabPlan plan)
     {
-        LoadTagged(db, "facts", companion.FactsParquetPath, ctx.Root, hasShape, includeGeometryIdentity: true, ctx.MaxZoom);
-        plan = SlabPlanner.Plan(db, companion, "facts", "t");
+        Directory.CreateDirectory(ctx.OutputDirectory);
+        var facts = LoadCompanionFacts(
+            db, companion, Path.Combine(ctx.OutputDirectory, FoldFactsFile), resources);
+        Console.WriteLine($"AggregateReducer companion facts ready: {facts.Rows:N0} rows, {facts.BatchCount} budget ranges, {facts.LeafNnz:N0} leaf cells.");
+        plan = SlabPlanner.Plan(db, companion, "facts", "t", facts.LeafNnz, facts.AxisDomains);
+        Console.WriteLine($"AggregateReducer slab plan ready: {plan.Cells} cells, occupancy {plan.Occupancy:0.000000}.");
         return new SlabCompanionWriter(ctx.OutputDirectory, plan,
             maxWorkingSetBytes: resources?.TileWorkingSetBytes ?? 0);
+    }
+
+    // Facts share geometry with the grouped marks, whose zreal was already derived while loading `t`.
+    // Materializing SELECT * here used to duplicate every polygon coordinate list for every fact (24M facts
+    // over ~2M marks in mobile-coverage) and recompute the same extent repeatedly. That work sits before the
+    // slab writer's bounded tile buffers, so it could exceed the bake envelope despite every later buffer
+    // respecting it. Keep only columns the companion SQL reads and join the mark's already-computed zreal by
+    // the persisted geometry fingerprint. A single 24M-row join+sort can make DuckDB's external-sort files,
+    // page cache and native buffers overlap even when its buffer pool is capped. Split the x-ordered stream
+    // into budget-derived ranges, sort each range, then concatenate those already ordered streams through the
+    // same Parquet writer. The final schema, global x/y order, row-group boundaries and bytes therefore do not
+    // depend on the batch count. The marks' public id is `p:<hex fingerprint>`; decode it on the bounded side
+    // of each join so both the fact sort and mark hash are proportional to the configured envelope.
+    internal static CompanionFactsWriteResult LoadCompanionFacts(
+        DuckDbSession db,
+        CompanionSpec companion,
+        string foldFactsPath,
+        BakeResourceOptions? resources)
+    {
+        var sourceColumns = ParquetColumnList(db, companion.FactsParquetPath);
+        var present = sourceColumns.ToHashSet(StringComparer.Ordinal);
+        var required = new List<string>
+        {
+            TileSchema.X,
+            TileSchema.Y,
+            MarkKey.GeometryIdentity,
+        };
+        var requiredSet = required.ToHashSet(StringComparer.Ordinal);
+        void Require(string column)
+        {
+            if (requiredSet.Add(column)) required.Add(column);
+        }
+
+        foreach (var channel in companion.GrainChannels) Require(channel.Name);
+        foreach (var partial in companion.Partials)
+        {
+            if (partial.Channel is { Length: > 0 } channel) Require(channel);
+            if (partial.Weight is { Length: > 0 } weight) Require(weight);
+        }
+
+        string[] missing = required.Where(column => !present.Contains(column)).ToArray();
+        if (missing.Length > 0)
+            throw new InvalidDataException(
+                $"Companion facts are missing required columns: {string.Join(", ", missing)}.");
+
+        static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"")}\"";
+        // file_row_number is an internal tie-breaker only. It makes the pre-existing x/y order deterministic
+        // for facts that share a mark, while remaining absent from the emitted schema.
+        string source = $"read_parquet('{Sql.Path(companion.FactsParquetPath)}', file_row_number = true)";
+        string projection = string.Join(", ", sourceColumns
+            .Where(column => column is not TileSchema.Geometry and not TileSchema.PartOffsets and not "ext")
+            .Select(column => $"f.{Quote(column)}"));
+        long sourceRows = db.Scalar($"SELECT count(*) FROM {source}");
+        long targetRows = CompanionBatchTargetRows(companion.FactsParquetPath, sourceRows, resources);
+        IReadOnlyList<CompanionFactBatch> batches = PlanCompanionBatches(db, source, sourceRows, targetRows);
+        string batchDirectory = Path.Combine(
+            Path.GetDirectoryName(Path.GetFullPath(foldFactsPath))!, $".facts-batches-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(batchDirectory);
+        long configuredThreads = db.Scalar("SELECT current_setting('threads')");
+        long configuredOpenFiles = db.Scalar("SELECT current_setting('partitioned_write_max_open_files')");
+        int assemblyRamMb = resources?.RamMb > 0 ? Math.Max(128, resources.RamMb / 5) : 0;
+
+        try
+        {
+            // Resolve the tiny exact axis domains before range generation fills the filesystem cache. The
+            // source scan projects one grain column at a time, so this is bounded and avoids even a small
+            // managed allocation at the high-water mark after all range files have been written.
+            var axisDomains = SlabPlanner.ScanDomains(
+                db, companion, [companion.FactsParquetPath]);
+            var batchPaths = new List<string>(batches.Count);
+            long leafNnz = 0;
+            for (int i = 0; i < batches.Count; i++)
+            {
+                var batch = batches[i];
+                string factPredicate = batch.Predicate("f");
+                string markPredicate = batch.Predicate("t");
+                string batchPath = Path.Combine(batchDirectory, $"{i:D5}.parquet");
+                batchPaths.Add(batchPath);
+                db.Exec($"""
+                    COPY (
+                      SELECT {projection}, marks.zreal
+                      FROM {source} f
+                      JOIN (
+                        SELECT unhex(substr({Quote(TileSchema.Id)}, 3)) AS geometry_key, zreal
+                        FROM t
+                        WHERE {markPredicate}
+                      ) marks ON f.{Quote(MarkKey.GeometryIdentity)} = marks.geometry_key
+                      WHERE {factPredicate}
+                      ORDER BY f.{Quote(TileSchema.X)}, f.{Quote(TileSchema.Y)}, f.file_row_number
+                    ) TO '{Sql.Path(batchPath)}' (FORMAT PARQUET, PRESERVE_ORDER true)
+                    """);
+                string grain = string.Concat(companion.GrainChannels.Select(channel => $", {Quote(channel.Name)}"));
+                leafNnz += db.Scalar($"SELECT count(DISTINCT ({TileSchema.X}, {TileSchema.Y}{grain})) " +
+                                     $"FROM read_parquet('{Sql.Path(batchPath)}')");
+            }
+            Console.WriteLine($"AggregateReducer wrote {batchPaths.Count} sorted companion ranges.");
+
+            db.Exec("SET preserve_insertion_order = true");
+            db.Exec("SET threads = 1");
+            db.Exec("SET partitioned_write_max_open_files = 1");
+            if (assemblyRamMb > 0) db.Exec($"SET memory_limit = '{assemblyRamMb}MB'");
+            IReadOnlyList<string> alignedChunks = sourceRows > 0
+                ? AlignParquetRowGroups(db, batchPaths, batchDirectory, sourceRows)
+                : batchPaths;
+            Console.WriteLine($"AggregateReducer aligned {alignedChunks.Count} Parquet row groups.");
+            string chunkList = ParquetList(alignedChunks);
+            db.Exec($"""
+                COPY (SELECT * FROM read_parquet({chunkList}))
+                TO '{Sql.Path(foldFactsPath)}' (FORMAT PARQUET, PRESERVE_ORDER true)
+                """);
+            Console.WriteLine("AggregateReducer wrote final fold facts Parquet.");
+            db.Exec($"CREATE VIEW facts AS SELECT * FROM read_parquet('{Sql.Path(foldFactsPath)}')");
+
+            long loadedRows = db.Scalar("SELECT count(*) FROM facts");
+            if (loadedRows != sourceRows)
+                throw new InvalidDataException(
+                    $"Companion facts matched {loadedRows:N0} of {sourceRows:N0} rows to grouped marks.");
+            return new CompanionFactsWriteResult(
+                batches.Count, sourceRows, targetRows, leafNnz, axisDomains);
+        }
+        finally
+        {
+            db.Exec($"SET partitioned_write_max_open_files = {configuredOpenFiles}");
+            db.Exec($"SET threads = {configuredThreads}");
+            db.Exec("SET preserve_insertion_order = false");
+            if (resources?.DuckDbRamMb > 0) db.Exec($"SET memory_limit = '{resources.DuckDbRamMb}MB'");
+            Directory.Delete(batchDirectory, recursive: true);
+        }
+    }
+
+    private const int ParquetRowGroupRows = 122_880;
+
+    // DuckDB can flush a Parquet row group when an input file ends. Normalize those boundaries without a
+    // whole-data table: first split the already ordered range files by their global row-group number, then
+    // merge only the (at most one-row-group) fragments for each number. The final writer sees the same row
+    // groups whether the expensive stage used one range or many, which is what makes byte identity testable.
+    private static IReadOnlyList<string> AlignParquetRowGroups(
+        DuckDbSession db,
+        IReadOnlyList<string> batchPaths,
+        string workDirectory,
+        long totalRows)
+    {
+        string partsRoot = Path.Combine(workDirectory, "row-group-parts");
+        string chunksRoot = Path.Combine(workDirectory, "row-groups");
+        Directory.CreateDirectory(partsRoot);
+        Directory.CreateDirectory(chunksRoot);
+
+        long offset = 0;
+        for (int i = 0; i < batchPaths.Count; i++)
+        {
+            string path = batchPaths[i];
+            long rows = db.Scalar($"SELECT count(*) FROM read_parquet('{Sql.Path(path)}')");
+            string pattern = $"b{i:D5}_{{uuid}}";
+            db.Exec($"""
+                COPY (
+                  SELECT * EXCLUDE (__row_group), __row_group
+                  FROM (
+                    SELECT *, (({offset} + row_number() OVER () - 1) / {ParquetRowGroupRows})::BIGINT AS __row_group
+                    FROM read_parquet('{Sql.Path(path)}')
+                  ) ordered
+                ) TO '{Sql.Path(partsRoot)}'
+                  (FORMAT PARQUET, PARTITION_BY (__row_group), WRITE_PARTITION_COLUMNS false,
+                   APPEND, FILENAME_PATTERN '{pattern}')
+                """);
+            offset += rows;
+        }
+        if (offset != totalRows)
+            throw new InvalidDataException(
+                $"Companion range files contain {offset:N0} rows; expected {totalRows:N0}.");
+
+        int chunkCount = checked((int)((totalRows + ParquetRowGroupRows - 1) / ParquetRowGroupRows));
+        var chunks = new List<string>(chunkCount);
+        for (int chunk = 0; chunk < chunkCount; chunk++)
+        {
+            string partition = Path.Combine(partsRoot, $"__row_group={chunk}");
+            string[] fragments = Directory.GetFiles(partition, "*.parquet")
+                .OrderBy(path => Path.GetFileName(path), StringComparer.Ordinal)
+                .ToArray();
+            string output = Path.Combine(chunksRoot, $"{chunk:D8}.parquet");
+            db.Exec($"""
+                COPY (SELECT * FROM read_parquet({ParquetList(fragments)}))
+                TO '{Sql.Path(output)}'
+                  (FORMAT PARQUET, ROW_GROUP_SIZE {ParquetRowGroupRows}, PRESERVE_ORDER true)
+                """);
+            chunks.Add(output);
+        }
+        return chunks;
+    }
+
+    private static string ParquetList(IEnumerable<string> paths) =>
+        "[" + string.Join(", ", paths.Select(path => $"'{Sql.Path(path)}'")) + "]";
+
+    private static long CompanionBatchTargetRows(
+        string sourcePath, long sourceRows, BakeResourceOptions? resources)
+    {
+        long ramBytes = resources?.RamBytes ?? 0;
+        if (sourceRows <= 0 || ramBytes <= 0) return long.MaxValue;
+
+        // The source is compressed and still contains repeated geometry, so use a conservative expansion
+        // rather than treating its on-disk bytes as the sort footprint. One tenth of the total envelope lets
+        // a larger machine run proportionally larger ranges while leaving room for the mark hash, DuckDB,
+        // the runtime and the filesystem cache. There is no fixed row ceiling.
+        long sourceBytes = new FileInfo(sourcePath).Length;
+        long estimatedRowBytes = Math.Max(64,
+            (long)Math.Ceiling((double)sourceBytes * 4 / Math.Max(1, sourceRows)));
+        long rangeBudgetBytes = Math.Max(16L * 1024 * 1024, ramBytes / 10);
+        return Math.Max(2_048, rangeBudgetBytes / estimatedRowBytes);
+    }
+
+    private static IReadOnlyList<CompanionFactBatch> PlanCompanionBatches(
+        DuckDbSession db, string source, long sourceRows, long targetRows)
+    {
+        if (sourceRows <= targetRows) return [CompanionFactBatch.All];
+
+        double minX = 0, maxX = 0;
+        bool hasX;
+        using (var cmd = db.Connection.CreateCommand())
+        {
+            cmd.CommandText = $"SELECT min({TileSchema.X})::DOUBLE, max({TileSchema.X})::DOUBLE FROM {source}";
+            using var reader = cmd.ExecuteReader();
+            reader.Read();
+            hasX = !reader.IsDBNull(0);
+            if (hasX)
+            {
+                minX = reader.GetDouble(0);
+                maxX = reader.GetDouble(1);
+            }
+        }
+
+        long wanted = (sourceRows + targetRows - 1) / targetRows;
+        int histogramBins = (int)Math.Min(65_536, Math.Max(2_048, wanted * 256));
+        string bucket = BucketSql("f", hasX, minX, maxX, histogramBins);
+        var counts = db.LongPairs($"""
+            SELECT ({bucket})::BIGINT AS bucket, count(*)::BIGINT
+            FROM {source} f
+            GROUP BY bucket
+            """).ToDictionary(pair => checked((int)pair.Item1), pair => pair.Item2);
+
+        var batches = new List<CompanionFactBatch>();
+        int low = 0;
+        long rows = 0;
+        for (int value = 0; value <= histogramBins; value++)
+        {
+            long bucketRows = counts.GetValueOrDefault(value);
+            if (rows > 0 && bucketRows > 0 && rows + bucketRows > targetRows)
+            {
+                batches.Add(new CompanionFactBatch(low, value - 1, hasX, minX, maxX, histogramBins));
+                low = value;
+                rows = 0;
+            }
+            rows += bucketRows;
+        }
+        batches.Add(new CompanionFactBatch(low, histogramBins, hasX, minX, maxX, histogramBins));
+        return batches;
+    }
+
+    private static string BucketSql(string alias, bool hasX, double minX, double maxX, int bins)
+    {
+        string x = $"{alias}.\"{TileSchema.X}\"";
+        if (!hasX || minX == maxX)
+            return $"CASE WHEN {x} IS NULL THEN {bins} ELSE 0 END";
+        return $"CASE WHEN {x} IS NULL THEN {bins} ELSE " +
+               $"least({bins - 1}, greatest(0, CAST(floor((CAST({x} AS DOUBLE) - {Sql.Lit(minX)}) " +
+               $"/ {Sql.Lit(maxX - minX)} * {bins}) AS BIGINT))) END";
+    }
+
+    internal sealed record CompanionFactsWriteResult(
+        int BatchCount,
+        long Rows,
+        long TargetRows,
+        long LeafNnz,
+        IReadOnlyDictionary<string, SlabAxisSeed> AxisDomains);
+
+    private sealed record CompanionFactBatch(
+        int Low, int High, bool HasX, double MinX, double MaxX, int Bins, bool Whole = false)
+    {
+        public static CompanionFactBatch All { get; } = new(0, 0, false, 0, 0, 0, Whole: true);
+
+        public string Predicate(string alias) => Whole
+            ? "true"
+            : $"{BucketSql(alias, HasX, MinX, MaxX, Bins)} BETWEEN {Low} AND {High}";
     }
 
     private static string[] Measures(ViewConfig view) => view.Source.Channels
@@ -154,8 +412,11 @@ public sealed class AggregateReducer(BakeResourceOptions? resources = null) : IR
     }
 
     private static HashSet<string> ParquetColumns(DuckDbSession db, string parquetPath)
+        => ParquetColumnList(db, parquetPath).ToHashSet(StringComparer.Ordinal);
+
+    private static IReadOnlyList<string> ParquetColumnList(DuckDbSession db, string parquetPath)
     {
-        var columns = new HashSet<string>(StringComparer.Ordinal);
+        var columns = new List<string>();
         using var cmd = db.Connection.CreateCommand();
         cmd.CommandText = $"SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('{Sql.Path(parquetPath)}'))";
         using var reader = cmd.ExecuteReader();
@@ -200,14 +461,17 @@ public sealed class AggregateReducer(BakeResourceOptions? resources = null) : IR
                     SELECT *, (row_number() OVER (PARTITION BY tx, ty ORDER BY "{TileSchema.Id}") - 1)::INTEGER AS mki
                     FROM ({contentSql})
                     """);
+                Console.WriteLine($"AggregateReducer z{z}: render content ready.");
                 written = ArrowTileWriter.WritePartitioned(db.Connection,
                     "SELECT * EXCLUDE (mki) FROM content ORDER BY tx, ty, mki", tilePath,
                     ctx.View.DictionaryEncodedChannels(), ctx.CanonicalDictionaryOrders, ctx.TileFormat);
+                Console.WriteLine($"AggregateReducer z{z}: {written.Count} render tiles written.");
 
                 // Companions ride the same active tiles (facts share their marks' (tx,ty)). Each tile's
                 // slab — CSR or dense cumulative planes at grain, keyed by mki — is appended to facts.pack.
                 var markCounts = written.ToDictionary(w => (w.Tx, w.Ty), w => w.Rows);
                 slab.AppendLevel(z, db.Connection, SlabCompanionSql(ctx.Root, z, companion, plan), markCounts);
+                Console.WriteLine($"AggregateReducer z{z}: companion slabs written.");
             }
             else
             {

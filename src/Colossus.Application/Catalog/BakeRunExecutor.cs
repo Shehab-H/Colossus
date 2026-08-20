@@ -249,6 +249,7 @@ public sealed class BakeRunExecutor(
                 }
                 catch (Exception error)
                 {
+                    Console.Error.WriteLine($"Bake run {run.Id} failed:{Environment.NewLine}{error}");
                     if (error is not ReleasePublicationException)
                         SafeCleanup(run.Definition.Id, attempt.Id);
                     var current = await RequiredRunAsync(run.Id, CancellationToken.None);

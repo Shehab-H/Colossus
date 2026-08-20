@@ -1,0 +1,11 @@
+<clickhouse>
+    <!--
+      The development container is intentionally capped at 3 GiB. These wide telemetry tables can
+      require several GiB for a background MergeTree merge and starve application queries even though
+      their compressed on-disk footprint is small. Container/stdout logs and system.query_log remain
+      available for diagnostics.
+    -->
+    <metric_log remove="1" />
+    <asynchronous_metric_log remove="1" />
+    <text_log remove="1" />
+</clickhouse>

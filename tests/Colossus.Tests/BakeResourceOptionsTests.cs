@@ -92,6 +92,32 @@ public sealed class BakeResourceOptionsTests : IDisposable
         Assert.DoesNotContain("uniqExact", handler.Sql, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ClickHouseExtraction_RejectsAnIncompleteHttp200ParquetBeforePromotion()
+    {
+        const string clickHouseError = "Code: 241. DB::Exception: Memory limit exceeded. (MEMORY_LIMIT_EXCEEDED)";
+        var handler = new StaticResponseHandler(Encoding.UTF8.GetBytes("PAR1partial parquet\n" + clickHouseError));
+        var clickHouse = new ClickHouseOptions { BaseUrl = "http://clickhouse.test:8123" };
+        using var client = new ClickHouseClient(new HttpClient(handler), clickHouse);
+        var adapter = new ClickHouseAdapter(
+            client,
+            new HttpClientFactory(handler),
+            Options.Create(clickHouse));
+        string destination = Path.Combine(_work.FullName, "incomplete.parquet");
+
+        var error = await Assert.ThrowsAsync<SourceOperationException>(() => adapter.ExtractAsync(
+            View() with { Source = View().Source with { Adapter = "clickhouse" } },
+            new Bbox(0, 0, 1, 1),
+            destination));
+
+        Assert.Equal(SourceErrorKind.TransientFailure, error.Kind);
+        Assert.True(error.Transient);
+        Assert.Contains("complete Parquet", error.Message, StringComparison.Ordinal);
+        Assert.Contains("MEMORY_LIMIT_EXCEEDED", error.FieldErrors["source.query"].Single(), StringComparison.Ordinal);
+        Assert.False(File.Exists(destination));
+        Assert.Empty(Directory.EnumerateFiles(_work.FullName, "*.partial-*"));
+    }
+
     private static ViewConfig View() => new()
     {
         Id = "budgeted",
@@ -118,6 +144,17 @@ public sealed class BakeResourceOptionsTests : IDisposable
                 Content = new StringContent("0\t1\t0\t1\t10\t10\n", Encoding.UTF8),
             };
         }
+    }
+
+    private sealed class StaticResponseHandler(byte[] body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(body),
+            });
     }
 
     private sealed class HttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory

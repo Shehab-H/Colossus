@@ -5,6 +5,7 @@ import { ALL, activeFilters as pickActive, carriedFilterableChannels, colorChann
 import { describeLegend, type ColorDomain } from '@domain/map/colorScale';
 import { buildColorLut } from '../engine/colorLut';
 import { activateTileVersion } from '@infrastructure/cache/tileCacheServiceWorker';
+import { colorSpecForChannel } from '@domain/map/colorEncoding';
 
 /** Optional startup overrides (from an embed URL): pin the color channel and/or pre-apply filters so an
  *  embedded map paints its intended state on the first frame instead of the authored default. */
@@ -94,10 +95,12 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
   // default for whatever channel the user picked.
   const colorSpec = useMemo<ColorSpec>(() => {
     const authored = manifest?.view.encoding?.color;
-    const base = authored && authored.channel === renderChannel ? authored : { channel: renderChannel };
+    const targetCategories = scale?.domain.kind === 'categorical' ? scale.domain.categories : undefined;
+    const authoredCategories = authored ? manifest?.channelDomains?.[authored.channel]?.values : undefined;
+    const base = colorSpecForChannel(authored, renderChannel, authoredCategories, targetCategories);
     const ov = initialRef.current?.colorSpec;
     return ov && ov.channel === renderChannel ? { ...base, ...ov, channel: renderChannel } : base;
-  }, [manifest, renderChannel]);
+  }, [manifest, renderChannel, scale]);
 
   // The GPU color LUT: colorScale.ts sampled into a texture + uniforms. Its identity changes exactly when
   // the mapping changes (measure/scale/theme), which is what re-uploads the texture; per-mark data never

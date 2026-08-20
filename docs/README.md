@@ -8,6 +8,12 @@ documentation for current work lives under `sagas/`; completed, deferred, or sup
 
 None. No forward roadmap is currently approved.
 
+## Candidate bugs
+
+- [Categorical color editor does not provide a usable category-to-color workflow](bugs/categorical-color-editor-category-mapping.md)
+  records the observed category-mapping, placeholder, fallback, and computed-measure typing defects. It is
+  documented for later prioritization and is not yet approved implementation work.
+
 ## Current working mode
 
 Harden the existing, verified design incrementally. New work should start from a concrete observed failure,
@@ -19,6 +25,7 @@ operational roadmap or create a replacement full-product plan without an explici
 - [AGENTS.md](AGENTS.md) is the persistent operating memory for this documentation system.
 - `sagas/<slug>/README.md` is the index and handoff record for one active initiative.
 - Each numbered saga file is one independently decidable work item.
+- `bugs/` contains concrete observed defects awaiting prioritization.
 - [archive/README.md](archive/README.md) indexes completed, superseded, and pre-index documentation.
 
 Only the index, operating memory, archive index, and active sagas belong outside the dated archive.

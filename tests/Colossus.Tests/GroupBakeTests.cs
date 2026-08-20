@@ -7,6 +7,7 @@ using Colossus.Application.Abstractions.Reduction;
 using Colossus.Domain.Tiling;
 using Colossus.Infrastructure;
 using Colossus.Infrastructure.Baking;
+using Colossus.Infrastructure.Configuration;
 using Colossus.Infrastructure.DuckDb;
 using Colossus.Infrastructure.Reduction;
 using Colossus.Infrastructure.Tiles;
@@ -50,7 +51,10 @@ public class GroupBakeTests : IDisposable
         },
     };
 
-    private (string OutDir, ReductionResult Result) GroupBake(string factsSql, ViewConfig? authored = null)
+    private (string OutDir, ReductionResult Result) GroupBake(
+        string factsSql,
+        ViewConfig? authored = null,
+        bool dropFactGeometryAfterGrouping = false)
     {
         authored ??= Authored;
         string factsPath = Path.Combine(_dir.FullName, "facts.parquet");
@@ -60,6 +64,14 @@ public class GroupBakeTests : IDisposable
             db.Exec($"COPY ({factsSql}) TO '{Sql.Path(factsPath)}' (FORMAT PARQUET)");
 
         var grouping = new DuckDbFactGrouper().GroupToMarks(factsPath, marksPath, authored);
+        if (dropFactGeometryAfterGrouping)
+        {
+            string projected = factsPath + ".projected";
+            using (var db = DuckDbSession.InMemory())
+                db.Exec($"COPY (SELECT * EXCLUDE (geometry, part_offsets) FROM read_parquet('{Sql.Path(factsPath)}')) " +
+                        $"TO '{Sql.Path(projected)}' (FORMAT PARQUET)");
+            File.Move(projected, factsPath, overwrite: true);
+        }
         var perFact = grouping.PerFactChannels.ToHashSet();
         var grain = authored.Source.Channels
             .Where(c => perFact.Contains(c.Name) && (c.Type == ChannelType.Dict || c.Type == ChannelType.Date))
@@ -82,6 +94,112 @@ public class GroupBakeTests : IDisposable
             },
         });
         return (outDir, result);
+    }
+
+    [Fact]
+    public void CompanionFactBatches_AreByteIdenticalToOpenBudget()
+    {
+        const int marks = 15_625;
+        const int rows = marks * 32;
+        string factsPath = Path.Combine(_dir.FullName, "batch-source.parquet");
+        using (var source = DuckDbSession.InMemory())
+            source.Exec($"""
+                COPY (
+                  SELECT (i % {marks} % 1_000)::FLOAT AS x,
+                         floor((i % {marks}) / 1_000)::FLOAT AS y,
+                         unhex(lpad(to_hex(i % {marks}), 64, '0')) AS "{MarkKey.GeometryIdentity}",
+                         'op-' || CAST(floor(i / {marks}) % 4 AS VARCHAR) AS operator,
+                         (floor(i / {marks}) % 8)::USMALLINT AS quarter,
+                         (i % 97)::FLOAT AS tests
+                  FROM range({rows}) r(i)
+                ) TO '{Sql.Path(factsPath)}' (FORMAT PARQUET)
+                """);
+
+        var companion = new CompanionSpec
+        {
+            FactsParquetPath = factsPath,
+            GrainChannels =
+            [
+                new ChannelSpec { Name = "operator", Column = "operator", Role = ChannelRole.Dimension, Type = ChannelType.Dict },
+                new ChannelSpec { Name = "quarter", Column = "quarter", Role = ChannelRole.Temporal, Type = ChannelType.Date },
+            ],
+            Partials = [new Partial(PartialKind.Sum, "tests")],
+        };
+
+        (string Path, AggregateReducer.CompanionFactsWriteResult Write) Render(string name, BakeResourceOptions? budget)
+        {
+            string work = Path.Combine(_dir.FullName, name);
+            Directory.CreateDirectory(work);
+            string output = Path.Combine(work, "facts.parquet");
+            using var db = DuckDbSession.OnDisk(work, budget);
+            db.Exec($"""
+                CREATE TABLE t AS
+                SELECT 'p:' || lpad(to_hex(i), 64, '0') AS id,
+                       (i % 1_000)::FLOAT AS x,
+                       floor(i / 1_000)::FLOAT AS y,
+                       3::INTEGER AS zreal
+                FROM range({marks}) r(i)
+                """);
+            return (output, AggregateReducer.LoadCompanionFacts(db, companion, output, budget));
+        }
+
+        var open = Render("open", new BakeResourceOptions { RamMb = 0, CpuCores = 2 });
+        var bounded = Render("bounded", new BakeResourceOptions { RamMb = 256, CpuCores = 2 });
+
+        Assert.Equal(1, open.Write.BatchCount);
+        Assert.True(bounded.Write.BatchCount > 1);
+        Assert.Equal(open.Write.Rows, bounded.Write.Rows);
+        Assert.Equal(open.Write.LeafNnz, bounded.Write.LeafNnz);
+        string openHash = FileHash(open.Path), boundedHash = FileHash(bounded.Path);
+        Assert.True(openHash == boundedHash,
+            $"open={openHash} ({new FileInfo(open.Path).Length} bytes; {ParquetGroups(open.Path)}), " +
+            $"bounded={boundedHash} ({new FileInfo(bounded.Path).Length} bytes; {ParquetGroups(bounded.Path)}), " +
+            $"ordered row mismatches={OrderedRowMismatches(open.Path, bounded.Path)}");
+        Assert.Empty(Directory.GetDirectories(Path.GetDirectoryName(bounded.Path)!, ".facts-batches-*"));
+    }
+
+    [Fact]
+    public void CompanionFacts_ReuseMarkZrealWithoutRetainingRepeatedGeometry()
+    {
+        var (outDir, result) = GroupBake($"""
+            SELECT * FROM (VALUES
+              (1::FLOAT,1::FLOAT, {Ring(1, 1)}, [0,5]::INTEGER[], 'apex',   DATE '2025-01-01', 10::FLOAT, 50::FLOAT),
+              (1::FLOAT,1::FLOAT, {Ring(1, 1)}, [0,5]::INTEGER[], 'zenith', DATE '2025-04-01',  5::FLOAT, 40::FLOAT),
+              (3::FLOAT,3::FLOAT, {Ring(3, 3)}, [0,5]::INTEGER[], 'zenith', DATE '2025-01-01',  8::FLOAT, 20::FLOAT))
+              v(x, y, geometry, part_offsets, operator, quarter, tests, download_mbps)
+            """, dropFactGeometryAfterGrouping: true);
+
+        var slab = ReadSlab(outDir, result, "0/0/0");
+        Assert.Equal(3, SlabCompanionReader.Facts(slab, result.CompanionSlab!));
+    }
+
+    private static string FileHash(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
+    }
+
+    private static string ParquetGroups(string path)
+    {
+        using var db = DuckDbSession.InMemory();
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = $"SELECT string_agg(CAST(row_group_num_rows AS VARCHAR), ',') " +
+                          $"FROM (SELECT DISTINCT row_group_id, row_group_num_rows FROM parquet_metadata('{Sql.Path(path)}') ORDER BY row_group_id)";
+        return cmd.ExecuteScalar()?.ToString() ?? "";
+    }
+
+    private static long OrderedRowMismatches(string left, string right)
+    {
+        using var db = DuckDbSession.InMemory();
+        return db.Scalar($"""
+            WITH a AS (SELECT row_number() OVER () rn, * FROM read_parquet('{Sql.Path(left)}')),
+                 b AS (SELECT row_number() OVER () rn, * FROM read_parquet('{Sql.Path(right)}'))
+            SELECT count(*) FROM a FULL JOIN b USING (rn)
+            WHERE a.x IS DISTINCT FROM b.x OR a.y IS DISTINCT FROM b.y
+               OR a."{MarkKey.GeometryIdentity}" IS DISTINCT FROM b."{MarkKey.GeometryIdentity}"
+               OR a.operator IS DISTINCT FROM b.operator OR a.quarter IS DISTINCT FROM b.quarter
+               OR a.tests IS DISTINCT FROM b.tests OR a.zreal IS DISTINCT FROM b.zreal
+            """);
     }
 
     [Fact]

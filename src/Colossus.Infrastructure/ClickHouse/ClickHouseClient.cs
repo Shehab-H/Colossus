@@ -16,6 +16,12 @@ public sealed class ClickHouseRequestException(HttpStatusCode statusCode, string
 public sealed class ClickHouseResponseTooLargeException(long maxBytes)
     : Exception($"ClickHouse response exceeded the {maxBytes:N0}-byte limit.");
 
+public sealed class ClickHouseIncompleteResponseException(string detail)
+    : Exception("ClickHouse ended the extraction before producing a complete Parquet response.")
+{
+    public string Detail { get; } = detail;
+}
+
 /// <summary>Typed transport over ClickHouse's HTTP query interface for text, JSON, and streamed
 /// Parquet responses.</summary>
 public sealed class ClickHouseClient : IDisposable
@@ -96,6 +102,9 @@ public sealed class ClickHouseClient : IDisposable
             }
             await file.FlushAsync(ct);
             file.Close();
+            string? incomplete = IncompleteParquetDetail(partial);
+            if (incomplete is not null)
+                throw new ClickHouseIncompleteResponseException(incomplete);
             File.Move(partial, destination, overwrite: true);
             progress?.Report(new SourceExtractProgress(written, Completed: true));
         }
@@ -126,6 +135,40 @@ public sealed class ClickHouseClient : IDisposable
     {
         Content = new StringContent(sql, Encoding.UTF8),
     };
+
+    private static string? IncompleteParquetDetail(string path)
+    {
+        const int magicLength = 4;
+        const int maxTailBytes = 64 * 1024;
+        ReadOnlySpan<byte> magic = "PAR1"u8;
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (file.Length < magicLength * 2)
+            return $"ClickHouse returned only {file.Length:N0} bytes; a Parquet file requires both PAR1 markers.";
+
+        Span<byte> marker = stackalloc byte[magicLength];
+        file.ReadExactly(marker);
+        bool hasHeader = marker.SequenceEqual(magic);
+        file.Position = file.Length - magicLength;
+        file.ReadExactly(marker);
+        if (hasHeader && marker.SequenceEqual(magic)) return null;
+
+        int tailLength = checked((int)Math.Min(file.Length, maxTailBytes));
+        byte[] tail = new byte[tailLength];
+        file.Position = file.Length - tailLength;
+        file.ReadExactly(tail);
+        string decoded = Encoding.UTF8.GetString(tail);
+        int exceptionStart = decoded.LastIndexOf("Code: ", StringComparison.Ordinal);
+        if (exceptionStart >= 0)
+        {
+            string serverError = new(decoded[exceptionStart..]
+                .Where(character => !char.IsControl(character) || character is '\r' or '\n' or '\t')
+                .ToArray());
+            return serverError.Trim();
+        }
+
+        string missing = hasHeader ? "footer" : "header and footer";
+        return $"ClickHouse returned {file.Length:N0} bytes without the required Parquet {missing} marker.";
+    }
 
     private static async Task ThrowIfError(HttpResponseMessage response, CancellationToken ct)
     {

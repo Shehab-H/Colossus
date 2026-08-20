@@ -19,6 +19,8 @@ internal sealed record SlabAxisPlan(
     public int Cardinality => Domain.Count;
 }
 
+internal sealed record SlabAxisSeed(IReadOnlyList<string> Domain, string DuckType);
+
 /// <summary>The canonical string form of an axis value — the one spelling the recorded domain, the cellId
 /// mapping, and the client's range compare must all agree on (SLAB-FORMAT §1; pinned by
 /// tests/fixtures/slab-cases.json, whose ordered domain is ISO <c>YYYY-MM-DD</c>).
@@ -117,7 +119,13 @@ internal static class SlabPlanner
     /// already loaded (raw facts, grouped marks). Categorical domains come from the companion's canonical
     /// dict orders; ordered domains are scanned distinct here (the manifest's temporal domain is only
     /// min/max).</summary>
-    public static SlabPlan Plan(DuckDbSession db, CompanionSpec companion, string factsTable, string marksTable)
+    public static SlabPlan Plan(
+        DuckDbSession db,
+        CompanionSpec companion,
+        string factsTable,
+        string marksTable,
+        long? leafNnz = null,
+        IReadOnlyDictionary<string, SlabAxisSeed>? axisDomains = null)
     {
         var categorical = new List<SlabAxisPlan>();
         var ordered = new List<SlabAxisPlan>();
@@ -126,10 +134,11 @@ internal static class SlabPlanner
             bool cat = ch.Type == ChannelType.Dict;
             bool temporal = !cat && (ch.Type == ChannelType.Date || ch.Role == ChannelRole.Temporal);
             bool numeric = !cat && !temporal;
-            string duckType = !cat ? ColumnType(db, factsTable, ch.Name) : "";
-            IReadOnlyList<string> domain = cat
+            SlabAxisSeed? seed = axisDomains?.GetValueOrDefault(ch.Name);
+            string duckType = seed?.DuckType ?? (!cat ? ColumnType(db, factsTable, ch.Name) : "");
+            IReadOnlyList<string> domain = seed?.Domain ?? (cat
                 ? companion.CanonicalDictionaryOrders?.GetValueOrDefault(ch.Name) ?? ScanDomain(db, factsTable, ch.Name, cat, temporal, duckType)
-                : ScanDomain(db, factsTable, ch.Name, cat, temporal, duckType);
+                : ScanDomain(db, factsTable, ch.Name, cat, temporal, duckType));
             (cat ? categorical : ordered).Add(new SlabAxisPlan(ch.Name, cat, domain, 1, false, temporal, duckType, numeric));
         }
 
@@ -148,7 +157,7 @@ internal static class SlabPlanner
         var cumAxis = cumIdx >= 0 ? axes[cumIdx] : null;
 
         long marks = Convert.ToInt64(db.Scalar($"SELECT count(*) FROM {marksTable}"), CultureInfo.InvariantCulture);
-        long nnz = LeafNnz(db, factsTable, companion.GrainChannels);
+        long nnz = leafNnz ?? LeafNnz(db, factsTable, companion.GrainChannels);
         double occupancy = marks > 0 && cells > 0 ? (double)nnz / ((double)marks * cells) : 0;
         bool dense = occupancy >= SlabPlan.DenseThreshold;
 
@@ -172,6 +181,48 @@ internal static class SlabPlanner
             CumulativeStride = cumAxis?.Stride ?? 1,
             CumulativeCardinality = cumAxis?.Cardinality ?? 1,
         };
+    }
+
+    /// <summary>Exact axis domains over budget range files. Each range contributes only its distinct raw
+    /// values to a tiny temporary table; the final scan applies the same canonical rendering and raw ordering
+    /// as <see cref="Plan"/> without rescanning the complete fold artifact.</summary>
+    public static IReadOnlyDictionary<string, SlabAxisSeed> ScanDomains(
+        DuckDbSession db,
+        CompanionSpec companion,
+        IReadOnlyList<string> factRanges)
+    {
+        var result = new Dictionary<string, SlabAxisSeed>(StringComparer.Ordinal);
+        if (factRanges.Count == 0) return result;
+
+        foreach (var ch in companion.GrainChannels)
+        {
+            bool categorical = ch.Type == ChannelType.Dict;
+            bool temporal = !categorical && (ch.Type == ChannelType.Date || ch.Role == ChannelRole.Temporal);
+            if (categorical && companion.CanonicalDictionaryOrders?.GetValueOrDefault(ch.Name) is { } canonical)
+            {
+                result[ch.Name] = new SlabAxisSeed(canonical, "");
+                continue;
+            }
+
+            string relation = $"read_parquet('{Sql.Path(factRanges[0])}')";
+            string duckType = ColumnType(db, relation, ch.Name);
+            string table = $"axis_domain_{Guid.NewGuid():N}";
+            string quoted = $"\"{ch.Name.Replace("\"", "\"\"")}\"";
+            try
+            {
+                db.Exec($"CREATE TEMP TABLE {table} AS SELECT {quoted} FROM {relation} LIMIT 0");
+                foreach (string path in factRanges)
+                    db.Exec($"INSERT INTO {table} SELECT {quoted} FROM read_parquet('{Sql.Path(path)}') " +
+                            $"WHERE {quoted} IS NOT NULL GROUP BY {quoted}");
+                result[ch.Name] = new SlabAxisSeed(
+                    ScanDomain(db, table, ch.Name, categorical, temporal, duckType), duckType);
+            }
+            finally
+            {
+                db.Exec($"DROP TABLE IF EXISTS {table}");
+            }
+        }
+        return result;
     }
 
     // Distinct leaf grain rows: one per (real mark, grain values) — the finest grain the leaf companions
