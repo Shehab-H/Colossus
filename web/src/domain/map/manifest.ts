@@ -60,6 +60,7 @@ export interface ColorSpec {
   bins?: number; // quantize / quantile
   thresholds?: number[]; // threshold
   palette?: Record<string, string>; // categorical: explicit value → hex
+  overrides?: Record<string, string>; // categorical: partial value → hex overrides over the selected palette
   unknown?: string; // color for unmapped / null values
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildColorScale, categoryKey, describeLegend, inferType, type ColorDomain } from './colorScale';
-import { hexToRgb } from './colors';
-import { sequentialStops } from './schemes';
+import { buildColorScale, categoryKey, describeLegend, inferType, type ColorDomain } from '@domain/map/colorScale';
+import { hexToRgb } from '@domain/map/colors';
+import { sequentialStops } from '@domain/map/schemes';
 import type { ColorSpec } from '@domain/map/manifest';
 
 const numeric = (min: number, max: number, sample?: number[]): ColorDomain => ({ kind: 'numeric', min, max, sample });
@@ -107,6 +107,20 @@ describe('categorical scales across datatypes', () => {
     expect(f('Orange')).toEqual(hexToRgb('#ff7900'));
     expect(f('Three')).toEqual(hexToRgb('#123456')); // unmapped
     expect(f(null)).toEqual(hexToRgb('#123456')); // null
+  });
+
+  it('applies partial overrides over normal categorical palette assignment', () => {
+    const base = buildColorScale(
+      { channel: 'op', type: 'categorical', scheme: 'okabeIto' },
+      categorical(['Vodafone', 'Orange', 'Etisalat']),
+    );
+    const overridden = buildColorScale(
+      { channel: 'op', type: 'categorical', scheme: 'okabeIto', overrides: { Orange: '#123456' } },
+      categorical(['Vodafone', 'Orange', 'Etisalat']),
+    );
+    expect(overridden('Vodafone')).toEqual(base('Vodafone'));
+    expect(overridden('Orange')).toEqual([18, 52, 86]);
+    expect(overridden('Etisalat')).toEqual(base('Etisalat'));
   });
 
   it('auto-assigns categories in fixed palette order', () => {

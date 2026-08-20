@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
-import { CatalogApiError, datasetsQuery, managedMapQuery, type CatalogDataset } from '@entities/catalog';
-import { useSaveManagedMapMutation } from '@features/map-management/api/mapManagementMutations';
-import { draftFromForm, emptyMapForm, formFromDraft, intervalFromParts, type MapFormState } from '@features/map-management/model/mapForm';
+import { CatalogApiError, datasetsQuery, managedMapQuery, type CatalogDataset, type MapDraft } from '@entities/catalog';
+import { ManagedMapPartialSaveError, useSaveManagedMapMutation } from '@features/map-management/api/mapManagementMutations';
+import { draftFromForm, emptyMapForm, formFromDraft, intervalFromParts, mapDraftsEqual, type MapFormState } from '@features/map-management/model/mapForm';
 import { MapConfigurationBuilder } from '@features/map-management/ui/MapConfigurationBuilder';
 import {
   Alert,
@@ -37,6 +37,8 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
   const [form, setForm] = useState<MapFormState>(emptyMapForm);
   const [mapRevision, setMapRevision] = useState<number | null>(null);
   const [policyRevision, setPolicyRevision] = useState<number | undefined>();
+  const [baselineDefinition, setBaselineDefinition] = useState<MapDraft | null>(null);
+  const [retryQueue, setRetryQueue] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const dirtyRef = useRef(false);
   const initializedRef = useRef<string | null>(null);
@@ -52,10 +54,12 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
       setForm(formFromDraft(detail.definition, detail.bakePolicy));
       setMapRevision(detail.summary.revision);
       setPolicyRevision(detail.bakePolicy?.revision);
+      setBaselineDefinition(detail.definition);
     } else {
       setForm({ ...emptyMapForm(), datasetId: datasets[0]?.id ?? '' });
       setMapRevision(null);
       setPolicyRevision(undefined);
+      setBaselineDefinition(null);
     }
     dirtyRef.current = false;
   }, [datasets, detail, editing, loadError, loading, mapId]);
@@ -77,6 +81,13 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
     () => datasets.find((dataset) => dataset.id === form.datasetId),
     [datasets, form.datasetId],
   );
+  const candidateDefinition = useMemo(() => draftFromForm(form).draft, [form]);
+  const definitionChanged = !editing || !baselineDefinition || !candidateDefinition
+    ? true
+    : !mapDraftsEqual(candidateDefinition, baselineDefinition);
+  const saveLabel = retryQueue
+    ? 'Retry queue & save policy'
+    : definitionChanged ? editing ? 'Save & queue bake' : 'Create & queue bake' : 'Save policy';
 
   const change = <K extends keyof MapFormState>(field: K, value: MapFormState[K]) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -100,6 +111,8 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
         expectedRevision: mapRevision ?? undefined,
         definition: parsed.draft,
         policyRevision,
+        definitionChanged,
+        queueBake: definitionChanged || retryQueue,
         policy: {
           enabled: form.scheduleEnabled,
           interval: intervalFromParts(form),
@@ -109,8 +122,15 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
         },
       });
       dirtyRef.current = false;
-      await navigate(`/maps/manage/${saved.id}`);
+      await navigate(`/maps/manage/${saved.saved.id}`, { state: saved.run ? { queuedRunId: saved.run.id } : undefined });
     } catch (reason) {
+      if (reason instanceof ManagedMapPartialSaveError) {
+        setMapRevision(reason.saved.revision);
+        setBaselineDefinition(reason.saved.draft);
+        setRetryQueue(reason.phase === 'queue');
+        setMessage(reason.message);
+        return;
+      }
       if (reason instanceof CatalogApiError) {
         setErrors(reason.fieldErrors);
         setMessage(reason.message);
@@ -135,11 +155,12 @@ export default function MapEditorPage({ mapId }: { mapId?: string }) {
           eyebrow={editing ? 'Edit map' : 'New map'}
           title={editing ? form.title || form.slug : 'Create map configuration'}
           description="Define the dataset binding, rendering configuration, interaction contract, and bake policy."
-          actions={<><Button variant="secondary" onClick={cancel}>Cancel</Button><Button variant="primary" type="submit" disabled={saveMutation.isPending || loading || datasets.length === 0}>{saveMutation.isPending ? 'Saving…' : editing ? 'Save changes' : 'Create map'}</Button></>}
+          actions={<><Button variant="secondary" onClick={cancel}>Cancel</Button><Button variant="primary" type="submit" disabled={saveMutation.isPending || loading || datasets.length === 0}>{saveMutation.isPending ? 'Saving and queueing…' : saveLabel}</Button></>}
         />
 
         {message && <Alert tone="danger">{message}</Alert>}
         {errors.definition && <Alert tone="danger">{errors.definition.join(' ')}</Alert>}
+        <Alert tone="warning">Saving map-definition changes queues a full bake. The current verified release stays public until the new revision passes verification and publishes.</Alert>
 
         {loading ? <LoadingState>Loading editor…</LoadingState> : (
           <div className="maps-editor__grid">

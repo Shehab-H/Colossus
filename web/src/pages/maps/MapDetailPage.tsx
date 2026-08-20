@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import type { ManagedMapDetail } from '@entities/catalog';
 import { managedMapQuery } from '@entities/catalog';
-import { useArchiveMapMutation, useBakePolicyMutation, useCancelMapRunMutation, useRunMapMutation } from '@features/map-management/api/mapManagementMutations';
+import { useArchiveMapMutation, useBakePolicyMutation, useCancelMapRunMutation, usePinMapReleaseMutation, useReconcileMapReleasesMutation, useRunMapMutation } from '@features/map-management/api/mapManagementMutations';
 import { hoursToInterval } from '@features/map-management/model/mapForm';
 import { embedHref, formatBytes, formatDate, publicationLabel, publicationTone, viewerHref } from '@features/map-management/model/presentation';
 import { Alert, Badge, Button, ConfirmDialog, LoadingState, PageHeader, PaddedCard, StatCard, type BadgeTone } from '@shared/ui';
@@ -17,18 +17,22 @@ function publicationBadgeTone(state: ManagedMapDetail['summary']['publicationSta
 
 export default function MapDetailPage({ mapId }: { mapId: string }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const queuedRunId = (location.state as { queuedRunId?: string } | null)?.queuedRunId;
   const detailQuery = useQuery(managedMapQuery(mapId));
   const runMutation = useRunMapMutation();
   const cancelRunMutation = useCancelMapRunMutation();
   const policyMutation = useBakePolicyMutation();
   const archiveMutation = useArchiveMapMutation();
+  const pinReleaseMutation = usePinMapReleaseMutation();
+  const reconcileMutation = useReconcileMapReleasesMutation();
   const detail = detailQuery.data ?? null;
-  const operationError = detailQuery.error ?? runMutation.error ?? cancelRunMutation.error ?? policyMutation.error ?? archiveMutation.error;
+  const operationError = detailQuery.error ?? runMutation.error ?? cancelRunMutation.error ?? policyMutation.error ?? archiveMutation.error ?? pinReleaseMutation.error ?? reconcileMutation.error;
   const [localError, setLocalError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const error = localError ?? (operationError instanceof Error ? operationError.message : operationError ? String(operationError) : null);
-  const busy = runMutation.isPending ? 'run' : policyMutation.isPending ? 'schedule' : archiveMutation.isPending ? 'archive' : null;
+  const busy = runMutation.isPending ? 'run' : policyMutation.isPending ? 'schedule' : archiveMutation.isPending ? 'archive' : reconcileMutation.isPending ? 'reconcile' : null;
 
   const runNow = async () => {
     setLocalError(null);
@@ -61,6 +65,18 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
     catch { /* mutation state owns the rendered error */ }
   };
 
+  const pinRelease = async (releaseId: string, pinned: boolean) => {
+    setLocalError(null);
+    try { await pinReleaseMutation.mutateAsync({ mapId, releaseId, pinned }); }
+    catch { /* mutation state owns the rendered error */ }
+  };
+
+  const reconcileReleases = async () => {
+    setLocalError(null);
+    try { await reconcileMutation.mutateAsync(mapId); }
+    catch { /* mutation state owns the rendered error */ }
+  };
+
   const archive = async () => {
     if (!detail) return;
     setLocalError(null);
@@ -83,6 +99,7 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
   return (
     <ManagementShell actions={<ButtonRouteLink variant="ghost" to="/maps">All maps</ButtonRouteLink>}>
       {error && <Alert tone="danger">{error}</Alert>}
+      {queuedRunId && <Alert>A bake was queued for the saved configuration. Run ID: <code>{queuedRunId}</code></Alert>}
       {!detail ? <LoadingState>Loading map details…</LoadingState> : (
         <div className="maps-detail">
           <PageHeader
@@ -109,7 +126,15 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
           <div className="maps-detail__grid">
             <PaddedCard className="maps-detail__card maps-detail__card--preview">
               <CardHeading eyebrow="Preview" title="Published map" action={<ButtonRouteLink variant="ghost" size="sm" to={viewerHref(detail.summary.slug)}>Open full viewer</ButtonRouteLink>} />
-              {detail.summary.archived ? <p className="maps-detail__note">Archived maps cannot open a new viewer.</p> : <iframe className="maps-detail__preview" src={embedHref(detail.summary.slug)} title={`${detail.summary.title} preview`} loading="lazy" />}
+              {detail.summary.archived
+                ? <p className="maps-detail__note">Archived maps cannot open a new viewer.</p>
+                : <iframe
+                    key={detail.summary.currentRelease ?? `unpublished-${detail.summary.revision}`}
+                    className="maps-detail__preview"
+                    src={embedHref(detail.summary.slug)}
+                    title={`${detail.summary.title} preview`}
+                    loading="lazy"
+                  />}
             </PaddedCard>
 
             <PaddedCard className="maps-detail__card">
@@ -150,8 +175,8 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
             </PaddedCard>
 
             <PaddedCard className="maps-detail__card maps-detail__card--wide">
-              <CardHeading eyebrow="Publication" title="Releases" />
-              {detail.releases.length === 0 ? <p className="maps-detail__note">No catalog-tracked release has been published yet.</p> : <div className="maps-detail__history">{detail.releases.map((release) => <div className="maps-detail__history-row maps-detail__history-row--release" key={release.id}><strong>{release.version}</strong><span>{formatDate(release.publishedAt)}</span><span>{formatBytes(release.outputBytes)}</span><code>{release.artifactLocation}</code></div>)}</div>}
+              <CardHeading eyebrow="Publication" title="Releases" action={<Button variant="ghost" size="sm" disabled={busy === 'reconcile'} onClick={() => void reconcileReleases()}>{busy === 'reconcile' ? 'Reconciling…' : 'Run retention'}</Button>} />
+              {detail.releases.length === 0 ? <p className="maps-detail__note">No catalog-tracked release has been published yet.</p> : <div className="maps-detail__history">{detail.releases.map((release) => <div className="maps-detail__history-row maps-detail__history-row--release" key={release.id}><strong>{release.version}</strong>{release.pinned && <Badge tone="info">Pinned</Badge>}<span>{formatDate(release.publishedAt)}</span><span>{formatBytes(release.outputBytes)}</span><span>{release.sourceRows?.toLocaleString() ?? '—'} rows · {release.tileCount?.toLocaleString() ?? '—'} tiles</span><Badge tone={release.verificationPassed ? 'success' : 'neutral'}>{release.verificationPassed ? 'Verified' : 'Legacy / unverified'}</Badge><Button variant="ghost" size="sm" disabled={pinReleaseMutation.isPending} onClick={() => void pinRelease(release.id, !release.pinned)}>{release.pinned ? 'Unpin' : 'Pin'}</Button><code>{release.artifactLocation}</code></div>)}</div>}
             </PaddedCard>
           </div>
 

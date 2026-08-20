@@ -1,6 +1,9 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Colossus.Application.Abstractions.Sources;
+using Colossus.Application.Abstractions.Baking;
+using Colossus.Application.Abstractions.Catalog;
+using Colossus.Application.Catalog;
 using Colossus.Domain.Catalog;
 using Colossus.Domain.Model;
 using Colossus.Infrastructure.Sources;
@@ -27,6 +30,8 @@ public sealed class CatalogApiTests : IDisposable
             .UseSetting("ConnectionStrings:Database", _database.ConnectionString)
             .UseSetting("Scheduling:Enabled", "false")
             .UseSetting("Storage:LegacyViewsDirectory", legacy)
+            .UseSetting("Storage:TilesDirectory", Path.Combine(_dir.FullName, "tiles"))
+            .UseSetting("Storage:StagingDirectory", Path.Combine(_dir.FullName, "staging"))
             .ConfigureServices(services =>
             {
                 services.RemoveAll<ISourceAdapter>();
@@ -120,6 +125,16 @@ public sealed class CatalogApiTests : IDisposable
             Assert.Equal("queued", detail.RootElement.GetProperty("summary").GetProperty("publicationState").GetString());
             Assert.True(detail.RootElement.GetProperty("bakePolicy").GetProperty("enabled").GetBoolean());
             Assert.Equal("queued", Assert.Single(detail.RootElement.GetProperty("runs").EnumerateArray()).GetProperty("status").GetString());
+            Assert.Equal(
+                "#d55e00",
+                detail.RootElement.GetProperty("definition").GetProperty("encoding").GetProperty("color")
+                    .GetProperty("overrides").GetProperty("priority").GetString());
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var run = await scope.ServiceProvider.GetRequiredService<IBakeRunRepository>().FindAsync(runId);
+            Assert.Equal("#d55e00", run!.Definition.Encoding!.Color!.Overrides!["priority"]);
         }
 
         var cancel = await client.PostAsync($"/api/maps/{mapId}/runs/{runId}/cancel", content: null);
@@ -136,6 +151,81 @@ public sealed class CatalogApiTests : IDisposable
         var archivedSummary = Assert.Single(archivedList.RootElement.EnumerateArray());
         Assert.Equal("archived", archivedSummary.GetProperty("publicationState").GetString());
         Assert.True(archivedSummary.GetProperty("archived").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ReleasePinAndReconciliation_KeepCurrentAndDeleteOnlyExpiredVersions()
+    {
+        using var client = _factory.CreateClient();
+        Guid datasetId = await CreateDatasetAsync(client);
+        using var created = await PostMapAsync(client, datasetId, "release-map");
+        Guid mapId = created.RootElement.GetProperty("id").GetGuid();
+
+        using var scope = _factory.Services.CreateScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<ProductCatalogService>();
+        var runRepository = scope.ServiceProvider.GetRequiredService<IBakeRunRepository>();
+        var releaseRepository = scope.ServiceProvider.GetRequiredService<IReleaseRepository>();
+        var work = scope.ServiceProvider.GetRequiredService<IBakeStore>();
+        var artifacts = scope.ServiceProvider.GetRequiredService<IReleaseArtifactStore>();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        async Task<CatalogRelease> AddRelease(string version, DateTimeOffset published, bool current)
+        {
+            BakeRun run = await catalog.CaptureBakeRunAsync(mapId);
+            _ = await runRepository.UpdateAsync(run with
+            {
+                Status = BakeRunStatus.Succeeded,
+                Stage = BakeRunStage.Succeeded,
+                CompletedAt = published,
+            });
+            string attempt = $"{run.Id:N}-a1";
+            var manifest = ApiManifest("release-map", version);
+            await work.WriteManifestAsync(manifest, attempt);
+            string directory = work.VersionDirectory("release-map", version, attempt);
+            string hash = work.PreparedManifestHash("release-map", version, attempt);
+            long bytes = work.PreparedVersionSize("release-map", version, attempt);
+            artifacts.MakeAddressable(new ReleaseArtifactUpload(
+                "release-map", version, attempt, directory, hash));
+            if (current) artifacts.PublishCurrent("release-map", version);
+            return await releaseRepository.CreateAsync(new CatalogRelease(
+                Guid.NewGuid(), mapId, run.Id, version, artifacts.Location("release-map", version),
+                published, bytes,
+                ManifestHash: hash, SourceSnapshot: run.Definition, SourceRows: 1, TileCount: 1,
+                VerificationPassed: true, VerifiedAt: published, PreparedAt: published, AttemptId: attempt));
+        }
+
+        CatalogRelease expired = await AddRelease("v-expired", now.AddDays(-30), current: false);
+        _ = await AddRelease("v-current", now, current: true);
+
+        var policy = await client.PutAsJsonAsync($"/api/maps/{mapId}/bake-policy", new
+        {
+            enabled = false,
+            timeZoneId = "UTC",
+            allowOverlap = false,
+            retainSuccessfulReleases = 1,
+            retainSuccessfulFor = "01:00:00",
+        });
+        policy.EnsureSuccessStatusCode();
+
+        var pin = await client.PutAsync($"/api/maps/{mapId}/releases/{expired.Id}/pin?pinned=true", null);
+        pin.EnsureSuccessStatusCode();
+        using (var pinned = JsonDocument.Parse(await pin.Content.ReadAsStringAsync()))
+            Assert.True(pinned.RootElement.GetProperty("pinned").GetBoolean());
+        var unpin = await client.PutAsync($"/api/maps/{mapId}/releases/{expired.Id}/pin?pinned=false", null);
+        unpin.EnsureSuccessStatusCode();
+
+        var reconcile = await client.PostAsync($"/api/maps/{mapId}/releases/reconcile", null);
+        reconcile.EnsureSuccessStatusCode();
+        using var report = JsonDocument.Parse(await reconcile.Content.ReadAsStringAsync());
+        Assert.Contains(report.RootElement.GetProperty("decisions").EnumerateArray(), value =>
+            value.GetProperty("identity").GetString() == "v-expired" &&
+            value.GetProperty("action").GetString() == "deleted");
+        Assert.Contains(report.RootElement.GetProperty("decisions").EnumerateArray(), value =>
+            value.GetProperty("identity").GetString() == "v-current" &&
+            value.GetProperty("reason").GetString() == "current");
+        Assert.True(artifacts.TryReadCurrent("release-map", out string currentVersion));
+        Assert.Equal("v-current", currentVersion);
+        Assert.False(artifacts.Exists("release-map", "v-expired"));
     }
 
     [Fact]
@@ -263,12 +353,48 @@ public sealed class CatalogApiTests : IDisposable
             datasetId,
             viewport = "geo",
             mark = "point",
-            encoding = new { color = new { channel = "value" } },
+            encoding = new
+            {
+                color = new
+                {
+                    channel = "value",
+                    type = "categorical",
+                    scheme = "okabeIto",
+                    domain = new[] { "standard", "priority" },
+                    overrides = new { priority = "#d55e00" },
+                    unknown = "#999999",
+                },
+            },
             inspect = new { channels = new[] { "value" } },
         });
         response.EnsureSuccessStatusCode();
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
     }
+
+    private static Manifest ApiManifest(string viewId, string version) => new()
+    {
+        Version = version,
+        View = new ViewConfig
+        {
+            Id = viewId,
+            Viewport = Viewport.Geo,
+            Mark = Mark.Point,
+            Source = new SourceSpec
+            {
+                Query = "SELECT x, y FROM fixture",
+                Geometry = new GeometrySpec { Kind = GeometryKind.Xy, X = "x", Y = "y" },
+            },
+        },
+        Reduction = ReductionKind.RawPassthrough,
+        Regime = "large",
+        Root = new Bbox(0, 0, 1, 1),
+        MinZoom = 0,
+        MaxZoom = 0,
+        TilePointBudget = 10,
+        TotalPoints = 1,
+        SourceRows = 1,
+        Tiles = [new TileMeta(0, 0, 0, 1, true)],
+    };
 
     private static void AssertSecretFree(string json)
     {

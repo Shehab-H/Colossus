@@ -49,12 +49,16 @@ public interface IBakeRunRepository
     Task<IReadOnlyList<BakeRun>> ListIncompleteAsync(CancellationToken ct = default);
     Task<BakeRun> UpdateAsync(BakeRun run, CancellationToken ct = default);
     Task<BakeRun> RequestCancellationAsync(Guid id, DateTimeOffset requestedAt, CancellationToken ct = default);
+    Task<BakeRun> SupersedeQueuedAsync(Guid id, long supersededByRevision, DateTimeOffset supersededAt,
+        CancellationToken ct = default);
     Task<BakeRun> AttachBackgroundJobAsync(Guid id, string backgroundJobId, CancellationToken ct = default);
 }
 
 public interface IReleaseRepository
 {
     Task<CatalogRelease> CreateAsync(CatalogRelease release, CancellationToken ct = default);
+    Task<CatalogRelease> UpdateAsync(CatalogRelease release, CancellationToken ct = default);
     Task<CatalogRelease?> FindForRunAsync(Guid runId, CancellationToken ct = default);
     Task<IReadOnlyList<CatalogRelease>> ListForMapAsync(Guid mapId, CancellationToken ct = default);
+    Task<IReadOnlyList<CatalogRelease>> ListAllForMapAsync(Guid mapId, CancellationToken ct = default);
 }

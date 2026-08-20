@@ -32,6 +32,10 @@ public static class ServiceCollectionExtensions
         services.AddOptions<StorageOptions>()
             .Bind(configuration.GetSection(StorageOptions.Section))
             .PostConfigure(o => o.ResolvePaths());
+        var releaseArtifacts = new ReleaseArtifactOptions();
+        configuration.GetSection(ReleaseArtifactOptions.Section).Bind(releaseArtifacts);
+        releaseArtifacts.Normalize();
+        services.AddSingleton(releaseArtifacts);
         services.AddOptions<RenderingOptions>()
             .Bind(configuration.GetSection(RenderingOptions.Section));
         services.AddOptions<ParquetSourceOptions>()
@@ -59,8 +63,22 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IReductionCatalog, ReductionCatalog>();
         services.AddSingleton<ITileReader, ArrowTileReader>();
         services.AddSingleton<IStagingReader, DuckDbStagingReader>();
-        services.AddSingleton<IBakeStore>(sp => new FileBakeStore(
+        services.AddSingleton<IPreparedReleaseVerifier, PreparedReleaseVerifier>();
+        services.AddSingleton(sp => new FileBakeStore(
             sp.GetRequiredService<IOptions<StorageOptions>>()));
+        services.AddSingleton<IBakeStore>(sp => sp.GetRequiredService<FileBakeStore>());
+        if (releaseArtifacts.Provider == "s3")
+        {
+            services.AddSingleton<IS3ObjectClient, AwsS3ObjectClient>();
+            services.AddSingleton<IReleaseArtifactStore>(sp => new S3ReleaseArtifactStore(
+                sp.GetRequiredService<IS3ObjectClient>(),
+                releaseArtifacts.Bucket!,
+                releaseArtifacts.Prefix));
+        }
+        else
+        {
+            services.AddSingleton<IReleaseArtifactStore>(sp => sp.GetRequiredService<FileBakeStore>());
+        }
         string catalogConnection = configuration.GetConnectionString(DatabaseOptions.ConnectionStringName)
             ?? throw new InvalidOperationException(
                 $"ConnectionStrings:{DatabaseOptions.ConnectionStringName} is required.");
@@ -103,6 +121,11 @@ public static class ServiceCollectionExtensions
         configuration.GetSection(BakeRunExecutionOptions.Section).Bind(bakeExecution);
         bakeExecution.Normalize();
         services.AddSingleton(bakeExecution);
+        var releaseMaintenance = new ReleaseMaintenanceOptions();
+        configuration.GetSection(ReleaseMaintenanceOptions.Section).Bind(releaseMaintenance);
+        releaseMaintenance.Normalize();
+        services.AddSingleton(releaseMaintenance);
+        services.AddSingleton<ReleaseMaintenanceService>();
         services.AddSingleton<BakeRunExecutor>();
         services.AddSingleton<SourcePreviewService>();
         services.AddSingleton<LegacyViewImporter>();

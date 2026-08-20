@@ -44,6 +44,7 @@ public sealed class BakeResourceOptionsTests : IDisposable
     {
         var resources = new BakeResourceOptions { CpuCores = 1, RamMb = 512 };
         resources.Normalize();
+        Assert.Equal(204, resources.DuckDbRamMb);
 
         using var db = DuckDbSession.OnDisk(_work.FullName, resources);
         Assert.Equal(1, db.Scalar("SELECT current_setting('threads')"));
@@ -53,6 +54,18 @@ public sealed class BakeResourceOptionsTests : IDisposable
         string memory = Convert.ToString(command.ExecuteScalar())!;
         Assert.EndsWith("MiB", memory, StringComparison.Ordinal);
         Assert.DoesNotContain("GiB", memory, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DuckDb_OnDiskCreatesAMissingWorkDirectory()
+    {
+        string workDirectory = Path.Combine(_work.FullName, "missing", "nested");
+        Assert.False(Directory.Exists(workDirectory));
+
+        using var db = DuckDbSession.OnDisk(workDirectory);
+
+        Assert.True(Directory.Exists(workDirectory));
+        Assert.Equal(1, db.Scalar("SELECT 1"));
     }
 
     [Fact]
@@ -73,6 +86,8 @@ public sealed class BakeResourceOptionsTests : IDisposable
         });
 
         Assert.Contains("max_threads = 2", handler.Sql, StringComparison.Ordinal);
+        Assert.Contains("max_memory_usage = 536870912", handler.Sql, StringComparison.Ordinal);
+        Assert.Contains("max_bytes_before_external_group_by = 134217728", handler.Sql, StringComparison.Ordinal);
         Assert.Contains("uniqCombined64", handler.Sql, StringComparison.Ordinal);
         Assert.DoesNotContain("uniqExact", handler.Sql, StringComparison.Ordinal);
     }

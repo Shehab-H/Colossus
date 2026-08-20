@@ -1,5 +1,6 @@
 // Low-level color primitives. No scheme or scale knowledge — just hex parsing and stop interpolation,
-// the pieces schemes.ts and colorScale.ts build on.
+// the pieces schemes.ts and colorScale.ts build on. This lives in the domain layer so editor previews,
+// legends, and GPU lookup tables share one color authority.
 
 export type RGB = [number, number, number];
 

@@ -1,5 +1,5 @@
 import type { ColorSpec } from '@domain/map/manifest';
-import { buildColorScale, scaleShape, type ColorDomain } from './colorScale';
+import { buildColorScale, scaleShape, type ColorDomain } from '@domain/map/colorScale';
 
 // The color scale, sampled into a small RGBA8 texture the GPU reads per mark. `buildColorScale` stays
 // the single authority: every texel is `colorOf` evaluated at a real value, so the GPU can't disagree

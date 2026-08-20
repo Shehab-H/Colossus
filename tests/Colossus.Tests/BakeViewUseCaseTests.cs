@@ -33,13 +33,20 @@ public sealed class BakeViewUseCaseTests : IDisposable
             new FoldRoutingOptions(),
             new NoCompression(),
             new NoPacking(),
+            new AcceptingVerifier(),
+            store,
             new FixedTimeProvider(new DateTimeOffset(2026, 8, 10, 12, 34, 56, TimeSpan.Zero)));
 
-        var outcome = await useCase.BakeAsync(View(), progress);
+        var attempt = new BakeAttempt(
+            "run-123-a1", "v20260810T123456000Z-run12345-a1", Publish: true);
+        var outcome = await useCase.BakeAsync(View(), attempt, progress);
 
-        Assert.Equal("v20260810T123456Z", outcome.Version);
-        Assert.Equal(store.StagingPath("characterized-map"), source.ExtractDestination);
-        Assert.Equal(store.VersionDirectory("characterized-map", outcome.Version!), reduction.Context!.OutputDirectory);
+        Assert.Equal(attempt.Version, outcome.Version);
+        Assert.Equal(store.StagingPath("characterized-map", attempt.Id), source.ExtractDestination);
+        Assert.Contains(attempt.Id, reduction.Context!.OutputDirectory);
+        Assert.NotEqual(store.VersionDirectory("characterized-map", outcome.Version!), reduction.Context.OutputDirectory);
+        Assert.True(outcome.VerificationPassed);
+        Assert.NotNull(outcome.ManifestHash);
         Assert.True(store.TryReadLatestVersion("characterized-map", out var current));
         Assert.Equal(outcome.Version, current);
 
@@ -140,6 +147,11 @@ public sealed class BakeViewUseCaseTests : IDisposable
     {
         public RenderPack? PackVersion(string versionDirectory, IReadOnlyList<TileMeta> tiles,
             IReadOnlyList<string> firstPaintChannels) => null;
+    }
+
+    private sealed class AcceptingVerifier : IPreparedReleaseVerifier
+    {
+        public ReleaseVerification Verify(PreparedRelease release) => ReleaseVerification.Pass;
     }
 
     private sealed class ProgressRecorder : IProgress<BakeProgress>

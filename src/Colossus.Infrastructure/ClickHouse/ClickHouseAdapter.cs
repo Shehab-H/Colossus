@@ -175,6 +175,14 @@ public sealed class ClickHouseAdapter(
     {
         var settings = new List<string>();
         if (_resources.CpuCores > 0) settings.Add($"max_threads = {_resources.CpuCores}");
+        if (_resources.RamBytes > 0)
+        {
+            // The external database needs its own query ceiling: the application-side DuckDB limit cannot
+            // protect ClickHouse while it probes, groups, or orders the source. Spill well before the hard
+            // query limit so a valid bake completes more slowly instead of failing under ordinary pressure.
+            settings.Add($"max_memory_usage = {_resources.RamBytes}");
+            settings.Add($"max_bytes_before_external_group_by = {_resources.SourceSpillThresholdBytes}");
+        }
         if (includeSortSpill)
             settings.Add($"max_bytes_before_external_sort = {_resources.SourceSpillThresholdBytes}");
         return settings.Count == 0 ? "" : "\nSETTINGS " + string.Join(",\n         ", settings);

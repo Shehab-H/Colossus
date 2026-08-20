@@ -28,8 +28,9 @@ public interface IBakePipeline
 {
     Task<BakeOutcome> BakeAsync(
         ViewConfig snapshot,
+        BakeAttempt attempt,
         IProgress<BakeProgress>? progress = null,
         CancellationToken ct = default);
-    long VersionSize(string viewId, string version);
-    void Cleanup(string viewId);
+    void Publish(BakeOutcome outcome);
+    void Cleanup(string viewId, string attemptId);
 }

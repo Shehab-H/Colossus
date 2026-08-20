@@ -65,6 +65,18 @@ app.UseSwaggerUI(o =>
 Directory.CreateDirectory(storage.TilesDirectory);
 Directory.CreateDirectory(storage.MediaDirectory);
 
+// Release preparation may briefly use a hidden same-volume prefix before the final atomic directory
+// move. It is never a public artifact namespace, even when a client guesses the path.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/tiles/.pending"))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+    await next(context);
+});
+
 // Serve brotli-precompressed render tiles (tile-transfer initiative, Phase 1) ahead of the plain static
 // handler: a *.arrow request from a br-capable client that has a .arrow.br sibling on disk gets the sibling's
 // bytes + Content-Encoding: br; everything else falls through to the plain file below (the rollback rail).
@@ -85,7 +97,7 @@ app.UseStaticFiles(new StaticFileOptions
     {
         string name = ctx.File.Name;
         ctx.Context.Response.Headers.CacheControl =
-            name is "latest.json" or "manifest.json"
+            name is "latest.json"
                 ? "public, max-age=60"
                 : "public, max-age=31536000, immutable";
         // A tile has two on-the-wire representations (plain here, Content-Encoding: br from the middleware

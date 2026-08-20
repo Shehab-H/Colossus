@@ -1,4 +1,5 @@
 using Colossus.Application.Abstractions.Catalog;
+using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Catalog;
 
 namespace Colossus.Application.Catalog;
@@ -64,7 +65,13 @@ public sealed record ManagedRelease(
     string Version,
     string ArtifactLocation,
     DateTimeOffset PublishedAt,
-    long? OutputBytes);
+    long? OutputBytes,
+    bool Pinned,
+    string? ManifestHash,
+    long? SourceRows,
+    int? TileCount,
+    bool VerificationPassed,
+    DateTimeOffset? VerifiedAt);
 
 public sealed record ManagedMapDetail(
     ManagedMapSummary Summary,
@@ -85,7 +92,8 @@ public sealed class MapManagementService(
     IConnectionRepository connections,
     IBakePolicyRepository policies,
     IBakeRunRepository runs,
-    IReleaseRepository releases)
+    IReleaseRepository releases,
+    IReleaseArtifactStore? artifacts = null)
 {
     public async Task<IReadOnlyList<ManagedMapSummary>> ListAsync(
         bool includeArchived = false,
@@ -107,7 +115,7 @@ public sealed class MapManagementService(
         var mapReleases = await releases.ListForMapAsync(map.Id, ct);
 
         return new ManagedMapDetail(
-            Summarize(map, connection.Draft.Adapter, policy, mapRuns, mapReleases),
+            Summarize(map, connection.Draft.Adapter, policy, mapRuns, mapReleases, CurrentVersion(map)),
             map.Draft,
             new ManagedDatasetSummary(
                 dataset.Id,
@@ -130,7 +138,7 @@ public sealed class MapManagementService(
         var policy = await policies.FindAsync(map.Id, ct);
         var mapRuns = await runs.ListForMapAsync(map.Id, ct);
         var mapReleases = await releases.ListForMapAsync(map.Id, ct);
-        return Summarize(map, connection.Draft.Adapter, policy, mapRuns, mapReleases);
+        return Summarize(map, connection.Draft.Adapter, policy, mapRuns, mapReleases, CurrentVersion(map));
     }
 
     private static ManagedMapSummary Summarize(
@@ -138,10 +146,13 @@ public sealed class MapManagementService(
         string sourceType,
         BakePolicy? policy,
         IReadOnlyList<BakeRun> mapRuns,
-        IReadOnlyList<CatalogRelease> mapReleases)
+        IReadOnlyList<CatalogRelease> mapReleases,
+        string? currentVersion = null)
     {
         var lastRun = mapRuns.FirstOrDefault();
-        var currentRelease = mapReleases.FirstOrDefault();
+        var currentRelease = currentVersion is null
+            ? mapReleases.FirstOrDefault()
+            : mapReleases.FirstOrDefault(value => value.Version == currentVersion);
         var lastFailure = mapRuns.FirstOrDefault(run => run.Status == BakeRunStatus.Failed);
         var publicationState = map.Archived
             ? MapPublicationState.Archived
@@ -175,6 +186,11 @@ public sealed class MapManagementService(
             nextRunAt);
     }
 
+    private string? CurrentVersion(CatalogMap map) =>
+        artifacts is not null && artifacts.TryReadCurrent(map.Draft.Slug, out string version)
+            ? version
+            : null;
+
     public static ManagedBakeRun DescribeRun(BakeRun run) => new(
         run.Id,
         run.DraftRevision,
@@ -201,5 +217,11 @@ public sealed class MapManagementService(
         release.Version,
         release.ArtifactLocation,
         release.PublishedAt,
-        release.ArtifactBytes);
+        release.ArtifactBytes,
+        release.Pinned,
+        release.ManifestHash,
+        release.SourceRows,
+        release.TileCount,
+        release.VerificationPassed,
+        release.VerifiedAt);
 }

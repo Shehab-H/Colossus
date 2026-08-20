@@ -185,7 +185,8 @@ public sealed record BakePolicy(
     bool AllowOverlap,
     int RetainSuccessfulReleases,
     long Revision,
-    DateTimeOffset UpdatedAt)
+    DateTimeOffset UpdatedAt,
+    TimeSpan? RetainSuccessfulFor = null)
 {
     public void Validate()
     {
@@ -200,6 +201,8 @@ public sealed record BakePolicy(
         catch (InvalidTimeZoneException e) { throw new ArgumentException($"invalid bake policy time zone '{TimeZoneId}'", e); }
         if (RetainSuccessfulReleases < 1)
             throw new ArgumentException("bake policy must retain at least one successful release");
+        if (RetainSuccessfulFor is { } age && age < TimeSpan.FromHours(1))
+            throw new ArgumentException("release age retention must be at least one hour");
     }
 }
 
@@ -261,6 +264,13 @@ public sealed record BakeRun(
     }
 }
 
+public enum ReleaseState
+{
+    Prepared,
+    Published,
+    Deleted,
+}
+
 public sealed record CatalogRelease(
     Guid Id,
     Guid MapId,
@@ -268,4 +278,15 @@ public sealed record CatalogRelease(
     string Version,
     string ArtifactLocation,
     DateTimeOffset PublishedAt,
-    long? ArtifactBytes = null);
+    long? ArtifactBytes = null,
+    ReleaseState State = ReleaseState.Published,
+    string? ManifestHash = null,
+    ViewConfig? SourceSnapshot = null,
+    long? SourceRows = null,
+    int? TileCount = null,
+    bool VerificationPassed = false,
+    DateTimeOffset? VerifiedAt = null,
+    DateTimeOffset? PreparedAt = null,
+    bool Pinned = false,
+    DateTimeOffset? DeletedAt = null,
+    string? AttemptId = null);

@@ -1,6 +1,6 @@
 import { hexToRgb, interpolate, type RGB } from './colors';
 import { categoricalColors, divergingStops, sequentialStops } from './schemes';
-import type { ColorSpec, ScaleType } from '@domain/map/manifest';
+import type { ColorSpec, ScaleType } from './manifest';
 
 /** What the data actually looks like for the color channel, derived from the tiles (see
  *  channels.describeColorDomain). A scale needs this to place values on its ramp / assign categories. */
@@ -128,7 +128,13 @@ function resolveScale(spec: ColorSpec, domain: ColorDomain): Resolved {
       const palette = explicitRange ?? categoricalColors(spec.scheme);
       categories.forEach((c, i) => { if (!map.has(c)) map.set(c, palette[i % palette.length]); });
     }
-    const order = uniq(spec.palette ? [...Object.keys(spec.palette), ...categories] : categories);
+    // Partial overrides intentionally differ from the legacy closed `palette`: normal palette assignment
+    // happens first, then only the named values are replaced. Override-only values remain visible in the
+    // legend so an authoring typo cannot disappear silently.
+    if (spec.overrides) for (const [k, hex] of Object.entries(spec.overrides)) map.set(k, hexToRgb(hex));
+    const order = uniq(spec.palette
+      ? [...Object.keys(spec.palette), ...categories]
+      : [...categories, ...Object.keys(spec.overrides ?? {})]);
     return { kind: 'categorical', type, map, order, unknown, closed: !!spec.palette };
   }
 

@@ -1,4 +1,5 @@
 import type { BakePolicy, MapDraft } from '@entities/catalog';
+import { isHexColor } from '@domain/map/colorEncoding';
 
 export interface MapFormState {
   slug: string;
@@ -84,6 +85,7 @@ export function draftFromForm(form: MapFormState): { draft?: MapDraft; errors: R
     errors.bakeFilters = ['Bake filters must be a list of SQL predicates.'];
   if (filters !== undefined && !Array.isArray(filters)) errors.filters = ['Filters must be a JSON array.'];
   if (!Array.isArray(measures)) errors.measures = ['Measures must be a JSON array.'];
+  if (!errors.encoding) validateEncodingColors(encoding, errors);
   if (Object.keys(errors).length > 0) return { errors };
 
   return {
@@ -102,6 +104,40 @@ export function draftFromForm(form: MapFormState): { draft?: MapDraft; errors: R
       inspect,
     },
   };
+}
+
+function validateEncodingColors(encoding: unknown, errors: Record<string, string[]>): void {
+  if (!encoding || typeof encoding !== 'object' || Array.isArray(encoding)) return;
+  const color = (encoding as Record<string, unknown>).color;
+  if (!color || typeof color !== 'object' || Array.isArray(color)) return;
+  const spec = color as Record<string, unknown>;
+  const colors = [
+    ...(Array.isArray(spec.range) ? spec.range : []),
+    ...(typeof spec.unknown === 'string' ? [spec.unknown] : []),
+    ...mapColors(spec.palette),
+    ...mapColors(spec.overrides),
+  ];
+  if (colors.some(value => typeof value !== 'string' || !isHexColor(value)))
+    errors.encoding = ['Colors must use #RGB or #RRGGBB hexadecimal notation.'];
+}
+
+function mapColors(value: unknown): unknown[] {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.values(value as Record<string, unknown>)
+    : [];
+}
+
+export function mapDraftsEqual(left: MapDraft, right: MapDraft): boolean {
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, candidate]) => candidate !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, candidate]) => [key, canonical(candidate)]));
 }
 
 export function hoursToInterval(hoursText: string): string {

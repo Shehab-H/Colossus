@@ -5,10 +5,14 @@ import {
   catalogQueryKeys,
   createMap,
   runMapNow,
+  pinMapRelease,
+  reconcileMapReleases,
   setBakePolicy,
   updateMap,
   type MapDraft,
+  type ManagedBakeRun,
   type SaveBakePolicy,
+  type SavedMap,
 } from '@entities/catalog';
 
 async function invalidateMapState(queryClient: ReturnType<typeof useQueryClient>, mapId?: string) {
@@ -55,25 +59,92 @@ export function useBakePolicyMutation() {
   });
 }
 
+export function usePinMapReleaseMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ mapId, releaseId, pinned }: { mapId: string; releaseId: string; pinned: boolean }) =>
+      pinMapRelease(mapId, releaseId, pinned),
+    onSuccess: (_, { mapId }) => invalidateMapState(queryClient, mapId),
+  });
+}
+
+export function useReconcileMapReleasesMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mapId: string) => reconcileMapReleases(mapId),
+    onSuccess: (_, mapId) => invalidateMapState(queryClient, mapId),
+  });
+}
+
 export interface SaveManagedMapInput {
   mapId?: string;
   expectedRevision?: number;
   definition: MapDraft;
   policy: SaveBakePolicy;
   policyRevision?: number;
+  definitionChanged: boolean;
+  queueBake?: boolean;
+}
+
+export interface SaveManagedMapResult {
+  saved: SavedMap;
+  run?: ManagedBakeRun;
+  definitionChanged: boolean;
+}
+
+export class ManagedMapPartialSaveError extends Error {
+  readonly saved: SavedMap;
+  readonly run: ManagedBakeRun | undefined;
+  readonly phase: 'queue' | 'policy';
+
+  constructor(
+    message: string,
+    saved: SavedMap,
+    run: ManagedBakeRun | undefined,
+    phase: 'queue' | 'policy',
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'ManagedMapPartialSaveError';
+    this.saved = saved;
+    this.run = run;
+    this.phase = phase;
+  }
 }
 
 export function useSaveManagedMapMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ mapId, expectedRevision, definition, policy, policyRevision }: SaveManagedMapInput) => {
+    mutationFn: async ({ mapId, expectedRevision, definition, policy, policyRevision, definitionChanged, queueBake = definitionChanged }: SaveManagedMapInput): Promise<SaveManagedMapResult> => {
       if (mapId && expectedRevision === undefined) throw new Error('An expected map revision is required when editing.');
-      const saved = mapId
-        ? await updateMap(mapId, expectedRevision!, definition)
-        : await createMap(definition);
-      await setBakePolicy(saved.id, policy, policyRevision);
-      return saved;
+      const saved = definitionChanged
+        ? mapId ? await updateMap(mapId, expectedRevision!, definition) : await createMap(definition)
+        : { id: mapId!, revision: expectedRevision!, draft: definition };
+      let run: ManagedBakeRun | undefined;
+      if (queueBake) {
+        try { run = await runMapNow(saved.id); }
+        catch (reason) {
+          throw new ManagedMapPartialSaveError(
+            `Configuration revision ${saved.revision} was saved, but its bake could not be queued.`,
+            saved,
+            undefined,
+            'queue',
+            { cause: reason },
+          );
+        }
+      }
+      try { await setBakePolicy(saved.id, policy, policyRevision); }
+      catch (reason) {
+        throw new ManagedMapPartialSaveError(
+          run ? `Bake ${run.id} was queued, but the schedule and retention policy was not saved.` : 'The map policy was not saved.',
+          saved,
+          run,
+          'policy',
+          { cause: reason },
+        );
+      }
+      return { saved, run, definitionChanged };
     },
-    onSuccess: (saved) => invalidateMapState(queryClient, saved.id),
+    onSuccess: (result) => invalidateMapState(queryClient, result.saved.id),
   });
 }

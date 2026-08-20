@@ -1,7 +1,7 @@
 import type { HTMLAttributes, ReactNode } from 'react';
 import { cx } from './classNames';
 
-export function Alert({ tone = 'info', className, ...props }: HTMLAttributes<HTMLDivElement> & { tone?: 'info' | 'danger' }) {
+export function Alert({ tone = 'info', className, ...props }: HTMLAttributes<HTMLDivElement> & { tone?: 'info' | 'warning' | 'danger' }) {
   return <div className={cx('ui-alert', `ui-alert--${tone}`, className)} role={tone === 'danger' ? 'alert' : 'status'} {...props} />;
 }
 

@@ -128,6 +128,7 @@
 
   &--danger { border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-border-default)); background: var(--color-danger-soft); color: var(--color-danger); }
   &--info { border-color: color-mix(in srgb, var(--color-info) 35%, var(--color-border-default)); background: var(--color-info-soft); }
+  &--warning { border-color: color-mix(in srgb, var(--color-warning) 35%, var(--color-border-default)); background: var(--color-warning-soft); color: var(--color-warning); }
 }
 
 .ui-empty-state,

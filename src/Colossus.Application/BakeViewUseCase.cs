@@ -1,4 +1,3 @@
-using System.Globalization;
 using Colossus.Application.Abstractions.Baking;
 using Colossus.Domain.Model;
 using Colossus.Application.Abstractions.Reduction;
@@ -8,7 +7,13 @@ namespace Colossus.Application;
 
 public sealed record BakeOutcome(
     string ViewId, string? Version, long SourceRows, int TileCount, int LeafCount,
-    long LeafPoints, Bbox Bounds, int MaxZoom)
+    long LeafPoints, Bbox Bounds, int MaxZoom,
+    string? AttemptId = null,
+    string? ManifestHash = null,
+    long ArtifactBytes = 0,
+    bool VerificationPassed = false,
+    string? ArtifactLocation = null,
+    ViewConfig? SourceSnapshot = null)
 {
     public bool IsEmpty => Version is null;
 
@@ -21,10 +26,16 @@ public sealed record BakeOutcome(
 public sealed class BakeViewUseCase(
     ISourceAdapterCatalog sources, IReductionCatalog reductions, IBakeStore store, BakePlanner planner,
     IChannelDomainScanner domains, IFactGrouper grouper, FoldRoutingOptions foldRouting,
-    ITileCompressor compressor, ITilePacker packer, TimeProvider clock)
+    ITileCompressor compressor, ITilePacker packer, IPreparedReleaseVerifier verifier,
+    IReleaseArtifactStore artifacts, TimeProvider clock)
 {
+    public Task<BakeOutcome> BakeAsync(
+        ViewConfig view, IProgress<BakeProgress>? progress = null, CancellationToken ct = default) =>
+        BakeAsync(view, BakeAttempt.AdHoc(clock.GetUtcNow()), progress, ct);
+
     public async Task<BakeOutcome> BakeAsync(
-        ViewConfig view, IProgress<BakeProgress>? progress = null, CancellationToken ct = default)
+        ViewConfig view, BakeAttempt attempt,
+        IProgress<BakeProgress>? progress = null, CancellationToken ct = default)
     {
         var source = sources.Resolve(view.Source.Adapter);
 
@@ -38,7 +49,7 @@ public sealed class BakeViewUseCase(
             return BakeOutcome.Empty(view.Id);
         }
 
-        string staging = store.StagingPath(view.Id);
+        string staging = store.StagingPath(view.Id, attempt.Id);
         progress?.Report(new BakeProgress(BakeStage.Extracting, $"Extracting {probe.Count:N0} rows for {view.Id}."));
         var extractionProgress = progress is null ? null : new InlineProgress<SourceExtractProgress>(value =>
         {
@@ -51,13 +62,13 @@ public sealed class BakeViewUseCase(
         // Parquet is compressed and Arrow/codecs can hold more than one representation while writing a
         // tile. A deliberately conservative multiplier turns the RAM target into smaller tiles; the bake
         // does more I/O and takes longer instead of treating memory pressure as a failed run.
-        long compressedBytesPerRow = Math.Max(1, store.StagingSize(view.Id) / Math.Max(1, probe.Count));
+        long compressedBytesPerRow = Math.Max(1, store.StagingSize(view.Id, attempt.Id) / Math.Max(1, probe.Count));
         long estimatedWorkingBytesPerRow = Math.Max(64,
             Math.Min(compressedBytesPerRow, long.MaxValue / 8) * 8);
         var plan = planner.Plan(probe, view, estimatedWorkingBytesPerRow);
 
-        string version = NewVersion(clock.GetUtcNow());
-        string outputDir = store.VersionDirectory(view.Id, version);
+        string version = attempt.Version;
+        string outputDir = store.VersionDirectory(view.Id, version, attempt.Id);
 
         // Area marks carry geometry, so they bake as tile format 3 (geometry replaced by the encoded geom3
         // payload, RULES R3 / tile-transfer Phase 2). Point marks have no geometry and stay format 2.
@@ -81,7 +92,7 @@ public sealed class BakeViewUseCase(
 
         if (view.HasMeasures)
         {
-            string marks = store.MarksStagingPath(view.Id);
+            string marks = store.MarksStagingPath(view.Id, attempt.Id);
             var grouping = grouper.GroupToMarks(staging, marks, view);
             group = GroupRegimeArtifacts.Build(view, grouping, staging, marks, domains);
             channelDomains = group.ChannelDomains;
@@ -122,7 +133,7 @@ public sealed class BakeViewUseCase(
         }
         else
         {
-            long packBytes = store.VersionArtifactSize(view.Id, version, renderPack.File);
+            long packBytes = store.PreparedArtifactSize(view.Id, version, attempt.Id, renderPack.File);
             progress?.Report(new BakeProgress(BakeStage.Tiling,
                 $"{view.Id}: render pack {renderPack.Entries.Count} tiles, " +
                 $"{packBytes / 1_048_576.0:N1} MB at rest, first paint [{string.Join(", ", renderPack.FirstPaint)}]"));
@@ -166,16 +177,33 @@ public sealed class BakeViewUseCase(
             RenderPack = renderPack,
             FactsParquet = result.FactsParquet,
             FoldRoute = foldRoute,
-        }, ct);
+        }, attempt.Id, ct);
         progress?.Report(new BakeProgress(BakeStage.Verifying, $"Verifying {view.Id} release {version}."));
-        var written = await store.ReadManifestAsync(view.Id, version, ct);
+        var written = await store.ReadPreparedManifestAsync(view.Id, version, attempt.Id, ct);
         if (written is null || written.Version != version || written.View.Id != view.Id)
             throw new InvalidDataException($"Bake verification failed for {view.Id} release {version}.");
-        progress?.Report(new BakeProgress(BakeStage.Publishing, $"Publishing {view.Id} release {version}."));
-        store.PublishLatest(view.Id, version);
+        var verification = verifier.Verify(new PreparedRelease(
+            written,
+            outputDir,
+            staging,
+            store.MarksStagingPath(view.Id, attempt.Id)));
+        if (!verification.Passed)
+            throw new InvalidDataException(
+                $"Bake verification failed for {view.Id} release {version}: {verification.Message}");
+        string manifestHash = store.PreparedManifestHash(view.Id, version, attempt.Id);
+        long artifactBytes = store.PreparedVersionSize(view.Id, version, attempt.Id);
+        artifacts.MakeAddressable(new ReleaseArtifactUpload(
+            view.Id, version, attempt.Id, outputDir, manifestHash));
+        if (attempt.Publish)
+        {
+            progress?.Report(new BakeProgress(BakeStage.Publishing, $"Publishing {view.Id} release {version}."));
+            artifacts.PublishCurrent(view.Id, version);
+        }
 
         var outcome = new BakeOutcome(view.Id, version, probe.Count, result.Tiles.Count,
-            result.Tiles.Count(t => t.IsLeaf), result.LeafPointCount, probe.Bounds, plan.MaxZoom);
+            result.Tiles.Count(t => t.IsLeaf), result.LeafPointCount, probe.Bounds, plan.MaxZoom,
+            attempt.Id, manifestHash, artifactBytes, VerificationPassed: true,
+            artifacts.Location(view.Id, version), view);
         progress?.Report(new BakeProgress(BakeStage.Completed,
             $"{view.Id} → {version}: {probe.Count:N0} rows, {result.Tiles.Count} tiles."));
         return outcome;
@@ -194,11 +222,30 @@ public sealed class BakeViewUseCase(
         return orders.Count > 0 ? orders : null;
     }
 
-    private static string NewVersion(DateTimeOffset now) =>
-        "v" + now.UtcDateTime.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
-
     private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
     {
         public void Report(T value) => report(value);
+    }
+}
+
+/// <summary>Identity and publication mode for one isolated bake attempt.</summary>
+public sealed record BakeAttempt(string Id, string Version, bool Publish)
+{
+    public static BakeAttempt ForRun(Guid runId, int attempt, DateTimeOffset now)
+    {
+        string token = runId.ToString("N");
+        return new BakeAttempt(
+            $"{token}-a{attempt}",
+            $"v{now.UtcDateTime:yyyyMMddTHHmmssfffZ}-{token[..8]}-a{attempt}",
+            Publish: false);
+    }
+
+    public static BakeAttempt AdHoc(DateTimeOffset now)
+    {
+        string token = Guid.NewGuid().ToString("N");
+        return new BakeAttempt(
+            $"adhoc-{token}",
+            $"v{now.UtcDateTime:yyyyMMddTHHmmssfffZ}-{token[..8]}",
+            Publish: true);
     }
 }

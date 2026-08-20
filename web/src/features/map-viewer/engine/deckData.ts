@@ -1,4 +1,4 @@
-import { categoryKey } from './colorScale';
+import { categoryKey } from '@domain/map/colorScale';
 import { columnValue, type TileData } from './tileData';
 
 // A tile's geometry buffers load once; only the color scale changes when you switch measure/scale/theme —

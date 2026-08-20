@@ -30,6 +30,7 @@ public sealed class DuckDbSession : IDisposable
     /// <summary>File-backed session whose database and temp spill both live in <paramref name="workDirectory"/>.</summary>
     public static DuckDbSession OnDisk(string workDirectory, BakeResourceOptions? resources = null)
     {
+        Directory.CreateDirectory(workDirectory);
         string dbPath = Path.Combine(workDirectory, $"reduce-{Guid.NewGuid():N}.duckdb");
         DeleteDatabaseFiles(dbPath);
         var connection = new DuckDBConnection($"Data Source={Sql.Path(dbPath)}");

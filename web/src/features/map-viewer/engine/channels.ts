@@ -2,7 +2,7 @@ import type { ChannelSpec, Manifest, ViewConfig } from '@domain/map/manifest';
 import { tileUrl } from '@infrastructure/api/mapApi';
 import { fetchArrowTable } from './arrow';
 import { parseMeasure } from './measures';
-import type { ColorDomain } from './colorScale';
+import type { ColorDomain } from '@domain/map/colorScale';
 
 // Date/ALL helpers live in dates.ts so measures.ts can share the behavior without a module cycle;
 // imported for internal use and re-exported so existing importers keep resolving them from './channels'.

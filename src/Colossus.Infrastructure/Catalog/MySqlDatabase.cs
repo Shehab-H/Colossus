@@ -221,8 +221,8 @@ public sealed class MySqlDatabase :
             const string insert = """
                 INSERT INTO bake_policies
                     (map_id, enabled, interval_ticks, time_zone_id, allow_overlap,
-                     retain_successful_releases, revision, updated_at)
-                VALUES ($map, $enabled, $interval, $zone, $overlap, $retain, $revision, $updated);
+                     retain_successful_releases, retain_successful_ticks, revision, updated_at)
+                VALUES ($map, $enabled, $interval, $zone, $overlap, $retain, $retainAge, $revision, $updated);
                 """;
             try
             {
@@ -240,6 +240,7 @@ public sealed class MySqlDatabase :
             UPDATE bake_policies
             SET enabled = $enabled, interval_ticks = $interval, time_zone_id = $zone,
                 allow_overlap = $overlap, retain_successful_releases = $retain,
+                retain_successful_ticks = $retainAge,
                 revision = $revision, updated_at = $updated
             WHERE map_id = $map AND revision = $expected;
             """;
@@ -335,6 +336,26 @@ public sealed class MySqlDatabase :
         return await FindRunAsync(id, ct) ?? throw new CatalogNotFoundException($"Unknown bake run '{id}'.");
     }
 
+    public async Task<BakeRun> SupersedeQueuedAsync(
+        Guid id, long supersededByRevision, DateTimeOffset supersededAt, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE bake_runs
+            SET cancellation_requested = 1,
+                status = 'Cancelled', stage = 'Cancelled',
+                status_message = $message,
+                failure_category = 'Superseded', failure_details = $message,
+                completed_at = $superseded, updated_at = $superseded
+            WHERE id = $id AND status = 'Queued';
+            """;
+        string message = $"Superseded by map revision {supersededByRevision}.";
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db, sql,
+            ("$id", id), ("$message", message), ("$superseded", Timestamp(supersededAt)));
+        _ = await cmd.ExecuteNonQueryAsync(ct);
+        return await FindRunAsync(id, ct) ?? throw new CatalogNotFoundException($"Unknown bake run '{id}'.");
+    }
+
     public async Task<BakeRun> AttachBackgroundJobAsync(
         Guid id, string backgroundJobId, CancellationToken ct = default)
     {
@@ -351,16 +372,19 @@ public sealed class MySqlDatabase :
     public async Task<CatalogRelease> CreateAsync(CatalogRelease release, CancellationToken ct = default)
     {
         const string sql = """
-            INSERT INTO releases (id, map_id, bake_run_id, version, artifact_location, published_at, artifact_bytes)
-            VALUES ($id, $map, $run, $version, $artifact, $published, $bytes);
+            INSERT INTO releases
+                (id, map_id, bake_run_id, version, artifact_location, published_at, artifact_bytes,
+                 state, manifest_hash, source_snapshot_json, source_rows, tile_count,
+                 verification_passed, verified_at, prepared_at, pinned, deleted_at, attempt_id)
+            VALUES
+                ($id, $map, $run, $version, $artifact, $published, $bytes,
+                 $state, $manifest, $snapshot, $rows, $tiles,
+                 $verified, $verifiedAt, $prepared, $pinned, $deleted, $attemptId);
             """;
         try
         {
             await using var db = await OpenAsync(ct);
-            await using var cmd = Command(db, sql,
-                ("$id", release.Id), ("$map", release.MapId), ("$run", release.BakeRunId),
-                ("$version", release.Version), ("$artifact", release.ArtifactLocation),
-                ("$published", Timestamp(release.PublishedAt)), ("$bytes", release.ArtifactBytes));
+            await using var cmd = ReleaseCommand(db, sql, release);
             await cmd.ExecuteNonQueryAsync(ct);
             return release;
         }
@@ -369,6 +393,24 @@ public sealed class MySqlDatabase :
             throw new CatalogConflictException(
                 $"Release '{release.Version}' already exists or its map/run relationship is invalid.", e);
         }
+    }
+
+    public async Task<CatalogRelease> UpdateAsync(CatalogRelease release, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE releases
+            SET artifact_location = $artifact, published_at = $published, artifact_bytes = $bytes,
+                state = $state, manifest_hash = $manifest, source_snapshot_json = $snapshot,
+                source_rows = $rows, tile_count = $tiles, verification_passed = $verified,
+                verified_at = $verifiedAt, prepared_at = $prepared, pinned = $pinned,
+                deleted_at = $deleted, attempt_id = $attemptId
+            WHERE id = $id AND map_id = $map AND bake_run_id = $run AND version = $version;
+            """;
+        await using var db = await OpenAsync(ct);
+        await using var cmd = ReleaseCommand(db, sql, release);
+        if (await cmd.ExecuteNonQueryAsync(ct) == 0)
+            throw new CatalogNotFoundException($"Unknown release '{release.Id}'.");
+        return release;
     }
 
     async Task<CatalogRelease?> IReleaseRepository.FindForRunAsync(Guid runId, CancellationToken ct)
@@ -380,6 +422,16 @@ public sealed class MySqlDatabase :
     }
 
     async Task<IReadOnlyList<CatalogRelease>> IReleaseRepository.ListForMapAsync(
+        Guid mapId, CancellationToken ct)
+    {
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db,
+            "SELECT * FROM releases WHERE map_id = $map AND state = 'Published' ORDER BY published_at DESC;",
+            ("$map", mapId));
+        return await ReadAllAsync(cmd, ReadRelease, ct);
+    }
+
+    async Task<IReadOnlyList<CatalogRelease>> IReleaseRepository.ListAllForMapAsync(
         Guid mapId, CancellationToken ct)
     {
         await using var db = await OpenAsync(ct);
@@ -471,9 +523,9 @@ public sealed class MySqlDatabase :
             versionCommand.CommandText = "SELECT version FROM catalog_schema WHERE singleton_id = 1;";
             object? storedVersion = versionCommand.ExecuteScalar();
             long version = storedVersion is null ? 0 : Convert.ToInt64(storedVersion);
-            if (version > 2)
+            if (version > 4)
                 throw new InvalidOperationException(
-                    $"Database schema version {version} is newer than this application's supported version 2.");
+                    $"Database schema version {version} is newer than this application's supported version 4.");
             if (version == 0)
                 ExecuteSchemaStatement(db, "INSERT INTO catalog_schema (singleton_id, version) VALUES (1, 1);");
         }
@@ -536,6 +588,7 @@ public sealed class MySqlDatabase :
                 time_zone_id VARCHAR(191) NOT NULL,
                 allow_overlap BOOLEAN NOT NULL,
                 retain_successful_releases INT NOT NULL,
+                retain_successful_ticks BIGINT NULL,
                 revision BIGINT NOT NULL,
                 updated_at VARCHAR(40) NOT NULL,
                 CONSTRAINT ck_bake_policies_retention CHECK (retain_successful_releases > 0),
@@ -581,6 +634,17 @@ public sealed class MySqlDatabase :
                 artifact_location TEXT NOT NULL,
                 published_at VARCHAR(40) NOT NULL,
                 artifact_bytes BIGINT NULL,
+                state VARCHAR(32) NOT NULL DEFAULT 'Published',
+                manifest_hash CHAR(64) CHARACTER SET ascii NULL,
+                source_snapshot_json LONGTEXT NULL,
+                source_rows BIGINT NULL,
+                tile_count INT NULL,
+                verification_passed BOOLEAN NOT NULL DEFAULT 0,
+                verified_at VARCHAR(40) NULL,
+                prepared_at VARCHAR(40) NULL,
+                pinned BOOLEAN NOT NULL DEFAULT 0,
+                deleted_at VARCHAR(40) NULL,
+                attempt_id VARCHAR(191) NULL,
                 CONSTRAINT fk_releases_map FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE RESTRICT,
                 CONSTRAINT fk_releases_run FOREIGN KEY (map_id, bake_run_id) REFERENCES bake_runs(map_id, id) ON DELETE RESTRICT,
                 UNIQUE KEY ux_releases_map_version (map_id, version),
@@ -608,6 +672,30 @@ public sealed class MySqlDatabase :
             AddColumnIfMissing(db, "releases", "artifact_bytes", "BIGINT NULL");
             AddUniqueIndexIfMissing(db, "releases", "ux_releases_run", "bake_run_id");
             ExecuteSchemaStatement(db, "UPDATE catalog_schema SET version = 2 WHERE singleton_id = 1;");
+        }
+        if (StoredSchemaVersion(db) < 3)
+        {
+            AddColumnIfMissing(db, "bake_policies", "retain_successful_ticks", "BIGINT NULL");
+            AddColumnIfMissing(db, "releases", "state", "VARCHAR(32) NOT NULL DEFAULT 'Published'");
+            AddColumnIfMissing(db, "releases", "manifest_hash", "CHAR(64) CHARACTER SET ascii NULL");
+            AddColumnIfMissing(db, "releases", "source_snapshot_json", "LONGTEXT NULL");
+            AddColumnIfMissing(db, "releases", "source_rows", "BIGINT NULL");
+            AddColumnIfMissing(db, "releases", "tile_count", "INT NULL");
+            AddColumnIfMissing(db, "releases", "verification_passed", "BOOLEAN NOT NULL DEFAULT 0");
+            AddColumnIfMissing(db, "releases", "verified_at", "VARCHAR(40) NULL");
+            AddColumnIfMissing(db, "releases", "prepared_at", "VARCHAR(40) NULL");
+            AddColumnIfMissing(db, "releases", "pinned", "BOOLEAN NOT NULL DEFAULT 0");
+            AddColumnIfMissing(db, "releases", "deleted_at", "VARCHAR(40) NULL");
+            AddColumnIfMissing(db, "releases", "attempt_id", "VARCHAR(191) NULL");
+            ExecuteSchemaStatement(db, "UPDATE catalog_schema SET version = 3 WHERE singleton_id = 1;");
+        }
+        if (StoredSchemaVersion(db) < 4)
+        {
+            ExecuteSchemaStatement(db,
+                "UPDATE releases SET verification_passed = 0 WHERE manifest_hash IS NULL AND verified_at IS NULL;");
+            ExecuteSchemaStatement(db,
+                "ALTER TABLE releases MODIFY verification_passed BOOLEAN NOT NULL DEFAULT 0;");
+            ExecuteSchemaStatement(db, "UPDATE catalog_schema SET version = 4 WHERE singleton_id = 1;");
         }
     }
 
@@ -670,7 +758,19 @@ public sealed class MySqlDatabase :
         ("$map", policy.MapId), ("$enabled", policy.Enabled),
         ("$interval", policy.Interval?.Ticks), ("$zone", policy.TimeZoneId),
         ("$overlap", policy.AllowOverlap), ("$retain", policy.RetainSuccessfulReleases),
+        ("$retainAge", policy.RetainSuccessfulFor?.Ticks),
         ("$revision", policy.Revision), ("$updated", Timestamp(policy.UpdatedAt)), ("$expected", expected));
+
+    private MySqlCommand ReleaseCommand(MySqlConnection db, string sql, CatalogRelease release) => Command(db, sql,
+        ("$id", release.Id), ("$map", release.MapId), ("$run", release.BakeRunId),
+        ("$version", release.Version), ("$artifact", release.ArtifactLocation),
+        ("$published", Timestamp(release.PublishedAt)), ("$bytes", release.ArtifactBytes),
+        ("$state", release.State.ToString()), ("$manifest", release.ManifestHash),
+        ("$snapshot", release.SourceSnapshot is null ? null : Json(release.SourceSnapshot)),
+        ("$rows", release.SourceRows), ("$tiles", release.TileCount),
+        ("$verified", release.VerificationPassed), ("$verifiedAt", NullableTimestamp(release.VerifiedAt)),
+        ("$prepared", NullableTimestamp(release.PreparedAt)), ("$pinned", release.Pinned),
+        ("$deleted", NullableTimestamp(release.DeletedAt)), ("$attemptId", release.AttemptId));
 
     private MySqlCommand RunCommand(MySqlConnection db, string sql, BakeRun run) => Command(db, sql,
         ("$id", run.Id), ("$map", run.MapId), ("$revision", run.DraftRevision),
@@ -726,7 +826,10 @@ public sealed class MySqlDatabase :
         r.GetBoolean(r.GetOrdinal("allow_overlap")),
         r.GetInt32(r.GetOrdinal("retain_successful_releases")),
         r.GetInt64(r.GetOrdinal("revision")),
-        ParseTimestamp(r.GetString(r.GetOrdinal("updated_at"))));
+        ParseTimestamp(r.GetString(r.GetOrdinal("updated_at"))),
+        r.IsDBNull(r.GetOrdinal("retain_successful_ticks"))
+            ? null
+            : TimeSpan.FromTicks(r.GetInt64(r.GetOrdinal("retain_successful_ticks"))));
 
     private static BakeRun ReadRun(MySqlDataReader r) => new(
         r.GetGuid(r.GetOrdinal("id")),
@@ -759,7 +862,20 @@ public sealed class MySqlDatabase :
         r.GetString(r.GetOrdinal("version")),
         r.GetString(r.GetOrdinal("artifact_location")),
         ParseTimestamp(r.GetString(r.GetOrdinal("published_at"))),
-        NullableInt64(r, "artifact_bytes"));
+        NullableInt64(r, "artifact_bytes"),
+        Enum.Parse<ReleaseState>(r.GetString(r.GetOrdinal("state"))),
+        NullableString(r, "manifest_hash"),
+        NullableString(r, "source_snapshot_json") is { } snapshot
+            ? FromJson<Domain.Model.ViewConfig>(snapshot)
+            : null,
+        NullableInt64(r, "source_rows"),
+        NullableInt32(r, "tile_count"),
+        r.GetBoolean(r.GetOrdinal("verification_passed")),
+        NullableTimestamp(r, "verified_at"),
+        NullableTimestamp(r, "prepared_at"),
+        r.GetBoolean(r.GetOrdinal("pinned")),
+        NullableTimestamp(r, "deleted_at"),
+        NullableString(r, "attempt_id"));
 
     private static async Task<IReadOnlyList<T>> ReadAllAsync<T>(
         MySqlCommand cmd, Func<MySqlDataReader, T> materialize, CancellationToken ct)

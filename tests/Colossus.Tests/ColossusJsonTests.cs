@@ -22,6 +22,15 @@ public class ColossusJsonTests
                 "channels": [
                   { "name": "value", "column": "value", "role": "measure", "type": "f32" }
                 ]
+              },
+              "encoding": {
+                "color": {
+                  "channel": "value",
+                  "type": "categorical",
+                  "scheme": "okabeIto",
+                  "domain": ["standard", "priority"],
+                  "overrides": { "priority": "#e60000" }
+                }
               }
             }
             """);
@@ -32,6 +41,7 @@ public class ColossusJsonTests
         Assert.Equal(ReductionKind.QuadtreeLod, view.Reduction);
         Assert.Equal(GeometryKind.LonLat, view.Source.Geometry.Kind);
         Assert.Equal(ChannelType.F32, Assert.Single(view.Source.Channels).Type);
+        Assert.Equal("#e60000", view.Encoding!.Color!.Overrides!["priority"]);
     }
 
     [Fact]

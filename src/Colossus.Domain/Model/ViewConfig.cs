@@ -89,8 +89,7 @@ public sealed record ViewConfig
 
         Require(colorable, Encoding?.Color?.Channel, "encoding.color.channel", "a declared channel or measure");
         Require(channels, Encoding?.Size?.Channel, "encoding.size.channel", "a declared channel");
-        if (Encoding?.Color is { Bins: <= 0 })
-            throw new ArgumentException($"view '{Id}': encoding.color.bins must be > 0");
+        Encoding?.Color?.Validate(Id);
         if (Inspect is { } inspect)
         {
             if (inspect.Channels.Count == 0)
@@ -280,6 +279,9 @@ public sealed record ChannelRef
 /// datatype when omitted.</summary>
 public sealed record ColorSpec
 {
+    private static readonly HashSet<string> SupportedTypes =
+        ["linear", "log", "sqrt", "diverging", "quantize", "quantile", "threshold", "ordinal", "categorical"];
+
     public required string Channel { get; init; }
 
     /// <summary>linear | log | sqrt | diverging | quantize | quantile | threshold | ordinal | categorical.</summary>
@@ -300,8 +302,96 @@ public sealed record ColorSpec
     /// <summary>Categorical: explicit value → hex.</summary>
     public IReadOnlyDictionary<string, string>? Palette { get; init; }
 
+    /// <summary>Categorical: partial value → hex overrides applied over the selected scheme/range.</summary>
+    public IReadOnlyDictionary<string, string>? Overrides { get; init; }
+
     /// <summary>Color for unmapped / null values.</summary>
     public string? Unknown { get; init; }
+
+    public void Validate(string viewId)
+    {
+        string Prefix(string field) => $"view '{viewId}': encoding.color.{field}";
+        if (string.IsNullOrWhiteSpace(Channel)) throw new ArgumentException($"{Prefix("channel")} is required");
+        if (Type is { } type && !SupportedTypes.Contains(type))
+            throw new ArgumentException($"{Prefix("type")} '{type}' is unsupported");
+        if (Scheme is not null && string.IsNullOrWhiteSpace(Scheme))
+            throw new ArgumentException($"{Prefix("scheme")} cannot be empty");
+
+        if (Range is { } range)
+        {
+            if (range.Count is < 2 or > 12)
+                throw new ArgumentException($"{Prefix("range")} must contain 2 to 12 colors");
+            ValidateColors(range.Select((value, index) => ($"range[{index}]", value)));
+        }
+
+        if (Unknown is { } unknown && !IsHexColor(unknown))
+            throw new ArgumentException($"{Prefix("unknown")} must be a #RGB or #RRGGBB color");
+        ValidateMap("palette", Palette);
+        ValidateMap("overrides", Overrides);
+        if (Palette is not null && Overrides is not null)
+            throw new ArgumentException($"{Prefix("palette")} and encoding.color.overrides cannot be combined");
+
+        if (Bins is { } bins && bins is < 2 or > 12)
+            throw new ArgumentException($"{Prefix("bins")} must be between 2 and 12");
+        if (Bins is not null && Type is not ("quantize" or "quantile"))
+            throw new ArgumentException($"{Prefix("bins")} is only valid for quantize or quantile scales");
+        if (Midpoint is { } midpoint && !double.IsFinite(midpoint))
+            throw new ArgumentException($"{Prefix("midpoint")} must be finite");
+        if (Midpoint is not null && Type != "diverging")
+            throw new ArgumentException($"{Prefix("midpoint")} is only valid for diverging scales");
+
+        if (Thresholds is { } thresholds)
+        {
+            if (Type != "threshold")
+                throw new ArgumentException($"{Prefix("thresholds")} is only valid for threshold scales");
+            if (thresholds.Count is < 1 or > 11 || thresholds.Any(value => !double.IsFinite(value)))
+                throw new ArgumentException($"{Prefix("thresholds")} must contain 1 to 11 finite values");
+            if (thresholds.Zip(thresholds.Skip(1)).Any(pair => pair.First >= pair.Second))
+                throw new ArgumentException($"{Prefix("thresholds")} must be strictly increasing");
+        }
+
+        if (Domain is { } domain)
+        {
+            if (domain.Count == 0 || domain.Any(value => value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+                    or JsonValueKind.Object or JsonValueKind.Array))
+                throw new ArgumentException($"{Prefix("domain")} must contain scalar values");
+
+            bool numericScale = Type is not ("categorical" or "ordinal") &&
+                !(Type is null && (Palette is not null || Overrides is not null || domain.Any(value => value.ValueKind != JsonValueKind.Number)));
+            if (numericScale)
+            {
+                if (domain.Count != 2 || domain.Any(value => value.ValueKind != JsonValueKind.Number) ||
+                    !domain[0].TryGetDouble(out double min) || !domain[1].TryGetDouble(out double max) ||
+                    !double.IsFinite(min) || !double.IsFinite(max) || min >= max)
+                    throw new ArgumentException($"{Prefix("domain")} must be an ascending numeric [min,max] pair");
+                if (Type == "log" && min <= 0)
+                    throw new ArgumentException($"{Prefix("domain")} must be positive for a log scale");
+                if (Midpoint is { } mid && (mid < min || mid > max))
+                    throw new ArgumentException($"{Prefix("midpoint")} must fall inside encoding.color.domain");
+            }
+        }
+
+        void ValidateMap(string field, IReadOnlyDictionary<string, string>? values)
+        {
+            if (values is null) return;
+            if (values.Count == 0 || values.Keys.Any(string.IsNullOrWhiteSpace))
+                throw new ArgumentException($"{Prefix(field)} must contain non-empty value names");
+            ValidateColors(values.Select(pair => ($"{field}.{pair.Key}", pair.Value)));
+        }
+
+        void ValidateColors(IEnumerable<(string Field, string Value)> values)
+        {
+            foreach ((string field, string value) in values)
+                if (!IsHexColor(value))
+                    throw new ArgumentException($"{Prefix(field)} must be a #RGB or #RRGGBB color");
+        }
+    }
+
+    private static bool IsHexColor(string value)
+    {
+        if (value.Length is not (4 or 7) || value[0] != '#') return false;
+        return value.AsSpan(1).ToArray().All(Uri.IsHexDigit);
+    }
 }
 
 /// <summary>Optional click-to-inspect: when set, clicking a mark pins a panel of these channels' values

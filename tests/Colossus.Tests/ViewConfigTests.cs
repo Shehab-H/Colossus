@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Colossus.Domain.Model;
 using Xunit;
 
@@ -114,6 +115,67 @@ public class ViewConfigTests
     {
         var view = Valid() with { Inspect = new InspectSpec { Channels = Array.Empty<string>() } };
         Assert.Throws<ArgumentException>(view.Validate);
+    }
+
+    [Fact]
+    public void EncodingColor_FullAuthoredSpecAndPartialOverrides_Passes()
+    {
+        var view = Valid() with
+        {
+            Encoding = new EncodingSpec
+            {
+                Color = new ColorSpec
+                {
+                    Channel = "v",
+                    Type = "diverging",
+                    Scheme = "blueRed",
+                    Range = ["#2166ac", "#f7f7f7", "#b35806"],
+                    Domain = [JsonSerializer.SerializeToElement(-100), JsonSerializer.SerializeToElement(100)],
+                    Reverse = true,
+                    Midpoint = 0,
+                    Unknown = "#888888",
+                },
+            },
+        };
+
+        view.Validate();
+        (view with
+        {
+            Encoding = new EncodingSpec
+            {
+                Color = new ColorSpec
+                {
+                    Channel = "v", Type = "categorical", Scheme = "okabeIto",
+                    Domain = [JsonSerializer.SerializeToElement("A"), JsonSerializer.SerializeToElement("B")],
+                    Overrides = new Dictionary<string, string> { ["B"] = "#123456" },
+                },
+            },
+        }).Validate();
+    }
+
+    [Fact]
+    public void EncodingColor_RejectsMalformedAdvancedSettings()
+    {
+        ColorSpec[] invalid =
+        [
+            new() { Channel = "v", Type = "rainbow" },
+            new() { Channel = "v", Type = "linear", Range = ["#fff"] },
+            new() { Channel = "v", Type = "linear", Range = ["#fff", "not-a-color"] },
+            new() { Channel = "v", Type = "quantize", Bins = 13 },
+            new() { Channel = "v", Type = "linear", Bins = 5 },
+            new() { Channel = "v", Type = "linear", Midpoint = 0 },
+            new() { Channel = "v", Type = "threshold", Thresholds = [10, 5] },
+            new() { Channel = "v", Type = "linear", Domain = [JsonSerializer.SerializeToElement(10), JsonSerializer.SerializeToElement(5)] },
+            new() { Channel = "v", Type = "log", Domain = [JsonSerializer.SerializeToElement(0), JsonSerializer.SerializeToElement(5)] },
+            new() { Channel = "v", Type = "categorical", Palette = new Dictionary<string, string> { ["A"] = "#fff" }, Overrides = new Dictionary<string, string> { ["B"] = "#000" } },
+            new() { Channel = "v", Unknown = "transparent" },
+        ];
+
+        foreach (ColorSpec color in invalid)
+        {
+            var view = Valid() with { Encoding = new EncodingSpec { Color = color } };
+            Assert.Contains("encoding.color", Assert.Throws<ArgumentException>(view.Validate).Message);
+        }
     }
 
     [Fact]

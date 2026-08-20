@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <PackageReference Include="DuckDB.NET.Data.Full" Version="1.5.3" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.101.7" />
     <PackageReference Include="MySqlConnector" Version="2.6.1" />
     <PackageReference Include="Apache.Arrow" Version="20.0.0" />
     <!-- Managed zstd + ZDICT dictionary training for the companion pack codec (companion-scale R5/Work

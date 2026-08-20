@@ -1,14 +1,18 @@
 # Colossus documentation index
 
 This is the entry point for project documentation. The active surface is intentionally small:
-documentation for current work lives under `sagas/`; completed or superseded material lives under
+documentation for current work lives under `sagas/`; completed, deferred, or superseded material lives under
 `archive/` and remains available as project history.
 
 ## Active sagas
 
-| Saga | Status | Next decision |
-| --- | --- | --- |
-| [002 — Productized map application](sagas/productized-map-application/README.md) | Active; durable bake scheduling verified | Build atomic release publication and retention (item 09) |
+None. No forward roadmap is currently approved.
+
+## Current working mode
+
+Harden the existing, verified design incrementally. New work should start from a concrete observed failure,
+operational risk, resource-limit result, or narrowly scoped operator need. Do not revive the deferred broad
+operational roadmap or create a replacement full-product plan without an explicit decision.
 
 ## System map
 
@@ -25,6 +29,7 @@ Do not add loose planning or completion files at the root of `docs/`.
 - **Candidate** — feasible, but not approved for implementation.
 - **Active** — approved and currently being built or validated.
 - **Blocked** — cannot progress without a recorded decision or external change.
+- **Deferred** — intentionally not scheduled; retain it as historical reference rather than an active queue.
 - **Complete** — acceptance evidence exists; archive it using [AGENTS.md](AGENTS.md).
 
 ## Historical reference set

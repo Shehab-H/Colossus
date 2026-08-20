@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
+using System.Data.Common;
 using System.Security.Cryptography;
+using System.Text;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using Apache.Arrow.Types;
@@ -87,23 +89,19 @@ internal sealed class SlabCompanionWriter : IDisposable
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         using var reader = cmd.ExecuteReader();
+        using var spool = new TileSpool(_outputDir, nPartials);
 
         long tx = 0, ty = 0;
         bool open = false;
         int maxMki = -1;
-        var mkis = new List<int>();
-        var cellIds = new List<int>();
-        var vals = new List<float>[nPartials];
-        for (int i = 0; i < nPartials; i++) vals[i] = new List<float>();
 
         void Flush()
         {
-            if (!open || cellIds.Count == 0) return;
+            if (!open || spool.Count == 0) return;
             long marks = markCounts.TryGetValue((tx, ty), out var m) ? m : maxMki + 1;
-            WriteTile($"{z}/{tx}/{ty}", (int)marks, mkis, cellIds, vals);
-            mkis.Clear();
-            cellIds.Clear();
-            foreach (var v in vals) v.Clear();
+            spool.PrepareRead();
+            WriteTile($"{z}/{tx}/{ty}", (int)marks, spool);
+            spool.Reset();
             maxMki = -1;
         }
 
@@ -114,31 +112,29 @@ internal sealed class SlabCompanionWriter : IDisposable
             long rtx = reader.GetInt64(0), rty = reader.GetInt64(1);
             if (!open || rtx != tx || rty != ty) { Flush(); (tx, ty, open) = (rtx, rty, true); }
             int mki = reader.GetInt32(2);
-            mkis.Add(mki);
             if (mki > maxMki) maxMki = mki;
-            cellIds.Add((int)reader.GetInt64(3));
-            for (int i = 0; i < nPartials; i++) vals[i].Add(Convert.ToSingle(reader.GetValue(4 + i)));
+            spool.Append(mki, (int)reader.GetInt64(3), reader, firstPartialColumn: 4);
         }
         Flush();
     }
 
-    private void WriteTile(string key, int markCount, List<int> mkis, List<int> cellIds, List<float>[] vals)
+    private void WriteTile(string key, int markCount, TileSpool spool)
     {
         var planes = new Dictionary<string, long[]>(StringComparer.Ordinal);
         long start = _pack.Position;
 
         // The per-leaf-tile gate: this tile's own occupancy, not the view's, picks its layout.
-        bool dense = _layoutOverride ?? _plan.TileDense(cellIds.Count, markCount);
+        bool dense = _layoutOverride ?? _plan.TileDense(spool.Count, markCount);
         long densePlaneBytes = (long)_plan.Cells * markCount * sizeof(float);
         if (_layoutOverride is null && _maxWorkingSetBytes > 0 && densePlaneBytes > _maxWorkingSetBytes / 2)
             dense = false;
         if (dense)
         {
             var slices = new Dictionary<string, int[]>(StringComparer.Ordinal);
-            WriteDense(markCount, mkis, cellIds, vals, planes, slices);
+            WriteDense(markCount, spool, planes, slices);
             _sliceEntries[key] = slices; // dense tiles are cell-run sliceable (R5)
         }
-        else WriteSparse(markCount, mkis, cellIds, vals, planes);
+        else WriteSparse(markCount, spool, planes);
 
         _entries[key] = [start, _pack.Position - start];
         _planeEntries[key] = planes;
@@ -146,12 +142,17 @@ internal sealed class SlabCompanionWriter : IDisposable
     }
 
     // Sparse CSR: @idx (offsets[markCount+1] + cellIds[nnz]) then one block per partial (values[nnz]).
-    private void WriteSparse(int markCount, List<int> mkis, List<int> cellIds, List<float>[] vals,
-        Dictionary<string, long[]> planes)
+    private void WriteSparse(int markCount, TileSpool spool, Dictionary<string, long[]> planes)
     {
-        int nnz = cellIds.Count;
+        int nnz = spool.Count;
         var offsets = new int[markCount + 1];
-        foreach (int mk in mkis) offsets[mk + 1]++;
+        var cellIds = new int[nnz];
+        int entry = 0;
+        spool.ReadIndex((mki, cellId) =>
+        {
+            offsets[mki + 1]++;
+            cellIds[entry++] = cellId;
+        });
         for (int i = 1; i <= markCount; i++) offsets[i] += offsets[i - 1];
 
         var idxType = CellIdType(_plan.Cells);
@@ -163,8 +164,8 @@ internal sealed class SlabCompanionWriter : IDisposable
         {
             var p = _plan.Partials[i];
             planes[p.Name] = p.Kind == PartialKind.Count
-                ? AppendBlock(One(p.Name, Int32Type.Default), [SingleRowList(I32(ToInt(vals[i], nnz)), Int32Type.Default)])
-                : AppendBlock(One(p.Name, FloatType.Default), [SingleRowList(F32(vals[i], nnz), FloatType.Default)]);
+                ? AppendBlock(One(p.Name, Int32Type.Default), [SingleRowList(I32(spool.ReadIntPartial(i)), Int32Type.Default)])
+                : AppendBlock(One(p.Name, FloatType.Default), [SingleRowList(F32(spool.ReadFloatPartial(i), nnz), FloatType.Default)]);
         }
     }
 
@@ -174,11 +175,11 @@ internal sealed class SlabCompanionWriter : IDisposable
     // client fetches only the rows a context reads. The blocks are raw little-endian typed-array bytes, not
     // Arrow: per-row Arrow framing would swamp a small tile's payload, and the row's type is known from the
     // partial. `planes[p]` is the whole-plane region (all its cell-row blocks); `slices[p]` their lengths.
-    private void WriteDense(int markCount, List<int> mkis, List<int> cellIds, List<float>[] vals,
-        Dictionary<string, long[]> planes, Dictionary<string, int[]> slices)
+    private void WriteDense(int markCount, TileSpool spool, Dictionary<string, long[]> planes,
+        Dictionary<string, int[]> slices)
     {
         int cells = _plan.Cells;
-        int size = cells * markCount;
+        int size = checked(cells * markCount);
         for (int i = 0; i < _plan.Partials.Count; i++)
         {
             var p = _plan.Partials[i];
@@ -186,8 +187,7 @@ internal sealed class SlabCompanionWriter : IDisposable
             bool isInt = p.Kind == PartialKind.Count;
             var plane = new float[size];
             if (minmax) System.Array.Fill(plane, float.NaN);
-            var col = vals[i];
-            for (int e = 0; e < cellIds.Count; e++) plane[cellIds[e] * markCount + mkis[e]] = col[e];
+            spool.ReadPartial(i, (mki, cellId, value) => plane[cellId * markCount + mki] = value);
             if (!minmax) Cumulate(plane, markCount);
 
             long planeStart = _pack.Position;
@@ -268,11 +268,20 @@ internal sealed class SlabCompanionWriter : IDisposable
         using var batch = new RecordBatch(schema, arrays, 1);
         using var mem = new MemoryStream();
         using (var w = new ArrowStreamWriter(mem, schema, leaveOpen: true)) { w.WriteRecordBatch(batch); w.WriteEnd(); }
-        byte[] bytes = mem.ToArray();
-        Sample(bytes, bytes.Length);
         long offset = _pack.Position;
-        _pack.Write(bytes, 0, bytes.Length);
-        return [offset, bytes.Length];
+        int length = checked((int)mem.Length);
+        if (length <= MaxSampleBlock)
+        {
+            byte[] bytes = mem.ToArray();
+            Sample(bytes, bytes.Length);
+            _pack.Write(bytes, 0, bytes.Length);
+        }
+        else
+        {
+            mem.Position = 0;
+            mem.CopyTo(_pack);
+        }
+        return [offset, length];
     }
 
     public CompanionPack Finish()
@@ -285,9 +294,9 @@ internal sealed class SlabCompanionWriter : IDisposable
         if (dict is not null) comp.LoadDictionary(dict);
 
         // Pass 2 — transcode the raw scratch blocks into the final pack with zstd+dict, rebuilding the
-        // directory with compressed offsets. Blocks are read a whole tile-region at a time (they are
-        // contiguous in the scratch) and re-emitted tile by tile, plane by plane, so the final layout keeps
-        // per-tile / per-plane grouping (whole-tile and plane-split fetches still range one region).
+        // directory with compressed offsets. Re-emit tile by tile, but read only one sparse plane (or one
+        // dense cell row) at a time. A hot tile's complete region can be much larger than the configured
+        // working set even though each independently fetched plane remains bounded.
         var newEntries = new Dictionary<string, long[]>(StringComparer.Ordinal);
         var newPlaneEntries = new Dictionary<string, IReadOnlyDictionary<string, long[]>>(StringComparer.Ordinal);
         var newSliceEntries = new Dictionary<string, IReadOnlyDictionary<string, int[]>>(StringComparer.Ordinal);
@@ -298,26 +307,24 @@ internal sealed class SlabCompanionWriter : IDisposable
         {
             foreach (var (tileKey, region) in _entries)
             {
-                byte[] raw = new byte[region[1]];
-                temp.Position = region[0];
-                temp.ReadExactly(raw);
                 long tileStart = final.Position;
                 var planes = new Dictionary<string, long[]>(StringComparer.Ordinal);
                 var slices = _sliceEntries.TryGetValue(tileKey, out var tileSlices) ? new Dictionary<string, int[]>(StringComparer.Ordinal) : null;
 
                 foreach (var (plane, rawRange) in _planeEntries[tileKey])
                 {
-                    int inRegion = (int)(rawRange[0] - region[0]); // this plane's start within the tile region
                     long planeStart = final.Position;
                     if (slices is not null && tileSlices!.TryGetValue(plane, out var rawCellLens))
                     {
                         // Dense: one block per cell row. Transcode each; record its compressed length.
                         var compLens = new int[rawCellLens.Length];
-                        int cellOff = inRegion;
+                        byte[] raw = new byte[rawCellLens.Length > 0 ? rawCellLens.Max() : 0];
+                        temp.Position = rawRange[0];
                         for (int c = 0; c < rawCellLens.Length; c++)
                         {
-                            compLens[c] = WriteCompressed(final, comp, raw, cellOff, rawCellLens[c]);
-                            cellOff += rawCellLens[c];
+                            int len = rawCellLens[c];
+                            temp.ReadExactly(raw.AsSpan(0, len));
+                            compLens[c] = WriteCompressed(final, comp, raw, 0, len);
                         }
                         planes[plane] = [planeStart, final.Position - planeStart];
                         slices[plane] = compLens;
@@ -325,7 +332,10 @@ internal sealed class SlabCompanionWriter : IDisposable
                     else
                     {
                         // Sparse (or @idx): one whole block.
-                        WriteCompressed(final, comp, raw, inRegion, (int)rawRange[1]);
+                        byte[] raw = new byte[checked((int)rawRange[1])];
+                        temp.Position = rawRange[0];
+                        temp.ReadExactly(raw);
+                        WriteCompressed(final, comp, raw, 0, raw.Length);
                         planes[plane] = [planeStart, final.Position - planeStart];
                     }
                 }
@@ -424,7 +434,7 @@ internal sealed class SlabCompanionWriter : IDisposable
     }
     private static int[] ToInt(float[] d) => ToInt(d, d.Length);
 
-    private static IArrowArray CellIdArray(List<int> cellIds, int cells)
+    private static IArrowArray CellIdArray(IReadOnlyList<int> cellIds, int cells)
     {
         if (cells <= 256)
         {
@@ -441,5 +451,110 @@ internal sealed class SlabCompanionWriter : IDisposable
         var bb = new ArrowBuffer.Builder<uint>(cellIds.Count);
         foreach (int c in cellIds) bb.Append((uint)c);
         return new UInt32Array(bb.Build(), ArrowBuffer.Empty, cellIds.Count, 0, 0);
+    }
+
+    /// <summary>
+    /// Per-tile, columnar scratch. Companion SQL is ordered by tile but one hot tile can still contain
+    /// millions of grain rows. Holding mki/cellId plus every partial in managed Lists duplicates the whole
+    /// tile when Arrow buffers are built. Spooling makes ingestion O(1) memory; sparse planes materialize
+    /// one at a time and dense planes stream index plus one partial into their bounded array.
+    /// </summary>
+    private sealed class TileSpool : IDisposable
+    {
+        private readonly string[] _paths;
+        private readonly FileStream _index;
+        private readonly FileStream[] _partials;
+        private readonly BinaryWriter _indexWriter;
+        private readonly BinaryWriter[] _partialWriters;
+
+        public int Count { get; private set; }
+
+        public TileSpool(string directory, int partials)
+        {
+            string stem = Path.Combine(directory, $"facts.rows-{Guid.NewGuid():N}");
+            _paths = Enumerable.Range(0, partials + 1).Select(i => $"{stem}.{i}.tmp").ToArray();
+            _index = Open(_paths[0]);
+            _partials = Enumerable.Range(0, partials).Select(i => Open(_paths[i + 1])).ToArray();
+            _indexWriter = new BinaryWriter(_index, Encoding.UTF8, leaveOpen: true);
+            _partialWriters = _partials
+                .Select(stream => new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+                .ToArray();
+        }
+
+        private static FileStream Open(string path) =>
+            new(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 1 << 20, FileOptions.SequentialScan);
+
+        public void Append(int mki, int cellId, DbDataReader reader, int firstPartialColumn)
+        {
+            _indexWriter.Write(mki);
+            _indexWriter.Write(cellId);
+            for (int i = 0; i < _partialWriters.Length; i++)
+                _partialWriters[i].Write(Convert.ToSingle(reader.GetValue(firstPartialColumn + i)));
+            Count++;
+        }
+
+        public void PrepareRead()
+        {
+            _indexWriter.Flush();
+            foreach (var writer in _partialWriters) writer.Flush();
+            _index.Position = 0;
+            foreach (var partial in _partials) partial.Position = 0;
+        }
+
+        public void ReadIndex(Action<int, int> visit)
+        {
+            _index.Position = 0;
+            using var reader = new BinaryReader(_index, Encoding.UTF8, leaveOpen: true);
+            for (int i = 0; i < Count; i++) visit(reader.ReadInt32(), reader.ReadInt32());
+        }
+
+        public float[] ReadFloatPartial(int partial)
+        {
+            var values = new float[Count];
+            _partials[partial].Position = 0;
+            using var reader = new BinaryReader(_partials[partial], Encoding.UTF8, leaveOpen: true);
+            for (int i = 0; i < values.Length; i++) values[i] = reader.ReadSingle();
+            return values;
+        }
+
+        public int[] ReadIntPartial(int partial)
+        {
+            var values = new int[Count];
+            _partials[partial].Position = 0;
+            using var reader = new BinaryReader(_partials[partial], Encoding.UTF8, leaveOpen: true);
+            for (int i = 0; i < values.Length; i++) values[i] = checked((int)MathF.Round(reader.ReadSingle()));
+            return values;
+        }
+
+        public void ReadPartial(int partial, Action<int, int, float> visit)
+        {
+            _index.Position = 0;
+            _partials[partial].Position = 0;
+            using var index = new BinaryReader(_index, Encoding.UTF8, leaveOpen: true);
+            using var values = new BinaryReader(_partials[partial], Encoding.UTF8, leaveOpen: true);
+            for (int i = 0; i < Count; i++)
+                visit(index.ReadInt32(), index.ReadInt32(), values.ReadSingle());
+        }
+
+        public void Reset()
+        {
+            _index.SetLength(0);
+            _index.Position = 0;
+            foreach (var partial in _partials)
+            {
+                partial.SetLength(0);
+                partial.Position = 0;
+            }
+            Count = 0;
+        }
+
+        public void Dispose()
+        {
+            _indexWriter.Dispose();
+            foreach (var writer in _partialWriters) writer.Dispose();
+            _index.Dispose();
+            foreach (var partial in _partials) partial.Dispose();
+            foreach (string path in _paths) if (File.Exists(path)) File.Delete(path);
+        }
     }
 }

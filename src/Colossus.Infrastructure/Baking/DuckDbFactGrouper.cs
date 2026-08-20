@@ -70,20 +70,30 @@ public sealed class DuckDbFactGrouper(BakeResourceOptions? resources = null) : I
     {
         var channels = view.Source.Channels.Where(c => present.Contains(c.Name)).Select(c => c.Name).ToList();
         string key = Quote(MarkKey.GeometryIdentity);
-        var sb = new StringBuilder($"SELECT count(DISTINCT {key}) AS marks");
-        foreach (var c in channels)
-            sb.Append($", count(DISTINCT ({key}, {Quote(c)}))");
-        sb.Append($" FROM {facts}");
-
-        using var cmd = db.Connection.CreateCommand();
-        cmd.CommandText = sb.ToString();
-        using var r = cmd.ExecuteReader();
-        r.Read();
-        long marks = Convert.ToInt64(r.GetValue(0));
         var perMark = new List<string>();
         var perFact = new List<string>();
-        for (int i = 0; i < channels.Count; i++)
-            (Convert.ToInt64(r.GetValue(i + 1)) > marks ? perFact : perMark).Add(channels[i]);
+
+        // The former one-pass query kept one global COUNT(DISTINCT (mark,value)) hash table per channel.
+        // On a many-million-mark dataset those tables coexist and cannot spill independently. The exact
+        // classification question is smaller: does any mark have two distinct values (including null vs
+        // non-null)? Run that check one channel at a time so only one spillable GROUP BY exists at once.
+        foreach (string channel in channels)
+        {
+            string value = Quote(channel);
+            using var cmd = db.Connection.CreateCommand();
+            cmd.CommandText = $"""
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM {facts}
+                  GROUP BY {key}
+                  HAVING min({value}) IS DISTINCT FROM max({value})
+                     OR (count(*) > count({value}) AND count({value}) > 0)
+                  LIMIT 1
+                )
+                """;
+            bool variesWithinMark = Convert.ToBoolean(cmd.ExecuteScalar());
+            (variesWithinMark ? perFact : perMark).Add(channel);
+        }
         return new FactGrouping(perMark, perFact);
     }
 

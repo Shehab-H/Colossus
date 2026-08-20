@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 import type { CatalogDataset } from '@entities/catalog';
+import { colorChannelOption, measureColorOption } from '@domain/map/colorEncoding';
+import type { ColorSpec } from '@domain/map/manifest';
 import type { MapFormState } from '../model/mapForm';
 import { Alert, Button, Field, Input, Select, Textarea } from '@shared/ui';
+import { ColorEncodingEditor } from './ColorEncodingEditor';
 
 interface FilterConfig {
   channel: string;
@@ -14,15 +17,8 @@ interface MeasureConfig {
   expr: string;
 }
 
-interface ColorConfig {
-  channel: string;
-  type?: string;
-  scheme?: string;
-  [key: string]: unknown;
-}
-
 interface EncodingConfig {
-  color?: ColorConfig;
+  color?: ColorSpec;
   [key: string]: unknown;
 }
 
@@ -30,9 +26,6 @@ interface InspectConfig {
   channels: string[];
   title?: string;
 }
-
-const scaleTypes = ['', 'linear', 'log', 'sqrt', 'diverging', 'quantize', 'quantile', 'threshold', 'ordinal', 'categorical'];
-const schemes = ['', 'viridis', 'plasma', 'magma', 'inferno', 'cividis', 'turbo', 'blues', 'greens', 'oranges', 'greys', 'blueRed', 'redBlue', 'blueOrange', 'purpleGreen', 'spectral', 'okabeIto', 'category', 'status'];
 
 export function MapConfigurationBuilder({
   form,
@@ -53,10 +46,15 @@ export function MapConfigurationBuilder({
     ? filterable.map((channel) => ({ channel: channel.name, control: channel.role === 'temporal' ? 'dateRange' : 'select' }) as FilterConfig)
     : filters;
   const measures = readArray<MeasureConfig>(form.measures);
-  const encoding = readObject<EncodingConfig>(form.encoding);
+  const encodingResult = readObjectResult<EncodingConfig>(form.encoding);
+  const encoding = encodingResult.value;
   const inspect = readObject<InspectConfig>(form.inspect);
   const bakePredicates = readArray<string>(form.bakeFilters);
   const availableChannels = [...channels.map((channel) => channel.name), ...measures.map((measure) => measure.name).filter(Boolean)];
+  const colorChannels = [
+    ...channels.map(colorChannelOption),
+    ...measures.map((measure) => measure.name.trim()).filter(Boolean).map(measureColorOption),
+  ];
 
   const write = <K extends 'bakeFilters' | 'filters' | 'measures' | 'encoding' | 'inspect'>(field: K, value: unknown, empty = false) => {
     onChange(field, (empty ? '' : JSON.stringify(value, null, 2)) as MapFormState[K]);
@@ -77,11 +75,9 @@ export function MapConfigurationBuilder({
     write('measures', measures.map((measure, candidate) => candidate === index ? { ...measure, ...patch } : measure));
   };
 
-  const updateColor = (patch: Partial<ColorConfig>, remove: (keyof ColorConfig)[] = []) => {
-    const current = { ...(encoding.color ?? { channel: '' }), ...patch };
-    for (const key of remove) delete current[key];
+  const updateColor = (color?: ColorSpec) => {
     const next = { ...encoding };
-    if (current.channel) next.color = current;
+    if (color) next.color = color;
     else delete next.color;
     write('encoding', next, Object.keys(next).length === 0);
   };
@@ -151,12 +147,10 @@ export function MapConfigurationBuilder({
       </section>
 
       <section className="maps-config__section">
-        <header><h3>Visual encoding</h3><p>Bind a dataset channel or computed measure to color. Scale type and scheme can be inferred or set explicitly.</p></header>
-        <div className="maps-config__fields">
-          <Field label="Color channel" error={errors.encoding?.join(' ')}><Select value={encoding.color?.channel ?? ''} onChange={(event) => updateColor({ channel: event.target.value })}><option value="">No color encoding</option>{availableChannels.map((channel) => <option key={channel} value={channel}>{channel}</option>)}</Select></Field>
-          <Field label="Scale type"><Select disabled={!encoding.color?.channel} value={encoding.color?.type ?? ''} onChange={(event) => updateColor(event.target.value ? { type: event.target.value } : {}, event.target.value ? [] : ['type'])}>{scaleTypes.map((type) => <option key={type || 'infer'} value={type}>{type || 'Infer from channel'}</option>)}</Select></Field>
-          <Field label="Color scheme"><Select disabled={!encoding.color?.channel} value={encoding.color?.scheme ?? ''} onChange={(event) => updateColor(event.target.value ? { scheme: event.target.value } : {}, event.target.value ? [] : ['scheme'])}>{schemes.map((scheme) => <option key={scheme || 'default'} value={scheme}>{scheme || 'Default for scale'}</option>)}</Select></Field>
-        </div>
+        <header><h3>Visual encoding</h3><p>Choose how a dataset channel or computed measure maps to color. Presets and custom colors use the same scale engine as the published viewer.</p></header>
+        {!encodingResult.valid
+          ? <Alert tone="danger">Encoding JSON is invalid. Repair it under Advanced configuration JSON before using the guided color controls.</Alert>
+          : <ColorEncodingEditor value={encoding.color} channels={colorChannels} error={errors.encoding?.join(' ')} onChange={updateColor} />}
       </section>
 
       <section className="maps-config__section">
@@ -211,6 +205,18 @@ function readObject<T extends object>(source: string): Partial<T> {
     return value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<T> : {};
   } catch {
     return {};
+  }
+}
+
+function readObjectResult<T extends object>(source: string): { value: Partial<T>; valid: boolean } {
+  if (!source.trim()) return { value: {}, valid: true };
+  try {
+    const value: unknown = JSON.parse(source);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? { value: value as Partial<T>, valid: true }
+      : { value: {}, valid: false };
+  } catch {
+    return { value: {}, valid: false };
   }
 }
 

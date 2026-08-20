@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ColorSpec, Manifest } from '@domain/map/manifest';
 import { loadManifest } from '@infrastructure/api/mapApi';
 import { ALL, activeFilters as pickActive, carriedFilterableChannels, colorChannelName, describeColorDomain, discoverOptions, isGroupRegime } from '../engine/channels';
-import { describeLegend, type ColorDomain } from '../engine/colorScale';
+import { describeLegend, type ColorDomain } from '@domain/map/colorScale';
 import { buildColorLut } from '../engine/colorLut';
 import { activateTileVersion } from '@infrastructure/cache/tileCacheServiceWorker';
 

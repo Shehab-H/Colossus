@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildColorLut } from './colorLut';
-import { buildColorScale, type ColorDomain } from './colorScale';
+import { buildColorScale, type ColorDomain } from '@domain/map/colorScale';
 import type { ColorSpec } from '@domain/map/manifest';
 
 const numeric = (min: number, max: number, sample?: number[]): ColorDomain => ({ kind: 'numeric', min, max, sample });

@@ -65,6 +65,42 @@ public sealed class BakeSchedulingTests : IDisposable
     }
 
     [Fact]
+    public async Task RunNow_KeepsActiveBakeAndCoalescesQueuedRevisionsToLatest()
+    {
+        var database = NewDatabase();
+        var store = new MySqlDatabase(database.ConnectionString, new DatabaseOptions());
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 20, 12, 0, 0, TimeSpan.Zero));
+        var catalog = new ProductCatalogService(store, store, store, store, store, store, clock);
+        var queue = new RecordingScheduler();
+        var scheduling = new BakeSchedulingService(catalog, store, store, queue, new FakeMapLock(), clock);
+        CatalogMap map = await CreateMapAsync(catalog);
+
+        BakeRun active = await scheduling.RunNowAsync(map.Id);
+        active = await store.UpdateAsync(active with
+        {
+            Status = BakeRunStatus.Running,
+            Stage = BakeRunStage.Extracting,
+            StartedAt = clock.GetUtcNow(),
+        });
+
+        map = await catalog.UpdateMapAsync(map.Id, map.Draft with { Title = "Revision two" }, map.Revision);
+        BakeRun revisionTwo = await scheduling.RunNowAsync(map.Id);
+        map = await catalog.UpdateMapAsync(map.Id, map.Draft with { Title = "Revision three" }, map.Revision);
+        BakeRun revisionThree = await scheduling.RunNowAsync(map.Id);
+        BakeRun duplicate = await scheduling.RunNowAsync(map.Id);
+
+        IReadOnlyList<BakeRun> history = await ((IBakeRunRepository)store).ListForMapAsync(map.Id);
+        Assert.Equal(BakeRunStatus.Running, history.Single(run => run.Id == active.Id).Status);
+        BakeRun superseded = history.Single(run => run.Id == revisionTwo.Id);
+        Assert.Equal(BakeRunStatus.Cancelled, superseded.Status);
+        Assert.Equal("Superseded", superseded.FailureCategory);
+        Assert.Equal(map.Revision, revisionThree.DraftRevision);
+        Assert.Equal(revisionThree.Id, duplicate.Id);
+        _ = Assert.Single(history, run => run.Status == BakeRunStatus.Queued);
+        Assert.Equal(["job-2"], queue.Cancelled);
+    }
+
+    [Fact]
     public async Task Executor_PersistsProgressMetricsReleaseAndSuccess()
     {
         var store = new RunStore(Run());
@@ -115,6 +151,45 @@ public sealed class BakeSchedulingTests : IDisposable
     }
 
     [Fact]
+    public async Task Executor_ResumesPreparedReleaseWithoutRebakingAfterPublicationFailure()
+    {
+        var store = new RunStore(Run());
+        var pipeline = new ScriptedPipeline((attempt, progress, ct) => Task.FromResult(new BakeOutcome(
+            "scheduled-map", "v-prepared", 25, 2, 1, 25, new Bbox(0, 0, 1, 1), 1)))
+        {
+            PublishFailuresRemaining = 1,
+        };
+        pipeline.BeforePublish = _ => Assert.Equal(
+            ReleaseState.Prepared,
+            Assert.Single(store.Releases).State);
+
+        await Executor(store, pipeline, new FakeMapLock()).ExecuteAsync(store.Run.Id);
+
+        Assert.Equal(BakeRunStatus.Succeeded, store.Run.Status);
+        Assert.Equal(1, pipeline.Calls);
+        Assert.Equal(2, pipeline.PublishCalls);
+        var release = Assert.Single(store.Releases);
+        Assert.Equal(ReleaseState.Published, release.State);
+        Assert.True(release.VerificationPassed);
+        Assert.NotNull(release.ManifestHash);
+    }
+
+    [Fact]
+    public async Task Executor_RepeatsPointerIdempotentlyWhenCatalogCommitFailsAfterTheFlip()
+    {
+        var store = new RunStore(Run()) { ReleaseUpdateFailuresRemaining = 1 };
+        var pipeline = new ScriptedPipeline((attempt, progress, ct) => Task.FromResult(new BakeOutcome(
+            "scheduled-map", "v-commit-retry", 25, 2, 1, 25, new Bbox(0, 0, 1, 1), 1)));
+
+        await Executor(store, pipeline, new FakeMapLock()).ExecuteAsync(store.Run.Id);
+
+        Assert.Equal(BakeRunStatus.Succeeded, store.Run.Status);
+        Assert.Equal(1, pipeline.Calls);
+        Assert.Equal(2, pipeline.PublishCalls);
+        Assert.Equal(ReleaseState.Published, Assert.Single(store.Releases).State);
+    }
+
+    [Fact]
     public async Task Executor_FailsPermanentErrorsWithoutRetryOrRelease()
     {
         var store = new RunStore(Run());
@@ -136,17 +211,16 @@ public sealed class BakeSchedulingTests : IDisposable
     }
 
     [Fact]
-    public async Task Executor_RejectsOverlapBeforePipelineStarts()
+    public async Task Executor_WaitsForActiveBakeInsteadOfCancellingTheFollowUp()
     {
         var store = new RunStore(Run());
         var pipeline = new ScriptedPipeline((attempt, progress, ct) =>
             Task.FromResult(BakeOutcome.Empty("scheduled-map")));
 
-        await Executor(store, pipeline, new FakeMapLock(available: false)).ExecuteAsync(store.Run.Id);
+        await Executor(store, pipeline, new DelayedMapLock()).ExecuteAsync(store.Run.Id);
 
-        Assert.Equal(BakeRunStatus.Cancelled, store.Run.Status);
-        Assert.Equal("overlap", store.Run.FailureCategory);
-        Assert.Equal(0, pipeline.Calls);
+        Assert.Equal(BakeRunStatus.Succeeded, store.Run.Status);
+        Assert.Equal(1, pipeline.Calls);
     }
 
     [Fact]
@@ -204,6 +278,7 @@ public sealed class BakeSchedulingTests : IDisposable
         {
             MaxTransientAttempts = 3,
             CancellationPollMilliseconds = 100,
+            MapBusyRetryMilliseconds = 100,
             RetryDelaySeconds = [0],
         };
         options.Normalize();
@@ -296,18 +371,49 @@ public sealed class BakeSchedulingTests : IDisposable
         }
     }
 
+    private sealed class DelayedMapLock : IMapBakeLock
+    {
+        private int _calls;
+        public Task<IAsyncDisposable?> TryAcquireAsync(Guid mapId, CancellationToken ct = default) =>
+            Task.FromResult<IAsyncDisposable?>(Interlocked.Increment(ref _calls) == 1 ? null : new Lease());
+
+        private sealed class Lease : IAsyncDisposable
+        {
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class ScriptedPipeline(
         Func<int, IProgress<BakeProgress>?, CancellationToken, Task<BakeOutcome>> execute) : IBakePipeline
     {
         public int Calls { get; private set; }
         public int CleanupCalls { get; private set; }
+        public int PublishCalls { get; private set; }
+        public int PublishFailuresRemaining { get; set; }
+        public Action<BakeOutcome>? BeforePublish { get; set; }
 
-        public Task<BakeOutcome> BakeAsync(
-            ViewConfig snapshot, IProgress<BakeProgress>? progress = null, CancellationToken ct = default) =>
-            execute(++Calls, progress, ct);
+        public async Task<BakeOutcome> BakeAsync(
+            ViewConfig snapshot, BakeAttempt attempt,
+            IProgress<BakeProgress>? progress = null, CancellationToken ct = default)
+        {
+            var outcome = await execute(++Calls, progress, ct);
+            return outcome.Version is null ? outcome : outcome with
+            {
+                AttemptId = attempt.Id,
+                ManifestHash = new string('A', 64),
+                ArtifactBytes = 4096,
+                VerificationPassed = true,
+                ArtifactLocation = $"tiles/{outcome.ViewId}/{outcome.Version}",
+            };
+        }
 
-        public long VersionSize(string viewId, string version) => 4096;
-        public void Cleanup(string viewId) => CleanupCalls++;
+        public void Publish(BakeOutcome outcome)
+        {
+            PublishCalls++;
+            BeforePublish?.Invoke(outcome);
+            if (PublishFailuresRemaining-- > 0) throw new IOException("Injected pointer failure.");
+        }
+        public void Cleanup(string viewId, string attemptId) => CleanupCalls++;
     }
 
     private sealed class RunStore(BakeRun run) : IBakeRunRepository, IReleaseRepository, IBakePolicyRepository
@@ -316,6 +422,7 @@ public sealed class BakeSchedulingTests : IDisposable
         private BakeRun _run = run;
         public BakeRun Run { get { lock (_gate) return _run; } }
         public List<CatalogRelease> Releases { get; } = [];
+        public int ReleaseUpdateFailuresRemaining { get; set; }
 
         public Task<BakeRun> CreateAsync(BakeRun value, CancellationToken ct = default)
         {
@@ -357,6 +464,26 @@ public sealed class BakeSchedulingTests : IDisposable
             }
         }
 
+        public Task<BakeRun> SupersedeQueuedAsync(
+            Guid id, long supersededByRevision, DateTimeOffset supersededAt, CancellationToken ct = default)
+        {
+            lock (_gate)
+            {
+                if (_run.Status == BakeRunStatus.Queued)
+                    _run = _run with
+                    {
+                        Status = BakeRunStatus.Cancelled,
+                        Stage = BakeRunStage.Cancelled,
+                        CancellationRequested = true,
+                        FailureCategory = "Superseded",
+                        StatusMessage = $"Superseded by map revision {supersededByRevision}.",
+                        CompletedAt = supersededAt,
+                        UpdatedAt = supersededAt,
+                    };
+                return Task.FromResult(_run);
+            }
+        }
+
         public Task<BakeRun> AttachBackgroundJobAsync(
             Guid id, string backgroundJobId, CancellationToken ct = default)
         {
@@ -373,12 +500,30 @@ public sealed class BakeSchedulingTests : IDisposable
             return Task.FromResult(release);
         }
 
+        public Task<CatalogRelease> UpdateAsync(CatalogRelease release, CancellationToken ct = default)
+        {
+            lock (_gate)
+            {
+                if (ReleaseUpdateFailuresRemaining-- > 0)
+                    throw new IOException("Injected catalog commit failure.");
+                int index = Releases.FindIndex(value => value.Id == release.Id);
+                if (index < 0) throw new InvalidOperationException("Unknown release.");
+                Releases[index] = release;
+                return Task.FromResult(release);
+            }
+        }
+
         public Task<CatalogRelease?> FindForRunAsync(Guid runId, CancellationToken ct = default)
         {
             lock (_gate) return Task.FromResult(Releases.FirstOrDefault(release => release.BakeRunId == runId));
         }
 
         Task<IReadOnlyList<CatalogRelease>> IReleaseRepository.ListForMapAsync(Guid mapId, CancellationToken ct)
+        {
+            lock (_gate) return Task.FromResult<IReadOnlyList<CatalogRelease>>([.. Releases.Where(release => release.MapId == mapId && release.State == ReleaseState.Published)]);
+        }
+
+        Task<IReadOnlyList<CatalogRelease>> IReleaseRepository.ListAllForMapAsync(Guid mapId, CancellationToken ct)
         {
             lock (_gate) return Task.FromResult<IReadOnlyList<CatalogRelease>>([.. Releases.Where(release => release.MapId == mapId)]);
         }

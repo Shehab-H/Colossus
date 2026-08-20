@@ -3,6 +3,9 @@ services:
     image: mysql:8.4
     container_name: colossus-mysql
     restart: unless-stopped
+    cpus: "${COLOSSUS_MYSQL_CPUS:-1.0}"
+    mem_limit: "${COLOSSUS_MYSQL_MEMORY_LIMIT:-1536m}"
+    memswap_limit: "${COLOSSUS_MYSQL_MEMORY_LIMIT:-1536m}"
     ports:
       - "3306:3306"
     environment:
@@ -21,6 +24,9 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     container_name: colossus-clickhouse
+    cpus: "${COLOSSUS_CLICKHOUSE_CPUS:-2.0}"
+    mem_limit: "${COLOSSUS_CLICKHOUSE_MEMORY_LIMIT:-3g}"
+    memswap_limit: "${COLOSSUS_CLICKHOUSE_MEMORY_LIMIT:-3g}"
     ports:
       - "8123:8123"   # HTTP interface (used by Bake)
       - "9000:9000"   # native protocol
@@ -39,6 +45,9 @@ services:
   trino-catalog:
     image: postgres:17.2-bookworm
     container_name: colossus-trino-catalog
+    cpus: "${COLOSSUS_TRINO_CATALOG_CPUS:-0.5}"
+    mem_limit: "${COLOSSUS_TRINO_CATALOG_MEMORY_LIMIT:-512m}"
+    memswap_limit: "${COLOSSUS_TRINO_CATALOG_MEMORY_LIMIT:-512m}"
     environment:
       POSTGRES_DB: iceberg
       POSTGRES_USER: iceberg
@@ -55,6 +64,9 @@ services:
   trino:
     image: trinodb/trino:483
     container_name: colossus-trino
+    cpus: "${COLOSSUS_TRINO_CPUS:-2.0}"
+    mem_limit: "${COLOSSUS_TRINO_MEMORY_LIMIT:-3g}"
+    memswap_limit: "${COLOSSUS_TRINO_MEMORY_LIMIT:-3g}"
     ports:
       - "8080:8080"
     depends_on:

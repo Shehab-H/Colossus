@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { hexToRgb, interpolate } from './colors';
-import { categoricalColors, DEFAULT_SEQUENTIAL, sequentialStops } from './schemes';
+import { hexToRgb, interpolate } from '@domain/map/colors';
+import { categoricalColors, DEFAULT_SEQUENTIAL, sequentialStops } from '@domain/map/schemes';
 
 describe('color primitives', () => {
   it('parses full and short hex', () => {

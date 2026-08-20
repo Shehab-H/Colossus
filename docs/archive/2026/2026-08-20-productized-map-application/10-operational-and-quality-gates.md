@@ -1,8 +1,16 @@
-# 10 — Operational and quality gates
+# Deferred 10 — Operational and quality gates
 
-- **Status:** Candidate
+- **Status:** Deferred
+- **Deferred:** 2026-08-20 by operator decision
 - **Estimate:** 3–5 engineering days
 - **Depends on:** Items 03–09
+
+## Disposition
+
+This broad roadmap item is intentionally not scheduled. It is preserved as historical reference, not as an
+active backlog or an implied implementation sequence. Further operational hardening should be scoped from a
+specific observed failure, risk, resource-limit result, or operator need and verified against the existing
+design before another increment is chosen.
 
 ## Motivation
 
@@ -17,10 +25,10 @@ full observability platform.
 
 ## Integration surface
 
-- New workflows under [`.github/workflows`](../../../.github/workflows) and the existing backend/frontend
+- New workflows under [`.github/workflows`](../../../../.github/workflows) and the existing backend/frontend
   test commands.
 - Server health, logging, and diagnostics configuration in
-  [`Colossus.Server`](../../../src/Colossus.Server).
+  [`Colossus.Server`](../../../../src/Colossus.Server).
 - Catalog, Hangfire storage, source adapters, and artifact-store health boundaries from earlier items.
 - Job/release operational actions on the management pages from item 04.
 

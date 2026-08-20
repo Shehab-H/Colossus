@@ -1,4 +1,4 @@
-import { formatValue, type Legend } from '@features/map-viewer/engine/colorScale';
+import { formatValue, type Legend } from '@domain/map/colorScale';
 import { Card } from '@shared/ui';
 
 const rgb = ([red, green, blue]: [number, number, number]) => `rgb(${red},${green},${blue})`;

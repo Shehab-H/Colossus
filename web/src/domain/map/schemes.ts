@@ -8,7 +8,7 @@ import { hexToRgb, type RGB } from './colors';
 
 // Sequential ramps. viridis/cividis are perceptually uniform + colorblind-safe; `blues` is the
 // design-system single-hue ramp.
-const SEQUENTIAL_HEX: Record<string, string[]> = {
+export const SEQUENTIAL_HEX: Record<string, string[]> = {
   viridis: ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'],
   plasma: ['#0d0887', '#7e03a8', '#cc4778', '#f89540', '#f0f921'],
   magma: ['#000004', '#51127c', '#b73779', '#fc8961', '#fcfdbf'],
@@ -22,7 +22,7 @@ const SEQUENTIAL_HEX: Record<string, string[]> = {
 };
 
 // Diverging ramps: cool pole → neutral gray → warm pole. `blueRed` is the design-system diverging pair.
-const DIVERGING_HEX: Record<string, string[]> = {
+export const DIVERGING_HEX: Record<string, string[]> = {
   blueRed: ['#2a78d6', '#f0efec', '#e34948'],
   redBlue: ['#e34948', '#f0efec', '#2a78d6'],
   blueOrange: ['#2166ac', '#f7f7f7', '#b35806'],
@@ -33,7 +33,7 @@ const DIVERGING_HEX: Record<string, string[]> = {
 // Categorical palettes, assigned in fixed order (never cycled for identity). `okabeIto` is validated
 // all-pairs colorblind-safe (worst CVD ΔE ≈ 17) — the right default for map marks where any two
 // categories can be adjacent. `category` is the design-system themed palette (adjacent-safe).
-const CATEGORICAL_HEX: Record<string, string[]> = {
+export const CATEGORICAL_HEX: Record<string, string[]> = {
   okabeIto: ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#BBBBBB'],
   category: ['#3987e5', '#199e70', '#c98500', '#008300', '#9085e9', '#e66767', '#d55181', '#d95926'],
   status: ['#0ca30c', '#fab219', '#ec835a', '#d03b3b'],
@@ -55,3 +55,11 @@ export const schemeNames = () => ({
   diverging: Object.keys(DIVERGING_HEX),
   categorical: Object.keys(CATEGORICAL_HEX),
 });
+
+export type SchemeFamily = 'sequential' | 'diverging' | 'categorical';
+
+export const schemeHexes = (family: SchemeFamily, name: string): string[] => {
+  const source = family === 'diverging' ? DIVERGING_HEX : family === 'categorical' ? CATEGORICAL_HEX : SEQUENTIAL_HEX;
+  const fallback = family === 'diverging' ? DEFAULT_DIVERGING : family === 'categorical' ? DEFAULT_CATEGORICAL : DEFAULT_SEQUENTIAL;
+  return [...(source[name] ?? source[fallback])];
+};

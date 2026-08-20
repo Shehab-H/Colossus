@@ -23,9 +23,11 @@ public sealed class BakeResourceOptions
 
     public long RamBytes => RamMb > 0 ? RamMb * 1024L * 1024L : 0;
 
-    // DuckDB spills supported operators after this target. Leave headroom for Arrow, codecs, HTTP pages,
-    // and the runtime rather than handing the entire envelope to the analytical engine.
-    public int DuckDbRamMb => RamMb > 0 ? Math.Max(128, RamMb * 3 / 5) : 0;
+    // DuckDB spills supported operators after this target. Its file-backed buffer pool and the OS page
+    // cache coexist with Arrow, codecs, HTTP pages, and the runtime inside the same cgroup/job limit. A
+    // two-fifths share leaves enough headroom for a large external GROUP BY/ORDER BY to merge its runs
+    // without the kernel killing the process before DuckDB can spill.
+    public int DuckDbRamMb => RamMb > 0 ? Math.Max(128, RamMb * 2 / 5) : 0;
 
     // A tile is materialized as Arrow once, and packing/compression can briefly need another copy.
     public long TileWorkingSetBytes => RamBytes > 0 ? Math.Max(16L * 1024 * 1024, RamBytes / 5) : 0;

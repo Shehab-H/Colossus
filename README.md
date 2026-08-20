@@ -45,7 +45,9 @@ dotnet run --project src/Colossus.Bake -- <view-id>
 
 Runtime settings live in each host's `appsettings.json`. `ConnectionStrings:Database` selects the single
 MySQL application database used by both the product catalog and Hangfire's prefixed infrastructure tables; `Scheduling` and
-`BakeExecution` own worker and run-coordination limits; `Storage` owns the tile, staging, legacy-view, and media locations; `ClickHouse` owns its source
+`BakeExecution` own worker and run-coordination limits; `Storage` owns local work, tile, legacy-view, and media locations;
+`ReleaseArtifacts` selects filesystem or S3-compatible immutable publication; `ReleaseMaintenance` owns the
+abandoned-workspace grace period; `ClickHouse` owns its source
 credentials; `Trino` owns coordinator defaults, bounded protocol limits, work storage, and administrator-owned
 header profiles; and `ParquetSources` declares administrator-owned local/HTTP/S3-compatible provider aliases.
 The checked-in `local` Parquet provider is confined to `datasets/parquet`, while the checked-in ClickHouse
@@ -73,8 +75,44 @@ When an envelope is active the scheduler runs one bake at a time so concurrent w
 full allowance. A smaller value therefore means a longer bake and more temporary disk use. Restart the server
 or CLI host after changing it, and provision staging space for spill files.
 
+`BakeResources` controls algorithms; the OS must own the hard process ceiling because Arrow, DuckDB native
+allocations, and filesystem cache are not all .NET heap. The checked-in Compose stack therefore applies CPU,
+RAM, and no-swap cgroup limits to MySQL, ClickHouse, Trino, and its PostgreSQL catalog. Override them with
+`COLOSSUS_<SERVICE>_CPUS` and `COLOSSUS_<SERVICE>_MEMORY_LIMIT` before `docker compose up`. Apply the same
+pattern to the server container or systemd service, leaving headroom above `BakeResources:RamMb`; the verified
+local stress pairing is a 1,536 MB bake envelope inside a 2 GiB/2-CPU hard application limit.
+
 Run the tests with `dotnet test`; verify a bake's fidelity invariant with
 `dotnet run --project src/Colossus.Bake -- verify`.
+
+### Release publication and retention
+
+Every attempt writes into `Storage:StagingDirectory/workspaces/<attempt>`, runs the full row/fact fidelity
+witness there, records a SHA-256 manifest hash and resolved source snapshot, and makes an immutable version
+addressable before the small current pointer moves. Scheduled runs persist `Prepared` before the pointer flip,
+so pointer or catalog interruption resumes without rebaking. The management release list exposes verification
+evidence, pin/unpin, and an idempotent retention/repair action.
+
+Filesystem publication is the default. To publish immutable versions and the final pointer to S3, R2, MinIO,
+or another S3-compatible service, configure the provider with environment variables (keep credentials out of
+appsettings and Git):
+
+```ini
+ReleaseArtifacts__Provider=s3
+ReleaseArtifacts__Bucket=colossus-releases
+ReleaseArtifacts__Prefix=tiles
+ReleaseArtifacts__Region=us-east-1
+# For R2/MinIO or another compatible endpoint:
+ReleaseArtifacts__ServiceUrl=https://OBJECT-ENDPOINT
+ReleaseArtifacts__ForcePathStyle=true
+ReleaseArtifacts__AccessKey=REPLACE_ME
+ReleaseArtifacts__SecretKey=REPLACE_ME
+ReleaseMaintenance__WorkspaceGracePeriod=1.00:00:00
+```
+
+If explicit keys are omitted, the AWS SDK credential chain is used. Object uploads write every immutable
+artifact before `manifest.json`; `latest.json` is a separate final put with a short cache policy. Retention
+keeps at least one release and protects the current version, pins, active jobs, latest-count and age windows.
 
 For a production-style Ubuntu deployment, follow the
 [server deployment checklist](docs/sagas/productized-map-application/10-operational-and-quality-gates.md#server-deployment-checklist-ubuntu--nginx--systemd).

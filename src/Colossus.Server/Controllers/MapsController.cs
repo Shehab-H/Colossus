@@ -1,4 +1,5 @@
 using Colossus.Application.Catalog;
+using Colossus.Application.Abstractions.Catalog;
 using Colossus.Domain.Catalog;
 using Microsoft.AspNetCore.Mvc;
 
@@ -9,7 +10,8 @@ public sealed record BakePolicyRequest(
     TimeSpan? Interval,
     string TimeZoneId = "UTC",
     bool AllowOverlap = false,
-    int RetainSuccessfulReleases = 3);
+    int RetainSuccessfulReleases = 3,
+    TimeSpan? RetainSuccessfulFor = null);
 
 [ApiController]
 [Route("api/maps")]
@@ -17,7 +19,9 @@ public sealed record BakePolicyRequest(
 public sealed class MapsController(
     ProductCatalogService catalog,
     MapManagementService management,
-    BakeSchedulingService scheduling) : ControllerBase
+    BakeSchedulingService scheduling,
+    IReleaseRepository releases,
+    ReleaseMaintenanceService maintenance) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] bool includeArchived, CancellationToken ct) =>
@@ -92,8 +96,44 @@ public sealed class MapsController(
         {
             var policy = new BakePolicy(
                 id, request.Enabled, request.Interval, request.TimeZoneId, request.AllowOverlap,
-                request.RetainSuccessfulReleases, Revision: 0, UpdatedAt: default);
+                request.RetainSuccessfulReleases, Revision: 0, UpdatedAt: default,
+                request.RetainSuccessfulFor);
             return Ok(await scheduling.SetPolicyAsync(policy, expectedRevision, ct));
+        }
+        catch (Exception e) { return this.ToResponse(e); }
+    }
+
+    [HttpPut("{id:guid}/releases/{releaseId:guid}/pin")]
+    public async Task<IActionResult> PinRelease(
+        Guid id, Guid releaseId, [FromQuery] bool pinned = true, CancellationToken ct = default)
+    {
+        try
+        {
+            _ = await catalog.GetMapAsync(id, ct);
+            var release = (await releases.ListAllForMapAsync(id, ct))
+                .FirstOrDefault(value => value.Id == releaseId)
+                ?? throw new CatalogNotFoundException($"Unknown release '{releaseId}'.");
+            if (release.State == ReleaseState.Deleted)
+                throw new CatalogConflictException("A deleted release cannot be pinned.");
+            _ = await releases.UpdateAsync(release with { Pinned = pinned }, ct);
+            return Ok((await management.GetAsync(id, ct)).Releases.Single(value => value.Id == releaseId));
+        }
+        catch (Exception e) { return this.ToResponse(e); }
+    }
+
+    [HttpPost("{id:guid}/releases/reconcile")]
+    public async Task<IActionResult> ReconcileReleases(Guid id, CancellationToken ct)
+    {
+        try
+        {
+            var map = await catalog.GetMapAsync(id, ct);
+            var policy = await catalog.GetBakePolicyAsync(id, ct);
+            return Ok(await maintenance.ReconcileMapAsync(
+                id,
+                map.Draft.Slug,
+                policy?.RetainSuccessfulReleases ?? 3,
+                policy?.RetainSuccessfulFor,
+                ct));
         }
         catch (Exception e) { return this.ToResponse(e); }
     }

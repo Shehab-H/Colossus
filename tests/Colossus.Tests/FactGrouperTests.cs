@@ -190,6 +190,40 @@ public class FactGrouperTests
         }
     }
 
+    [Fact]
+    public void GroupToMarks_NullAndNonNullValuesWithinOneMarkArePerFact()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "colossus-grouper-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string factsPath = Path.Combine(dir, "facts.parquet");
+            string marksPath = Path.Combine(dir, "marks.parquet");
+            using (var db = DuckDbSession.InMemory())
+            {
+                db.Exec("""
+                    CREATE TABLE t (
+                      x FLOAT, y FLOAT, geometry FLOAT[], part_offsets INTEGER[],
+                      operator VARCHAR, quarter DATE, region VARCHAR, tests FLOAT, download_mbps FLOAT
+                    );
+                    INSERT INTO t VALUES
+                      (1,1, [1,1,2,1,2,2,1,2,1,1], [0,5], 'apex', DATE '2025-01-01', NULL,   10, 50),
+                      (1,1, [1,1,2,1,2,2,1,2,1,1], [0,5], 'apex', DATE '2025-01-01', 'west', 10, 50)
+                    """);
+                db.Exec($"COPY t TO '{Sql.Path(factsPath)}' (FORMAT PARQUET)");
+            }
+
+            var grouping = new DuckDbFactGrouper().GroupToMarks(factsPath, marksPath, View());
+
+            Assert.Contains("region", grouping.PerFactChannels);
+            Assert.DoesNotContain("region", grouping.PerMarkChannels);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     private static double D(System.Data.Common.DbDataReader r, int i) =>
         Convert.ToDouble(r.GetValue(i), CultureInfo.InvariantCulture);
 

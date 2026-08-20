@@ -4,14 +4,23 @@ using Colossus.Domain.Model;
 
 namespace Colossus.Infrastructure.Baking;
 
-public sealed class BakePipeline(BakeViewUseCase bake, IBakeStore store) : IBakePipeline
+public sealed class BakePipeline(BakeViewUseCase bake, IBakeStore store, IReleaseArtifactStore artifacts) : IBakePipeline
 {
     public Task<BakeOutcome> BakeAsync(
         ViewConfig snapshot,
+        BakeAttempt attempt,
         IProgress<BakeProgress>? progress = null,
-        CancellationToken ct = default) => bake.BakeAsync(snapshot, progress, ct);
+        CancellationToken ct = default) => bake.BakeAsync(snapshot, attempt, progress, ct);
 
-    public long VersionSize(string viewId, string version) => store.VersionSize(viewId, version);
+    public void Publish(BakeOutcome outcome)
+    {
+        if (outcome.Version is not null)
+            artifacts.PublishCurrent(outcome.ViewId, outcome.Version);
+    }
 
-    public void Cleanup(string viewId) => store.CleanupStaging(viewId);
+    public void Cleanup(string viewId, string attemptId)
+    {
+        store.CleanupStaging(viewId, attemptId);
+        store.CleanupWorkspace(attemptId);
+    }
 }

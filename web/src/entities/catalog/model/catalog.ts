@@ -191,6 +191,7 @@ export interface BakePolicy {
   retainSuccessfulReleases: number;
   revision: number;
   updatedAt: string;
+  retainSuccessfulFor?: string;
 }
 
 export interface ManagedBakeRun {
@@ -221,6 +222,24 @@ export interface ManagedRelease {
   artifactLocation: string;
   publishedAt: string;
   outputBytes?: number;
+  pinned: boolean;
+  manifestHash?: string;
+  sourceRows?: number;
+  tileCount?: number;
+  verificationPassed: boolean;
+  verifiedAt?: string;
+}
+
+export interface RetentionDecision {
+  kind: 'release' | 'workspace';
+  identity: string;
+  action: 'retained' | 'deleted' | 'skipped';
+  reason: string;
+}
+
+export interface ReleaseMaintenanceReport {
+  decisions: RetentionDecision[];
+  deleted: number;
 }
 
 export interface ManagedMapDetail {
@@ -245,6 +264,7 @@ export interface SaveBakePolicy {
   timeZoneId: string;
   allowOverlap: boolean;
   retainSuccessfulReleases: number;
+  retainSuccessfulFor?: string;
 }
 
 export interface SavedMap {

@@ -73,10 +73,23 @@ public sealed class ProductCatalogTests : IDisposable
         var map = await first.CreateMapAsync(Map(dataset.Id, "persistent-map"));
         var policy = await first.SetBakePolicyAsync(new BakePolicy(
             map.Id, Enabled: true, Interval: TimeSpan.FromHours(6), TimeZoneId: "UTC",
-            AllowOverlap: false, RetainSuccessfulReleases: 4, Revision: 0, UpdatedAt: default));
+            AllowOverlap: false, RetainSuccessfulReleases: 4, Revision: 0, UpdatedAt: default,
+            RetainSuccessfulFor: TimeSpan.FromDays(30)));
         var run = await first.CaptureBakeRunAsync(map.Id);
         _ = await first.UpdateMapAsync(map.Id, map.Draft with { Title = "New draft" }, map.Revision);
         var release = await first.RecordReleaseAsync(map.Id, run.Id, "v20260810T120000Z", "tiles/persistent-map/v1");
+        release = await ((IReleaseRepository)firstStore).UpdateAsync(release with
+        {
+            ManifestHash = new string('A', 64),
+            SourceSnapshot = run.Definition,
+            SourceRows = 123,
+            TileCount = 7,
+            VerificationPassed = true,
+            VerifiedAt = release.PublishedAt,
+            PreparedAt = release.PublishedAt.AddSeconds(-1),
+            Pinned = true,
+            AttemptId = $"{run.Id:N}-a1",
+        });
         var otherMap = await first.CreateMapAsync(Map(dataset.Id, "other-map"));
         var otherRun = await first.CaptureBakeRunAsync(otherMap.Id);
         await Assert.ThrowsAsync<CatalogConflictException>(() =>
@@ -93,7 +106,17 @@ public sealed class ProductCatalogTests : IDisposable
         Assert.Equal(policy, reloadedPolicy);
         Assert.Equal(map.Revision, reloadedRun!.DraftRevision);
         Assert.Equal("Map persistent-map", reloadedRun.Definition.Title);
-        Assert.Equal(release, Assert.Single(releases));
+        Assert.Equal("#d55e00", reloadedRun.Definition.Encoding!.Color!.Overrides!["priority"]);
+        var reloadedRelease = Assert.Single(releases);
+        Assert.Equal(release.Id, reloadedRelease.Id);
+        Assert.Equal(release.Version, reloadedRelease.Version);
+        Assert.Equal(release.ManifestHash, reloadedRelease.ManifestHash);
+        Assert.Equal(release.SourceRows, reloadedRelease.SourceRows);
+        Assert.Equal(release.TileCount, reloadedRelease.TileCount);
+        Assert.Equal(release.Pinned, reloadedRelease.Pinned);
+        Assert.Equal(release.AttemptId, reloadedRelease.AttemptId);
+        Assert.Equal(run.Definition.Title, reloadedRelease.SourceSnapshot?.Title);
+        Assert.Equal("#d55e00", reloadedRelease.SourceSnapshot!.Encoding!.Color!.Overrides!["priority"]);
         Assert.Equal("New draft", (await second.ResolveSnapshotAsync("persistent-map")).Title);
         GC.KeepAlive(firstStore);
     }
@@ -224,7 +247,22 @@ public sealed class ProductCatalogTests : IDisposable
         DatasetId = datasetId,
         Viewport = Viewport.Geo,
         Mark = Mark.Point,
-        Encoding = new EncodingSpec { Color = new ColorSpec { Channel = "value" } },
+        Encoding = new EncodingSpec
+        {
+            Color = new ColorSpec
+            {
+                Channel = "value",
+                Type = "categorical",
+                Scheme = "okabeIto",
+                Domain =
+                [
+                    System.Text.Json.JsonSerializer.SerializeToElement("standard"),
+                    System.Text.Json.JsonSerializer.SerializeToElement("priority"),
+                ],
+                Overrides = new Dictionary<string, string> { ["priority"] = "#d55e00" },
+                Unknown = "#999999",
+            },
+        },
     };
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

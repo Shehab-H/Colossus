@@ -8,8 +8,10 @@ import type {
   ManagedBakeRun,
   ManagedMapDetail,
   ManagedMapSummary,
+  ManagedRelease,
   MapDraft,
   SaveBakePolicy,
+  ReleaseMaintenanceReport,
   SavedMap,
   SourceAdapterDescriptor,
   SourceConnectionValidation,
@@ -102,3 +104,15 @@ export const runMapNow = (id: string): Promise<ManagedBakeRun> =>
 
 export const cancelMapRun = (mapId: string, runId: string): Promise<ManagedBakeRun> =>
   request(`/maps/${mapId}/runs/${runId}/cancel`, { method: 'POST' });
+
+export const pinMapRelease = (
+  mapId: string,
+  releaseId: string,
+  pinned: boolean,
+): Promise<ManagedRelease> => request(
+  `/maps/${mapId}/releases/${releaseId}/pin?pinned=${pinned}`,
+  { method: 'PUT' },
+);
+
+export const reconcileMapReleases = (mapId: string): Promise<ReleaseMaintenanceReport> =>
+  request(`/maps/${mapId}/releases/reconcile`, { method: 'POST' });

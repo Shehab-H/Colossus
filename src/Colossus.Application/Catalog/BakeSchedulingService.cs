@@ -15,9 +15,49 @@ public sealed class BakeSchedulingService(
 {
     public async Task<BakeRun> RunNowAsync(Guid mapId, CancellationToken ct = default)
     {
+        await using var lease = await AcquireScheduleLeaseAsync(mapId, ct);
+        return await QueueLatestUnderLeaseAsync(mapId, ct);
+    }
+
+    private async Task<BakeRun> QueueLatestUnderLeaseAsync(Guid mapId, CancellationToken ct)
+    {
+        CatalogMap map = await catalog.GetMapAsync(mapId, ct);
+        IReadOnlyList<BakeRun> history = await runs.ListForMapAsync(mapId, ct);
+        BakeRun? existing = history.FirstOrDefault(run =>
+            run.Status == BakeRunStatus.Queued && run.DraftRevision == map.Revision && !run.CancellationRequested);
+        if (existing is not null)
+        {
+            if (existing.BackgroundJobId is null)
+            {
+                string? recoveredJobId = await scheduler.EnqueueAsync(existing.Id, ct);
+                if (recoveredJobId is not null)
+                    existing = await runs.AttachBackgroundJobAsync(existing.Id, recoveredJobId, ct);
+            }
+            return existing;
+        }
+
+        foreach (BakeRun pending in history.Where(run =>
+                     run.Status == BakeRunStatus.Queued && run.DraftRevision < map.Revision))
+        {
+            BakeRun superseded = await runs.SupersedeQueuedAsync(
+                pending.Id, map.Revision, clock.GetUtcNow(), ct);
+            if (superseded.Status == BakeRunStatus.Cancelled && pending.BackgroundJobId is { Length: > 0 } pendingJobId)
+                await scheduler.CancelAsync(pendingJobId, ct);
+        }
+
         var run = await catalog.CaptureBakeRunAsync(mapId, ct);
         string? jobId = await scheduler.EnqueueAsync(run.Id, ct);
         return jobId is null ? run : await runs.AttachBackgroundJobAsync(run.Id, jobId, ct);
+    }
+
+    private async Task<IAsyncDisposable> AcquireScheduleLeaseAsync(Guid mapId, CancellationToken ct)
+    {
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            if (await scheduleLocks.TryAcquireAsync(mapId, ct) is { } lease) return lease;
+            await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
+        }
+        throw new CatalogConflictException("Another bake request for this map is being scheduled. Retry shortly.");
     }
 
     public async Task<BakePolicy> SetPolicyAsync(
@@ -55,7 +95,7 @@ public sealed class BakeSchedulingService(
         var history = await runs.ListForMapAsync(mapId, ct);
         if (history.Any(run => !run.IsTerminal)) return null;
         DateTimeOffset dueAt = (history.FirstOrDefault()?.CreatedAt ?? policy.UpdatedAt) + interval;
-        return clock.GetUtcNow() < dueAt ? null : await RunNowAsync(mapId, ct);
+        return clock.GetUtcNow() < dueAt ? null : await QueueLatestUnderLeaseAsync(mapId, ct);
     }
 
     public async Task ReconcileAllAsync(CancellationToken ct = default)

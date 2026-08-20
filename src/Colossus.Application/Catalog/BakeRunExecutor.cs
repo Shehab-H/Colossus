@@ -11,6 +11,7 @@ public sealed class BakeRunExecutionOptions
     public int MaxTransientAttempts { get; set; } = 3;
     public int CancellationPollMilliseconds { get; set; } = 500;
     public int ProgressUpdateMinMilliseconds { get; set; } = 500;
+    public int MapBusyRetryMilliseconds { get; set; } = 1_000;
     public int[] RetryDelaySeconds { get; set; } = [2, 10];
 
     public void Normalize()
@@ -18,6 +19,7 @@ public sealed class BakeRunExecutionOptions
         MaxTransientAttempts = Math.Max(1, MaxTransientAttempts);
         CancellationPollMilliseconds = Math.Clamp(CancellationPollMilliseconds, 100, 30_000);
         ProgressUpdateMinMilliseconds = Math.Clamp(ProgressUpdateMinMilliseconds, 100, 30_000);
+        MapBusyRetryMilliseconds = Math.Clamp(MapBusyRetryMilliseconds, 100, 30_000);
         RetryDelaySeconds = RetryDelaySeconds.Length == 0 ? [1] : RetryDelaySeconds.Select(value => Math.Max(0, value)).ToArray();
     }
 }
@@ -30,7 +32,8 @@ public sealed class BakeRunExecutor(
     IMapBakeLock mapLocks,
     IBakePipeline pipeline,
     BakeRunExecutionOptions options,
-    TimeProvider clock)
+    TimeProvider clock,
+    ReleaseMaintenanceService? maintenance = null)
 {
     public async Task ExecuteAsync(Guid runId, CancellationToken workerCancellation = default)
     {
@@ -52,9 +55,18 @@ public sealed class BakeRunExecutor(
             {
                 // A recovered queue entry can briefly duplicate the same durable job. The owner has already
                 // moved this run to Running, so the duplicate is an idempotent no-op rather than a cancellation.
-                if ((await RequiredRunAsync(run.Id, workerCancellation)).Status == BakeRunStatus.Running) return;
-                await CancelledAsync(run, "Another bake for this map is already active.", workerCancellation, "overlap");
-                return;
+                BakeRun current = await RequiredRunAsync(run.Id, workerCancellation);
+                if (current.Status == BakeRunStatus.Running) return;
+                if (current.StatusMessage != "Waiting for the active bake to finish.")
+                {
+                    _ = await runs.UpdateAsync(current with
+                    {
+                        StatusMessage = "Waiting for the active bake to finish.",
+                        UpdatedAt = clock.GetUtcNow(),
+                    }, workerCancellation);
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(options.MapBusyRetryMilliseconds), clock, workerCancellation);
+                continue;
             }
 
             await using (lease)
@@ -76,6 +88,7 @@ public sealed class BakeRunExecutor(
                 using var requestedCancellation = CancellationTokenSource.CreateLinkedTokenSource(workerCancellation);
                 using var stopMonitor = new CancellationTokenSource();
                 var monitor = MonitorCancellationAsync(run.Id, requestedCancellation, stopMonitor.Token);
+                var attempt = BakeAttempt.ForRun(run.Id, run.Attempt, clock.GetUtcNow());
                 try
                 {
                     var progress = new BoundedBakeProgress(
@@ -84,23 +97,62 @@ public sealed class BakeRunExecutor(
                         clock,
                         TimeSpan.FromMilliseconds(options.ProgressUpdateMinMilliseconds),
                         requestedCancellation.Token);
-                    var outcome = await pipeline.BakeAsync(run.Definition, progress, requestedCancellation.Token);
+                    CatalogRelease? release = await releases.FindForRunAsync(run.Id, CancellationToken.None);
+                    BakeOutcome outcome;
+                    if (release is not null)
+                    {
+                        outcome = OutcomeFrom(release, run.Definition.Id);
+                    }
+                    else
+                    {
+                        outcome = await pipeline.BakeAsync(
+                            run.Definition, attempt, progress, requestedCancellation.Token);
+                        if (outcome.Version is not null)
+                        {
+                            if (!outcome.VerificationPassed || string.IsNullOrWhiteSpace(outcome.ManifestHash))
+                                throw new InvalidDataException(
+                                    $"Prepared release '{outcome.ViewId}/{outcome.Version}' was not verified.");
+                            DateTimeOffset preparedAt = clock.GetUtcNow();
+                            release = await releases.CreateAsync(new CatalogRelease(
+                                Guid.NewGuid(), run.MapId, run.Id, outcome.Version,
+                                outcome.ArtifactLocation ?? $"tiles/{outcome.ViewId}/{outcome.Version}",
+                                preparedAt, outcome.ArtifactBytes,
+                                ReleaseState.Prepared, outcome.ManifestHash, outcome.SourceSnapshot ?? run.Definition,
+                                outcome.SourceRows, outcome.TileCount, outcome.VerificationPassed,
+                                preparedAt, preparedAt, AttemptId: outcome.AttemptId ?? attempt.Id),
+                                CancellationToken.None);
+                        }
+                    }
+
+                    if (release is { State: ReleaseState.Prepared })
+                    {
+                        try
+                        {
+                            await PersistProgressAsync(run.Id,
+                                new BakeProgress(BakeStage.Publishing,
+                                    $"Publishing {outcome.ViewId} release {outcome.Version}."),
+                                CancellationToken.None);
+                            pipeline.Publish(outcome);
+                            release = await releases.UpdateAsync(release with
+                            {
+                                State = ReleaseState.Published,
+                                PublishedAt = clock.GetUtcNow(),
+                            }, CancellationToken.None);
+                        }
+                        catch (Exception error)
+                        {
+                            throw new ReleasePublicationException(
+                                $"Release '{outcome.ViewId}/{outcome.Version}' is prepared but publication did not finish.",
+                                error);
+                        }
+                    }
 
                     await PersistProgressAsync(run.Id,
-                        new BakeProgress(BakeStage.Cleanup, $"Cleaning staging files for {run.Definition.Id}."),
+                        new BakeProgress(BakeStage.Cleanup, $"Cleaning workspace for {run.Definition.Id}."),
                         CancellationToken.None);
-                    pipeline.Cleanup(run.Definition.Id);
+                    pipeline.Cleanup(run.Definition.Id, outcome.AttemptId ?? release?.AttemptId ?? attempt.Id);
 
-                    long bytes = outcome.Version is null ? 0 : pipeline.VersionSize(outcome.ViewId, outcome.Version);
-                    CatalogRelease? release = null;
-                    if (outcome.Version is not null)
-                    {
-                        release = await releases.FindForRunAsync(run.Id, CancellationToken.None)
-                            ?? await releases.CreateAsync(new CatalogRelease(
-                                Guid.NewGuid(), run.MapId, run.Id, outcome.Version,
-                                $"tiles/{outcome.ViewId}/{outcome.Version}", clock.GetUtcNow(), bytes),
-                                CancellationToken.None);
-                    }
+                    long bytes = outcome.ArtifactBytes;
 
                     var completed = await RequiredRunAsync(run.Id, CancellationToken.None);
                     _ = await runs.UpdateAsync(completed with
@@ -117,11 +169,43 @@ public sealed class BakeRunExecutor(
                         UpdatedAt = clock.GetUtcNow(),
                         Error = null,
                     }, CancellationToken.None);
+
+                    if (maintenance is not null && release is not null)
+                    {
+                        try
+                        {
+                            _ = await maintenance.ReconcileMapAsync(
+                                run.MapId,
+                                outcome.ViewId,
+                                policy?.RetainSuccessfulReleases ?? 3,
+                                policy?.RetainSuccessfulFor,
+                                CancellationToken.None);
+                        }
+                        catch
+                        {
+                            // Publication is already durable. The repair endpoint/job can repeat cleanup.
+                        }
+                    }
                     return;
+                }
+                catch (ReleasePublicationException error) when (run.Attempt < options.MaxTransientAttempts)
+                {
+                    var current = await RequiredRunAsync(run.Id, CancellationToken.None);
+                    _ = await runs.UpdateAsync(current with
+                    {
+                        Status = BakeRunStatus.Queued,
+                        Stage = BakeRunStage.Publishing,
+                        Progress = 0.92,
+                        StatusMessage = $"Publication interrupted; retry {run.Attempt + 1} of {options.MaxTransientAttempts} is pending.",
+                        FailureCategory = "Publication",
+                        Error = error.Message,
+                        UpdatedAt = clock.GetUtcNow(),
+                    }, CancellationToken.None);
+                    await Task.Delay(RetryDelay(run.Attempt), clock, workerCancellation);
                 }
                 catch (SourceOperationException error) when (IsTransient(error) && run.Attempt < options.MaxTransientAttempts)
                 {
-                    SafeCleanup(run.Definition.Id);
+                    SafeCleanup(run.Definition.Id, attempt.Id);
                     var current = await RequiredRunAsync(run.Id, CancellationToken.None);
                     _ = await runs.UpdateAsync(current with
                     {
@@ -138,7 +222,7 @@ public sealed class BakeRunExecutor(
                 }
                 catch (OperationCanceledException) when (workerCancellation.IsCancellationRequested)
                 {
-                    SafeCleanup(run.Definition.Id);
+                    SafeCleanup(run.Definition.Id, attempt.Id);
                     var current = await RequiredRunAsync(run.Id, CancellationToken.None);
                     if (current.CancellationRequested)
                     {
@@ -158,14 +242,15 @@ public sealed class BakeRunExecutor(
                 }
                 catch (OperationCanceledException)
                 {
-                    SafeCleanup(run.Definition.Id);
+                    SafeCleanup(run.Definition.Id, attempt.Id);
                     await CancelledAsync(await RequiredRunAsync(run.Id, CancellationToken.None),
                         "Bake cancelled by request.", CancellationToken.None);
                     return;
                 }
                 catch (Exception error)
                 {
-                    SafeCleanup(run.Definition.Id);
+                    if (error is not ReleasePublicationException)
+                        SafeCleanup(run.Definition.Id, attempt.Id);
                     var current = await RequiredRunAsync(run.Id, CancellationToken.None);
                     _ = await runs.UpdateAsync(current with
                     {
@@ -173,7 +258,12 @@ public sealed class BakeRunExecutor(
                         Stage = BakeRunStage.Failed,
                         StatusMessage = "Bake failed.",
                         Error = error.Message,
-                        FailureCategory = error is SourceOperationException source ? source.Kind.ToString() : error.GetType().Name,
+                        FailureCategory = error switch
+                        {
+                            SourceOperationException source => source.Kind.ToString(),
+                            ReleasePublicationException => "Publication",
+                            _ => error.GetType().Name,
+                        },
                         FailureDetails = error is SourceOperationException sourceError ? FailureDetails(sourceError) : null,
                         CompletedAt = clock.GetUtcNow(),
                         UpdatedAt = clock.GetUtcNow(),
@@ -239,11 +329,27 @@ public sealed class BakeRunExecutor(
     private async Task<BakeRun> RequiredRunAsync(Guid runId, CancellationToken ct) =>
         await runs.FindAsync(runId, ct) ?? throw new CatalogNotFoundException($"Unknown bake run '{runId}'.");
 
-    private void SafeCleanup(string viewId)
+    private void SafeCleanup(string viewId, string attemptId)
     {
-        try { pipeline.Cleanup(viewId); }
-        catch { /* Preserve the primary failure. Item 09 owns stale-workspace scavenging. */ }
+        try { pipeline.Cleanup(viewId, attemptId); }
+        catch { /* Preserve the primary failure; reconciliation scavenges stale workspaces. */ }
     }
+
+    private static BakeOutcome OutcomeFrom(CatalogRelease release, string viewId) => new(
+        viewId,
+        release.Version,
+        release.SourceRows ?? 0,
+        release.TileCount ?? 0,
+        0,
+        0,
+        default,
+        0,
+        release.AttemptId,
+        release.ManifestHash,
+        release.ArtifactBytes ?? 0,
+        release.VerificationPassed,
+        release.ArtifactLocation,
+        release.SourceSnapshot);
 
     private TimeSpan RetryDelay(int completedAttempt) =>
         TimeSpan.FromSeconds(options.RetryDelaySeconds[Math.Min(completedAttempt - 1, options.RetryDelaySeconds.Length - 1)]);
@@ -309,4 +415,7 @@ public sealed class BakeRunExecutor(
         public static NoopLease Instance { get; } = new();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
+
+    private sealed class ReleasePublicationException(string message, Exception inner)
+        : Exception(message, inner);
 }
