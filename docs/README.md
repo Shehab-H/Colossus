@@ -6,7 +6,12 @@ documentation for current work lives under `sagas/`; completed, deferred, or sup
 
 ## Active sagas
 
-None. No forward roadmap is currently approved.
+- [Exact high-cardinality numeric filtering](sagas/exact-numeric-filtering/README.md) — active R&D to find
+  an exact, source-independent, disk-backed filter and per-LOD aggregation path with a warm sub-50-ms
+  compute target on two CPU cores and a 5 GB server budget. The saga now also records the exact timestamp
+  aggregate-tree proof and its existing remote-fold integration seam. The Lance + DataFusion scalar-index
+  experiment is measured: physical category/time locality is retained, while a narrow aggregate provider is
+  the next proof. No production implementation is approved yet.
 
 ## Candidate bugs
 
