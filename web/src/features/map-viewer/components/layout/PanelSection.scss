@@ -1,0 +1,11 @@
+.viewer-panel-section {
+  & + &,
+  & + .perf-dashboard,
+  & + .perf-dashboard__collapsed { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--color-border-default); }
+}
+
+.viewer-section-heading {
+  margin-bottom: var(--space-3);
+
+  h2 { margin: var(--space-1) 0 0; font-size: var(--font-size-md); line-height: var(--line-height-tight); letter-spacing: -0.02em; }
+}

@@ -4,8 +4,8 @@ import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-600.css';
 import '@fontsource/inter/latin-700.css';
-import '@shared/ui/styles/index.scss';
-import '@widgets/map-viewer/viewer-shell.scss';
+import '@/styles/index.scss';
+import '@/features/map-viewer/viewer.scss';
 import './workbench.scss';
 
 const preview: Preview = {

@@ -1,0 +1,15 @@
+.viewer-controls { display: grid; gap: var(--space-3); }
+.viewer-controls__field { gap: var(--space-1); }
+.viewer-controls__fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.viewer-controls__fieldset legend { margin-bottom: var(--space-1); color: var(--color-text-primary); font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
+.viewer-controls .ui-input,
+.viewer-controls .ui-select { min-height: 2.25rem; font-size: var(--font-size-xs); }
+
+.viewer-date-range {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+
+  label { color: var(--color-text-secondary); font-size: 0.6875rem; font-weight: var(--font-weight-medium); text-transform: uppercase; }
+}

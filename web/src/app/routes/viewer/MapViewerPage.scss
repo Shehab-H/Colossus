@@ -1,0 +1,8 @@
+.release-details {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-xs);
+
+  > div { padding: var(--space-1) 0; display: flex; justify-content: space-between; gap: var(--space-3); }
+  dt { color: var(--color-text-secondary); }
+  dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
+}

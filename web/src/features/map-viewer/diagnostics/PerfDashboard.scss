@@ -1,0 +1,41 @@
+.perf-dashboard,
+.perf-dashboard__collapsed { font-family: var(--font-mono); font-size: 0.6875rem; }
+
+.perf-dashboard {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  user-select: none;
+
+  &__collapsed { width: auto; min-height: 1.75rem; padding-inline: var(--space-2); }
+  &__header { min-width: 0; display: flex; align-items: center; gap: var(--space-1); }
+  &__context { min-width: 0; flex: 1; overflow: hidden; color: var(--color-text-secondary); font-size: 0.625rem; text-overflow: ellipsis; white-space: nowrap; }
+  &__action { min-width: 0; min-height: 1.5rem; padding-inline: var(--space-1); flex-shrink: 0; font: inherit; }
+  &__section { margin-top: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--color-border-default); }
+  &__section h3 { margin: 0 0 var(--space-1); color: var(--color-text-secondary); font-size: 0.625rem; font-weight: var(--font-weight-regular); }
+  &__row { display: flex; align-items: baseline; gap: var(--space-1); line-height: 1.7; }
+  &__label { opacity: 0.78; }
+  &__spacer { flex: 1; }
+  &__value { font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; }
+  &__value.is-empty { opacity: 0.4; }
+  &__note { width: 3.875rem; color: var(--color-text-secondary); font-size: 0.625rem; text-align: right; }
+  &__note--wide { width: 4.875rem; }
+  &__muted { opacity: 0.6; }
+  &__subtle { color: var(--color-text-secondary); font-size: 0.625rem; }
+  &__success { color: var(--color-success); }
+  &__warning { color: var(--color-warning); }
+  &__footnote { margin-top: var(--space-2); color: var(--color-text-secondary); font-size: 0.625rem; }
+  &__graph { height: 2.125rem; margin-bottom: var(--space-1); display: flex; align-items: flex-end; gap: 1px; overflow: hidden; border-radius: var(--radius-xs); background: var(--color-bg-subtle); }
+  &__bar { flex: 1; align-self: flex-end; opacity: 0.58; }
+  &__bar.is-smooth { background: var(--color-success); }
+  &__bar.is-slow { background: var(--color-text-primary); }
+  &__bar.is-long { background: var(--color-warning); opacity: 1; }
+  &__graph-empty { align-self: center; color: var(--color-text-secondary); font-size: 0.625rem; }
+  &__table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  &__table th,
+  &__table td { padding: 1px 0; font-weight: var(--font-weight-regular); text-align: right; }
+  &__table th:first-child,
+  &__table td:first-child { text-align: left; }
+  &__table thead { color: var(--color-text-secondary); }
+  &__empty-cell { color: var(--color-text-secondary); text-align: left !important; }
+}

@@ -1,0 +1,13 @@
+.map-window {
+  grid-area: map;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.map-canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #0d1117;
+}

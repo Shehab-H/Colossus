@@ -1,0 +1,2 @@
+.maps-editor__dataset summary,.maps-detail__source summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
+.maps-editor__dataset pre,.maps-detail__source pre { padding: var(--space-3); overflow: auto; border-radius: var(--radius-sm); background: var(--color-bg-canvas); color: var(--color-text-primary); font: var(--font-size-xs)/1.5 var(--font-mono); white-space: pre-wrap; }

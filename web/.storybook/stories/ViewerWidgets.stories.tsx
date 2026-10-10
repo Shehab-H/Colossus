@@ -1,18 +1,9 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect } from 'storybook/test';
-import type { ChannelSpec } from '@domain/map/manifest';
-import { Badge, Button } from '@shared/ui';
-import Controls from '@widgets/map-viewer/Controls';
-import InspectPanel from '@widgets/map-viewer/InspectPanel';
-import LegendBox from '@widgets/map-viewer/Legend';
-import {
-  MapWindow,
-  PanelSection,
-  ViewerHeader,
-  ViewerPanel,
-  ViewerShell,
-} from '@widgets/map-viewer/ViewerShell';
+import { Badge, Button } from '@/components/ui';
+import { ViewerControls, InspectPanel, Legend, ViewerShell, MapWindow, PanelSection, ViewerHeader, ViewerPanel } from '@/features/map-viewer';
+import type { ChannelSpec } from '@/types/viewConfig';
 
 const meta = {
   title: 'Widgets/Map Viewer',
@@ -45,7 +36,7 @@ function ViewerWorkspace() {
       />
       <ViewerPanel side="left" open={controlsOpen} onToggle={() => setControlsOpen((open) => !open)} label="Map controls">
         <PanelSection eyebrow="Map controls" title="Layers & filters">
-          <Controls
+          <ViewerControls
             colorChannels={channels}
             colorChannel={colorChannel}
             onColorChannelChange={setColorChannel}
@@ -66,7 +57,7 @@ function ViewerWorkspace() {
       />
       <ViewerPanel side="right" open={detailsOpen} onToggle={() => setDetailsOpen((open) => !open)} label="Map details">
         <PanelSection eyebrow="Visible data" title="Legend">
-          <LegendBox legend={{
+          <Legend legend={{
             channel: 'signal_strength', note: 'gradient', kind: 'continuous',
             gradient: [[255, 239, 160], [230, 0, 0], [105, 0, 45]], min: -120, midpoint: -80, max: -40,
           }} />

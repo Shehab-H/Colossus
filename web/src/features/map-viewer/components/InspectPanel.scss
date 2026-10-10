@@ -1,0 +1,13 @@
+.viewer-inspection-empty {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.map-inspection {
+  &__header { margin-bottom: var(--space-2); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); font-size: var(--font-size-xs); }
+  &__close { width: var(--control-height-sm); min-width: var(--control-height-sm); padding: 0; }
+  &__table { width: 100%; border-collapse: collapse; font-size: var(--font-size-xs); }
+  &__table th { padding: var(--space-1) var(--space-3) var(--space-1) 0; color: var(--color-text-secondary); font-weight: var(--font-weight-regular); text-align: left; white-space: nowrap; }
+  &__table td { font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; text-align: right; }
+}

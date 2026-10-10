@@ -1,6 +1,7 @@
 import { useParams } from 'react-router';
-import MapViewerPage from '@pages/maps/MapViewerPage';
-import '@widgets/map-viewer/viewer-shell.scss';
+import MapViewerPage from '@/app/routes/viewer/MapViewerPage';
+import '@/features/map-viewer/viewer.scss';
+import '@/app/routes/viewer/MapViewerPage.scss';
 
 function requiredMapId(mapId: string | undefined): string {
   if (!mapId) throw new Response('A map id is required.', { status: 400 });

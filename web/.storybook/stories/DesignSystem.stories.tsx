@@ -15,7 +15,7 @@ import {
   Select,
   StatCard,
   Textarea,
-} from '@shared/ui';
+} from '@/components/ui';
 
 const meta = {
   title: 'Foundations/Design System',

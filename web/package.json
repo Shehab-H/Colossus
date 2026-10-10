@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "sideEffects": [
+    "**/*.css",
+    "**/*.scss"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/verify-bundle.mjs",

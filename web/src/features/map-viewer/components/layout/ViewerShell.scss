@@ -1,0 +1,44 @@
+.viewer-shell {
+  width: 100%;
+  height: 100dvh;
+  padding: var(--space-3);
+  display: grid;
+  grid-template-columns: minmax(13rem, 15.5rem) minmax(20rem, 1fr) minmax(14rem, 17.5rem);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "header header header"
+    "left map right";
+  gap: var(--space-3);
+  color: var(--color-text-primary);
+  background:
+    radial-gradient(circle at 5% 0, color-mix(in srgb, var(--color-brand) 8%, transparent), transparent 24rem),
+    var(--color-bg-canvas);
+
+  &--controls-collapsed { grid-template-columns: 2.625rem minmax(20rem, 1fr) minmax(14rem, 17.5rem); }
+  &--details-collapsed { grid-template-columns: minmax(13rem, 15.5rem) minmax(20rem, 1fr) 2.625rem; }
+  &--controls-collapsed.viewer-shell--details-collapsed { grid-template-columns: 2.625rem minmax(20rem, 1fr) 2.625rem; }
+}
+
+@media (max-width: 56.25rem) {
+  #root { overflow: auto; }
+
+  .viewer-shell,
+  .viewer-shell--controls-collapsed,
+  .viewer-shell--details-collapsed,
+  .viewer-shell--controls-collapsed.viewer-shell--details-collapsed {
+    height: auto;
+    min-height: 100dvh;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(22.5rem, 58dvh) max-content max-content;
+    grid-template-areas:
+      "header"
+      "map"
+      "left"
+      "right";
+    overflow: visible;
+  }
+}
+
+@media (max-width: 32.5rem) {
+  .viewer-shell { padding: var(--space-2); gap: var(--space-2); }
+}

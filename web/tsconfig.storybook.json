@@ -17,14 +17,7 @@
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "paths": {
-      "@app/*": ["./src/app/*"],
-      "@pages/*": ["./src/pages/*"],
-      "@widgets/*": ["./src/widgets/*"],
-      "@domain/*": ["./src/domain/*"],
-      "@entities/*": ["./src/entities/*"],
-      "@features/*": ["./src/features/*"],
-      "@infrastructure/*": ["./src/infrastructure/*"],
-      "@shared/*": ["./src/shared/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": [".storybook", "playwright.config.ts", "vitest.config.ts"]

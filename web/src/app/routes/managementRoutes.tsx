@@ -1,8 +1,8 @@
 import { useParams } from 'react-router';
-import MapCatalogPage from '@pages/maps/MapCatalogPage';
-import MapDetailPage from '@pages/maps/MapDetailPage';
-import MapEditorPage from '@pages/maps/MapEditorPage';
-import SourceWorkspacePage from '@pages/sources/SourceWorkspacePage';
+import MapCatalogPage from '@/app/routes/maps/MapCatalogPage';
+import MapDetailPage from '@/app/routes/maps/MapDetailPage';
+import MapEditorPage from '@/app/routes/maps/MapEditorPage';
+import SourcesPage from '@/app/routes/sources/SourcesPage';
 
 function requiredMapId(mapId: string | undefined): string {
   if (!mapId) throw new Response('A map id is required.', { status: 400 });
@@ -14,7 +14,7 @@ export function CatalogRoute() {
 }
 
 export function SourcesRoute() {
-  return <SourceWorkspacePage />;
+  return <SourcesPage />;
 }
 
 export function CreateMapRoute() {

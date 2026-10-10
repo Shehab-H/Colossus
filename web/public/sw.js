@@ -3,7 +3,7 @@
 // paths (`.../<viewId>/<version>/….arrow`) and companion pack blocks (`…/facts.pack?tile=z/x/y&r=<off>-<len>`,
 // ranged) are cached; latest.json, manifests, and the API pass through.
 // Version rotation is the GC: on manifest activation the client posts {viewId, version}, and caches for
-// the view's other versions are dropped. Registered for production builds only (see swClient.ts). Plain
+// the view's other versions are dropped. Registered for production builds only (see serviceWorkerCache.ts). Plain
 // This service worker executes directly in the browser, outside the application bundle.
 
 const TILE_RE = /\/[^/]+\/v[^/]+\/\d+\/\d+\/\d+(\.facts)?\.arrow$/; // <viewId>/<version>/z/x/y[.facts].arrow

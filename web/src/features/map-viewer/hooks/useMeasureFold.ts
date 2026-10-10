@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { type Manifest, tileLayoutOf } from '@domain/map/manifest';
-import { packBlockUrl, packDictUrl } from '@infrastructure/api/mapApi';
-import { isGroupRegime } from '../engine/channels';
-import { buildFoldContext, foldTile, type MeasureExpr, parseMeasure } from '../engine/measures';
-import { companionGrain, type Companion, type CompanionFetch, packBlock } from '../engine/tileData';
-import { denseNeeds, foldSlab, isSlab, mergeSlab, slabPlanesForMeasures } from '../engine/slab';
-import { type FoldedColumns, foldRemote, isRemoteFold } from '../engine/remoteFold';
-import { tileLoader } from '../engine/tileLoader';
-import { timedSync } from '@shared/observability/perf';
+import { type Manifest, tileLayoutOf } from '@/types/manifest';
+import { packBlockUrl, packDictUrl, isGroupRegime, type MeasureExpr, parseMeasure, isSlab, mergeSlab, type FoldedColumns, foldRemote, isRemoteFold, tileLoader, buildFoldContext, foldTile, companionGrain, type Companion, type CompanionFetch, packBlock, denseNeeds, slabPlanesForMeasures, foldSlab } from '../engine';
 import type { RenderedTile } from './useTiles';
+import { timedSync } from '@/lib/perf/timing';
 
 export type { FoldedColumns };
 

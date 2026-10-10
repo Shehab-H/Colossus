@@ -1,0 +1,35 @@
+.embed-shell {
+  width: 100%;
+  height: 100dvh;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "controls stage details";
+  overflow: hidden;
+  color: var(--color-text-primary);
+  background: var(--color-bg-canvas);
+}
+
+@media (max-width: 56.25rem) {
+  .embed-shell {
+    height: auto;
+    min-height: 100dvh;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: minmax(22.5rem, 58dvh) auto;
+    grid-template-areas:
+      "stage stage"
+      "controls details";
+    overflow: visible;
+  }
+}
+
+@media (max-width: 32.5rem) {
+  .embed-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(22.5rem, 58dvh) auto auto;
+    grid-template-areas:
+      "stage"
+      "controls"
+      "details";
+  }
+}

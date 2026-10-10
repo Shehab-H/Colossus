@@ -1,0 +1,12 @@
+.sources-page { width: 100%; }
+.sources-page > .ui-alert { margin-bottom: var(--space-4); }
+.sources-page__tasks { margin-bottom: var(--space-4); display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.sources-page__form-card { min-width: 0; display: grid; align-content: start; gap: var(--space-5); }
+.sources-page__step { display: flex; align-items: flex-start; gap: var(--space-3); }
+.sources-page__step > span { width: 2rem; height: 2rem; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--color-brand-solid); color: var(--color-text-inverse); font-size: var(--font-size-xs); font-weight: var(--font-weight-bold); }
+.sources-page__step h2,.sources-page__section-title h2 { margin: 0; font-size: var(--font-size-xl); letter-spacing: -0.02em; }
+.sources-page__step p,.sources-page__section-title p { margin: var(--space-1) 0 0; color: var(--color-text-secondary); font-size: var(--font-size-sm); line-height: var(--line-height-body); }
+
+.sources-page__section { margin-block: var(--space-10); }
+.sources-page__section-title { margin-bottom: var(--space-4); }
+.sources-page__section-title > span { color: var(--color-brand); font-size: var(--font-size-xs); font-weight: var(--font-weight-bold); letter-spacing: 0.08em; text-transform: uppercase; }

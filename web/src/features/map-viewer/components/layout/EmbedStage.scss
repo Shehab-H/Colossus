@@ -1,0 +1,19 @@
+.embed-stage {
+  grid-area: stage;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.embed-statusbar {
+  min-height: 2.875rem;
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+
+  .viewer-status { min-height: 0; padding: var(--space-1) 0 0; border: 0; }
+}

@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { Manifest } from '@domain/map/manifest';
-import { renderFetch } from '../engine/tileData';
-import { renderDecodeView } from '../engine/channels';
-import type { FilterSlots } from '../engine/gpuFilter';
-import { TileCache, TILE_BUDGET_BYTES } from '../engine/tileCache';
-import type { CacheGauge } from '@shared/observability/perf';
-import type { TileData } from '../engine/tileData';
-import { tileLoader } from '../engine/tileLoader';
-import { coverTiles, prefetchCandidates, selectTiles } from '../engine/tiling';
-import { boundsFromViewport, viewportFor, type CameraState } from '../engine/viewport';
+import type { Manifest } from '@/types/manifest';
+import { renderDecodeView, type FilterSlots, TileCache, TILE_BUDGET_BYTES, type TileData, tileLoader, boundsFromViewport, viewportFor, type CameraState, renderFetch, coverTiles, prefetchCandidates, selectTiles } from '../engine';
+import type { CacheGauge } from '../diagnostics/cacheGauge';
 
 // Prefetch never competes with demand loads: it only runs once the cache is below this share of budget.
 const PREFETCH_BUDGET_FRACTION = 0.75;

@@ -1,14 +1,9 @@
 import { createBrowserRouter, redirect, type LoaderFunctionArgs } from 'react-router';
-import {
-  connectionsQuery,
-  datasetsQuery,
-  managedMapQuery,
-  managedMapsQuery,
-  sourceAdaptersQuery,
-} from '@entities/catalog';
-import { canonicalViewerUrl, resolveViewerRoute } from '@features/map-viewer/model/viewRoute';
-import { queryClient } from '@shared/query/queryClient';
-import { RouteErrorBoundary, RouteFallback, RouteNotFound } from './routes/routeFeedback';
+import { canonicalViewerUrl, resolveViewerRoute } from '@/features/map-viewer';
+import { queryClient } from '@/api/queryClient';
+import { RouteErrorBoundary, RouteFallback, RouteNotFound } from '@/app/routes/RouteFeedback';
+import { connectionsQuery, datasetsQuery, sourceAdaptersQuery } from '@/api/sources';
+import { managedMapQuery, managedMapsQuery } from '@/api/maps';
 
 function requiredParam(params: LoaderFunctionArgs['params'], name: string): string {
   const value = params[name];
@@ -57,8 +52,8 @@ function legacyViewerLoader({ request }: LoaderFunctionArgs) {
   return redirect(`${canonical.pathname}${canonical.search}${canonical.hash}`);
 }
 
-const managementModule = () => import('./routes/managementRoutes');
-const viewerModule = () => import('./routes/viewerRoutes');
+const managementModule = () => import('@/app/routes/managementRoutes');
+const viewerModule = () => import('@/app/routes/viewerRoutes');
 
 export const router = createBrowserRouter([
   {

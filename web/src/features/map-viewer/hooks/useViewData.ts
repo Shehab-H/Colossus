@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ColorSpec, Manifest } from '@domain/map/manifest';
-import { loadManifest } from '@infrastructure/api/mapApi';
-import { ALL, activeFilters as pickActive, carriedFilterableChannels, colorChannelName, describeColorDomain, discoverOptions, filterControl, isGroupRegime } from '../engine/channels';
-import { describeLegend, type ColorDomain } from '@domain/map/colorScale';
-import { buildColorLut } from '../engine/colorLut';
-import { activateTileVersion } from '@infrastructure/cache/tileCacheServiceWorker';
-import { colorSpecForChannel } from '@domain/map/colorEncoding';
+import type { Manifest } from '@/types/manifest';
+import { isGroupRegime, buildColorLut, activateTileVersion, ALL, activeFilters as pickActive, carriedFilterableChannels, colorChannelName, describeColorDomain, discoverOptions, filterControl } from '../engine';
+import type { ColorDomain } from '@/lib/color/scale';
+import { colorSpecForChannel } from '@/lib/color/colorEncoding';
+import type { ColorSpec } from '@/types/viewConfig';
+import { loadManifest } from '@/api/manifest';
+import { describeLegend } from '@/lib/color/legend';
 
 /** Optional startup overrides (from an embed URL): pin the color channel and/or pre-apply filters so an
  *  embedded map paints its intended state on the first frame instead of the authored default. */
@@ -102,7 +102,7 @@ export function useViewData(viewId: string | null, initial?: ViewDataInitial) {
     return ov && ov.channel === renderChannel ? { ...base, ...ov, channel: renderChannel } : base;
   }, [manifest, renderChannel, scale]);
 
-  // The GPU color LUT: colorScale.ts sampled into a texture + uniforms. Its identity changes exactly when
+  // The GPU color LUT: lib/color/scale.ts sampled into a texture + uniforms. Its identity changes exactly when
   // the mapping changes (measure/scale/theme), which is what re-uploads the texture; per-mark data never
   // moves. buildColorLut uses buildColorScale internally, so it can't disagree with the legend below.
   const colorLut = useMemo(() => (scale ? buildColorLut(colorSpec, scale.domain) : null), [colorSpec, scale]);
