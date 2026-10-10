@@ -34,6 +34,13 @@ export interface ManagedBakeRun {
   attempt: number;
 }
 
+export type BakeRunCounts = Record<BakeRunStatus, number>;
+
+export interface BakeRunPage {
+  runs: ManagedBakeRun[];
+  nextCursor?: string;
+}
+
 export interface ManagedRelease {
   id: string;
   bakeRunId: string;

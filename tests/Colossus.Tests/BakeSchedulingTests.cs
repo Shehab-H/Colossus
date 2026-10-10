@@ -89,7 +89,8 @@ public sealed class BakeSchedulingTests : IDisposable
         BakeRun revisionThree = await scheduling.RunNowAsync(map.Id);
         BakeRun duplicate = await scheduling.RunNowAsync(map.Id);
 
-        IReadOnlyList<BakeRun> history = await ((IBakeRunRepository)store).ListForMapAsync(map.Id);
+        IReadOnlyList<BakeRun> history = (await ((IBakeRunRepository)store).ListPageForMapAsync(
+            map.Id, new BakeRunPageRequest(BakeRunPageRequest.MaxLimit, []))).Runs;
         Assert.Equal(BakeRunStatus.Running, history.Single(run => run.Id == active.Id).Status);
         BakeRun superseded = history.Single(run => run.Id == revisionTwo.Id);
         Assert.Equal(BakeRunStatus.Cancelled, superseded.Status);
@@ -435,9 +436,27 @@ public sealed class BakeSchedulingTests : IDisposable
             lock (_gate) return Task.FromResult<BakeRun?>(_run.Id == id ? _run : null);
         }
 
-        public Task<IReadOnlyList<BakeRun>> ListForMapAsync(Guid mapId, CancellationToken ct = default)
+        public Task<BakeRunPage> ListPageForMapAsync(
+            Guid mapId, BakeRunPageRequest request, CancellationToken ct = default)
         {
-            lock (_gate) return Task.FromResult<IReadOnlyList<BakeRun>>(_run.MapId == mapId ? [_run] : []);
+            lock (_gate) return Task.FromResult(new BakeRunPage(_run.MapId == mapId ? [_run] : [], null));
+        }
+
+        public Task<IReadOnlyList<BakeRun>> ListActiveForMapAsync(Guid mapId, CancellationToken ct = default)
+        {
+            lock (_gate) return Task.FromResult<IReadOnlyList<BakeRun>>(_run.MapId == mapId && !_run.IsTerminal ? [_run] : []);
+        }
+
+        public Task<BakeRunOverview> GetOverviewForMapAsync(Guid mapId, CancellationToken ct = default)
+        {
+            lock (_gate)
+            {
+                if (_run.MapId != mapId) return Task.FromResult(BakeRunOverview.Empty);
+                return Task.FromResult(new BakeRunOverview(
+                    _run,
+                    _run.Status == BakeRunStatus.Failed ? _run : null,
+                    new Dictionary<BakeRunStatus, int> { [_run.Status] = 1 }));
+            }
         }
 
         public Task<IReadOnlyList<BakeRun>> ListIncompleteAsync(CancellationToken ct = default)

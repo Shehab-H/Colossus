@@ -1,4 +1,4 @@
-import type { BakeRunStatus, BakePolicy, ManagedBakeRun, ManagedRelease } from './bake';
+import type { BakeRunCounts, BakeRunStatus, BakePolicy, ManagedRelease } from './bake';
 import type { DatasetSource } from './source';
 
 export type PublicationState =
@@ -56,7 +56,7 @@ export interface ManagedMapDetail {
     source: DatasetSource;
   };
   bakePolicy?: BakePolicy;
-  runs: ManagedBakeRun[];
+  runCounts: BakeRunCounts;
   releases: ManagedRelease[];
 }
 

@@ -156,6 +156,68 @@ public sealed class ProductCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task RunHistory_PagesNewestFirstFiltersByStatusAndSummarizes()
+    {
+        var (store, catalog) = CreateCatalog();
+        var connection = await catalog.CreateConnectionAsync(Connection());
+        var dataset = await catalog.CreateDatasetAsync(Dataset(connection.Id));
+        var map = await catalog.CreateMapAsync(Map(dataset.Id, "busy-map"));
+        var snapshot = await catalog.ResolveSnapshotAsync(map.Draft.Slug);
+        IBakeRunRepository runs = store;
+        var start = new DateTimeOffset(2026, 8, 10, 13, 0, 0, TimeSpan.Zero);
+        BakeRunStatus[] statuses =
+        [
+            BakeRunStatus.Succeeded, BakeRunStatus.Failed, BakeRunStatus.Succeeded, BakeRunStatus.Failed,
+            BakeRunStatus.Cancelled, BakeRunStatus.Succeeded, BakeRunStatus.Queued,
+        ];
+        var created = new List<BakeRun>();
+        for (int index = 0; index < statuses.Length; index++)
+        {
+            var createdAt = start.AddMinutes(index / 2);
+            bool terminal = statuses[index] is not BakeRunStatus.Queued;
+            created.Add(await runs.CreateAsync(new BakeRun(
+                Guid.NewGuid(), map.Id, map.Revision, snapshot, statuses[index], createdAt,
+                StartedAt: terminal ? createdAt : null, CompletedAt: terminal ? createdAt : null,
+                Error: statuses[index] == BakeRunStatus.Failed ? $"failure {index}" : null)));
+        }
+        Guid[] newestFirst = created
+            .OrderByDescending(run => run.CreatedAt)
+            .ThenByDescending(run => run.Id.ToString("D"), StringComparer.Ordinal)
+            .Select(run => run.Id)
+            .ToArray();
+
+        var paged = new List<Guid>();
+        BakeRunCursor? cursor = null;
+        int pages = 0;
+        do
+        {
+            var page = await runs.ListPageForMapAsync(map.Id, new BakeRunPageRequest(3, [], cursor));
+            paged.AddRange(page.Runs.Select(run => run.Id));
+            cursor = page.Next is null ? null : BakeRunCursor.Decode(page.Next.Encode());
+            pages++;
+        }
+        while (cursor is not null);
+
+        Assert.Equal(newestFirst, paged);
+        Assert.Equal(3, pages);
+
+        var failures = await runs.ListPageForMapAsync(map.Id, new BakeRunPageRequest(10, [BakeRunStatus.Failed]));
+        Assert.Equal(["failure 3", "failure 1"], failures.Runs.Select(run => run.Error));
+        Assert.Null(failures.Next);
+
+        var overview = await runs.GetOverviewForMapAsync(map.Id);
+        Assert.Equal(newestFirst[0], overview.Latest?.Id);
+        Assert.Equal("failure 3", overview.LatestFailure?.Error);
+        Assert.Equal(3, overview.Count(BakeRunStatus.Succeeded));
+        Assert.Equal(2, overview.Count(BakeRunStatus.Failed));
+        Assert.True(overview.HasActive);
+        Assert.Equal(created[^1].Id, Assert.Single(await runs.ListActiveForMapAsync(map.Id)).Id);
+
+        Assert.Throws<ArgumentException>(() => BakeRunCursor.Decode("not-a-cursor"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new BakeRunPageRequest(BakeRunPageRequest.MaxLimit + 1, []).Validate());
+    }
+
+    [Fact]
     public async Task LegacyImport_IsIdempotentEquivalentAndNonDestructive()
     {
         string legacyDir = Path.Combine(RepoPaths.Root, "views");

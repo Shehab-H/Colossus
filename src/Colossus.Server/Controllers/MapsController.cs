@@ -60,6 +60,23 @@ public sealed class MapsController(
         catch (Exception e) { return this.ToResponse(e); }
     }
 
+    [HttpGet("{id:guid}/runs")]
+    public async Task<IActionResult> ListRuns(
+        Guid id,
+        [FromQuery] BakeRunStatus[]? status,
+        [FromQuery] string? cursor,
+        [FromQuery] int limit = BakeRunPageRequest.DefaultLimit,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var request = new BakeRunPageRequest(
+                limit, status ?? [], string.IsNullOrEmpty(cursor) ? null : BakeRunCursor.Decode(cursor));
+            return Ok(await management.ListRunsAsync(id, request, ct));
+        }
+        catch (Exception e) { return this.ToResponse(e); }
+    }
+
     [HttpPost("{id:guid}/runs")]
     public async Task<IActionResult> RunNow(Guid id, CancellationToken ct)
     {

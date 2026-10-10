@@ -192,8 +192,15 @@ public sealed class ReleaseMaintenanceTests : IDisposable
         public Task<BakeRun?> FindAsync(Guid id, CancellationToken ct = default) =>
             Task.FromResult(_runs.FirstOrDefault(value => value.Id == id));
 
-        public Task<IReadOnlyList<BakeRun>> ListForMapAsync(Guid mapId, CancellationToken ct = default) =>
-            Task.FromResult<IReadOnlyList<BakeRun>>([.. _runs.Where(value => value.MapId == mapId)]);
+        public Task<BakeRunPage> ListPageForMapAsync(
+            Guid mapId, BakeRunPageRequest request, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<BakeRun>> ListActiveForMapAsync(Guid mapId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<BakeRunOverview> GetOverviewForMapAsync(Guid mapId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
 
         public Task<IReadOnlyList<BakeRun>> ListIncompleteAsync(CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<BakeRun>>([.. _runs.Where(value => !value.IsTerminal)]);

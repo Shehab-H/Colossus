@@ -1,3 +1,4 @@
+using System.Text;
 using Colossus.Application.Abstractions.Catalog;
 using Colossus.Application.Catalog;
 using Colossus.Domain.Catalog;
@@ -17,6 +18,8 @@ public sealed class MySqlDatabase :
     IBakeRunRepository,
     IReleaseRepository
 {
+    private const string NewestRunFirst = "ORDER BY created_at DESC, id DESC";
+
     private readonly string _connectionString;
 
     public MySqlDatabase(string connectionString, DatabaseOptions options)
@@ -281,12 +284,63 @@ public sealed class MySqlDatabase :
     async Task<BakeRun?> IBakeRunRepository.FindAsync(Guid id, CancellationToken ct)
         => await FindRunAsync(id, ct);
 
-    async Task<IReadOnlyList<BakeRun>> IBakeRunRepository.ListForMapAsync(Guid mapId, CancellationToken ct)
+    async Task<BakeRunPage> IBakeRunRepository.ListPageForMapAsync(
+        Guid mapId, BakeRunPageRequest request, CancellationToken ct)
+    {
+        request.Validate();
+        var parameters = new List<(string Name, object? Value)> { ("$map", mapId), ("$take", request.Limit + 1) };
+        var sql = new StringBuilder("SELECT * FROM bake_runs WHERE map_id = $map");
+        if (request.Statuses.Count > 0)
+        {
+            var names = request.Statuses.Distinct().Select((status, index) =>
+            {
+                parameters.Add(($"$status{index}", status.ToString()));
+                return $"$status{index}";
+            });
+            sql.Append($" AND status IN ({string.Join(", ", names)})");
+        }
+        if (request.After is { } after)
+        {
+            parameters.Add(("$afterCreated", Timestamp(after.CreatedAt)));
+            parameters.Add(("$afterId", after.Id));
+            sql.Append(" AND (created_at < $afterCreated OR (created_at = $afterCreated AND id < $afterId))");
+        }
+        sql.Append($" {NewestRunFirst} LIMIT $take;");
+
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db, sql.ToString(), [.. parameters]);
+        var runs = await ReadAllAsync(cmd, ReadRun, ct);
+        return runs.Count > request.Limit
+            ? new BakeRunPage(runs.Take(request.Limit).ToArray(), BakeRunCursor.After(runs[request.Limit - 1]))
+            : new BakeRunPage(runs, null);
+    }
+
+    async Task<IReadOnlyList<BakeRun>> IBakeRunRepository.ListActiveForMapAsync(Guid mapId, CancellationToken ct)
     {
         await using var db = await OpenAsync(ct);
         await using var cmd = Command(db,
-            "SELECT * FROM bake_runs WHERE map_id = $map ORDER BY created_at DESC;", ("$map", mapId));
+            $"SELECT * FROM bake_runs WHERE map_id = $map AND status IN ('Queued', 'Running') {NewestRunFirst};",
+            ("$map", mapId));
         return await ReadAllAsync(cmd, ReadRun, ct);
+    }
+
+    async Task<BakeRunOverview> IBakeRunRepository.GetOverviewForMapAsync(Guid mapId, CancellationToken ct)
+    {
+        string sql = $"""
+            SELECT status, COUNT(*) AS total FROM bake_runs WHERE map_id = $map GROUP BY status;
+            SELECT * FROM bake_runs WHERE map_id = $map {NewestRunFirst} LIMIT 1;
+            SELECT * FROM bake_runs WHERE map_id = $map AND status = 'Failed' {NewestRunFirst} LIMIT 1;
+            """;
+        await using var db = await OpenAsync(ct);
+        await using var cmd = Command(db, sql, ("$map", mapId));
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+        var counts = new Dictionary<BakeRunStatus, int>();
+        while (await reader.ReadAsync(ct))
+            counts[Enum.Parse<BakeRunStatus>(reader.GetString(0))] = Convert.ToInt32(reader.GetInt64(1));
+        BakeRun? latest = await reader.NextResultAsync(ct) && await reader.ReadAsync(ct) ? ReadRun(reader) : null;
+        BakeRun? latestFailure = await reader.NextResultAsync(ct) && await reader.ReadAsync(ct) ? ReadRun(reader) : null;
+        return new BakeRunOverview(latest, latestFailure, counts);
     }
 
     async Task<IReadOnlyList<BakeRun>> IBakeRunRepository.ListIncompleteAsync(CancellationToken ct)
@@ -523,9 +577,9 @@ public sealed class MySqlDatabase :
             versionCommand.CommandText = "SELECT version FROM catalog_schema WHERE singleton_id = 1;";
             object? storedVersion = versionCommand.ExecuteScalar();
             long version = storedVersion is null ? 0 : Convert.ToInt64(storedVersion);
-            if (version > 4)
+            if (version > 5)
                 throw new InvalidOperationException(
-                    $"Database schema version {version} is newer than this application's supported version 4.");
+                    $"Database schema version {version} is newer than this application's supported version 5.");
             if (version == 0)
                 ExecuteSchemaStatement(db, "INSERT INTO catalog_schema (singleton_id, version) VALUES (1, 1);");
         }
@@ -622,7 +676,8 @@ public sealed class MySqlDatabase :
                 error LONGTEXT NULL,
                 CONSTRAINT fk_bake_runs_map FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE RESTRICT,
                 UNIQUE KEY ux_bake_runs_map_id (map_id, id),
-                KEY ix_bake_runs_map_created (map_id, created_at DESC)
+                KEY ix_bake_runs_map_history (map_id, created_at, id),
+                KEY ix_bake_runs_map_status_history (map_id, status, created_at, id)
             ) ENGINE=InnoDB;
             """,
             """
@@ -697,6 +752,13 @@ public sealed class MySqlDatabase :
                 "ALTER TABLE releases MODIFY verification_passed BOOLEAN NOT NULL DEFAULT 0;");
             ExecuteSchemaStatement(db, "UPDATE catalog_schema SET version = 4 WHERE singleton_id = 1;");
         }
+        if (StoredSchemaVersion(db) < 5)
+        {
+            AddIndexIfMissing(db, "bake_runs", "ix_bake_runs_map_history", "map_id, created_at, id");
+            AddIndexIfMissing(db, "bake_runs", "ix_bake_runs_map_status_history", "map_id, status, created_at, id");
+            DropIndexIfPresent(db, "bake_runs", "ix_bake_runs_map_created");
+            ExecuteSchemaStatement(db, "UPDATE catalog_schema SET version = 5 WHERE singleton_id = 1;");
+        }
     }
 
     private static long StoredSchemaVersion(MySqlConnection db)
@@ -721,6 +783,24 @@ public sealed class MySqlDatabase :
 
     private static void AddUniqueIndexIfMissing(MySqlConnection db, string table, string index, string columns)
     {
+        if (!IndexExists(db, table, index))
+            ExecuteSchemaStatement(db, $"ALTER TABLE `{table}` ADD UNIQUE KEY `{index}` ({columns});");
+    }
+
+    private static void AddIndexIfMissing(MySqlConnection db, string table, string index, string columns)
+    {
+        if (!IndexExists(db, table, index))
+            ExecuteSchemaStatement(db, $"ALTER TABLE `{table}` ADD KEY `{index}` ({columns});");
+    }
+
+    private static void DropIndexIfPresent(MySqlConnection db, string table, string index)
+    {
+        if (IndexExists(db, table, index))
+            ExecuteSchemaStatement(db, $"ALTER TABLE `{table}` DROP INDEX `{index}`;");
+    }
+
+    private static bool IndexExists(MySqlConnection db, string table, string index)
+    {
         using var exists = db.CreateCommand();
         exists.CommandText = """
             SELECT COUNT(*) FROM information_schema.statistics
@@ -728,8 +808,7 @@ public sealed class MySqlDatabase :
             """;
         exists.Parameters.AddWithValue("@table", table);
         exists.Parameters.AddWithValue("@index", index);
-        if (Convert.ToInt32(exists.ExecuteScalar()) == 0)
-            ExecuteSchemaStatement(db, $"ALTER TABLE `{table}` ADD UNIQUE KEY `{index}` ({columns});");
+        return Convert.ToInt32(exists.ExecuteScalar()) > 0;
     }
 
     private static void ExecuteSchemaStatement(MySqlConnection db, string sql)

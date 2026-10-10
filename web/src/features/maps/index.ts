@@ -1,3 +1,4 @@
+export { default as BakeRunHistory } from './components/BakeRunHistory';
 export { default as MapCatalogTable } from './components/MapCatalogTable';
 export { MapConfigurationBuilder } from './components/MapConfigurationBuilder';
 export { hoursToInterval, draftFromForm, emptyMapForm, formFromDraft, intervalFromParts, mapDraftsEqual } from './forms/mapForm';

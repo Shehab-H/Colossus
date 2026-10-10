@@ -45,7 +45,9 @@ public interface IBakeRunRepository
 {
     Task<BakeRun> CreateAsync(BakeRun run, CancellationToken ct = default);
     Task<BakeRun?> FindAsync(Guid id, CancellationToken ct = default);
-    Task<IReadOnlyList<BakeRun>> ListForMapAsync(Guid mapId, CancellationToken ct = default);
+    Task<BakeRunPage> ListPageForMapAsync(Guid mapId, BakeRunPageRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<BakeRun>> ListActiveForMapAsync(Guid mapId, CancellationToken ct = default);
+    Task<BakeRunOverview> GetOverviewForMapAsync(Guid mapId, CancellationToken ct = default);
     Task<IReadOnlyList<BakeRun>> ListIncompleteAsync(CancellationToken ct = default);
     Task<BakeRun> UpdateAsync(BakeRun run, CancellationToken ct = default);
     Task<BakeRun> RequestCancellationAsync(Guid id, DateTimeOffset requestedAt, CancellationToken ct = default);

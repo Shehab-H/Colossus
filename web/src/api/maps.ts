@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query';
 import type { ManagedMapSummary, ManagedMapDetail, MapDraft, SavedMap } from '@/types/map';
+import { ACTIVE_RUN_POLL_MS, hasActiveRuns } from './bakes';
 import { request } from './client';
 import { catalogQueryKeys } from './queryKeys';
 
@@ -25,7 +26,5 @@ export const managedMapsQuery = (includeArchived: boolean) => queryOptions({
 export const managedMapQuery = (mapId: string) => queryOptions({
   queryKey: catalogQueryKeys.mapDetail(mapId),
   queryFn: ({ signal }) => getManagedMap(mapId, signal),
-  refetchInterval: (query) => query.state.data?.runs.some((run) => run.status === 'queued' || run.status === 'running')
-    ? 1_500
-    : false,
+  refetchInterval: (query) => hasActiveRuns(query.state.data?.runCounts) ? ACTIVE_RUN_POLL_MS : false,
 });

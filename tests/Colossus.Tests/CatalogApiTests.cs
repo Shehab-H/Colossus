@@ -124,12 +124,24 @@ public sealed class CatalogApiTests : IDisposable
         {
             Assert.Equal("queued", detail.RootElement.GetProperty("summary").GetProperty("publicationState").GetString());
             Assert.True(detail.RootElement.GetProperty("bakePolicy").GetProperty("enabled").GetBoolean());
-            Assert.Equal("queued", Assert.Single(detail.RootElement.GetProperty("runs").EnumerateArray()).GetProperty("status").GetString());
+            Assert.Equal(1, detail.RootElement.GetProperty("runCounts").GetProperty("queued").GetInt32());
             Assert.Equal(
                 "#d55e00",
                 detail.RootElement.GetProperty("definition").GetProperty("encoding").GetProperty("color")
                     .GetProperty("overrides").GetProperty("priority").GetString());
         }
+
+        using (var runs = JsonDocument.Parse(await client.GetStringAsync($"/api/maps/{mapId}/runs?status=queued&limit=5")))
+        {
+            var run = Assert.Single(runs.RootElement.GetProperty("runs").EnumerateArray());
+            Assert.Equal(runId, run.GetProperty("id").GetGuid());
+            Assert.Equal("queued", run.GetProperty("status").GetString());
+            Assert.False(runs.RootElement.TryGetProperty("nextCursor", out _));
+        }
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest,
+            (await client.GetAsync($"/api/maps/{mapId}/runs?cursor=not-a-cursor")).StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest,
+            (await client.GetAsync($"/api/maps/{mapId}/runs?limit=0")).StatusCode);
 
         using (var scope = _factory.Services.CreateScope())
         {

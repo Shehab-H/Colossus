@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router';
-import { useArchiveMapMutation, useBakePolicyMutation, useCancelMapRunMutation, usePinMapReleaseMutation, useReconcileMapReleasesMutation, useRunMapMutation, hoursToInterval, publicationLabel, publicationTone } from '@/features/maps';
+import { BakeRunHistory, useArchiveMapMutation, useBakePolicyMutation, usePinMapReleaseMutation, useReconcileMapReleasesMutation, useRunMapMutation, hoursToInterval, publicationLabel, publicationTone } from '@/features/maps';
 import { Alert, Badge, Button, ConfirmDialog, LoadingState, PageHeader, PaddedCard, StatCard, type BadgeTone } from '@/components/ui';
 import { ButtonRouteLink } from '@/components/ui/RouteLink';
 import ManagementLayout from '@/components/layouts/ManagementLayout';
@@ -21,13 +21,12 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
   const queuedRunId = (location.state as { queuedRunId?: string } | null)?.queuedRunId;
   const detailQuery = useQuery(managedMapQuery(mapId));
   const runMutation = useRunMapMutation();
-  const cancelRunMutation = useCancelMapRunMutation();
   const policyMutation = useBakePolicyMutation();
   const archiveMutation = useArchiveMapMutation();
   const pinReleaseMutation = usePinMapReleaseMutation();
   const reconcileMutation = useReconcileMapReleasesMutation();
   const detail = detailQuery.data ?? null;
-  const operationError = detailQuery.error ?? runMutation.error ?? cancelRunMutation.error ?? policyMutation.error ?? archiveMutation.error ?? pinReleaseMutation.error ?? reconcileMutation.error;
+  const operationError = detailQuery.error ?? runMutation.error ?? policyMutation.error ?? archiveMutation.error ?? pinReleaseMutation.error ?? reconcileMutation.error;
   const [localError, setLocalError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -57,12 +56,6 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
         },
       });
     } catch { /* mutation state owns the rendered error */ }
-  };
-
-  const cancelRun = async (runId: string) => {
-    setLocalError(null);
-    try { await cancelRunMutation.mutateAsync({ mapId, runId }); }
-    catch { /* mutation state owns the rendered error */ }
   };
 
   const pinRelease = async (releaseId: string, pinned: boolean) => {
@@ -156,22 +149,7 @@ export default function MapDetailPage({ mapId }: { mapId: string }) {
 
             <PaddedCard className="maps-detail__card maps-detail__card--wide">
               <CardHeading eyebrow="History" title="Bake runs" />
-              {detail.runs.length === 0 ? <p className="maps-detail__note">This map has never been queued.</p> : <div className="maps-detail__history">{detail.runs.map((run) => {
-                const active = run.status === 'queued' || run.status === 'running';
-                return <div className="maps-detail__run" key={run.id}>
-                  <div className="maps-detail__history-row">
-                    <Badge tone={run.status === 'failed' ? 'danger' : run.status === 'succeeded' ? 'success' : run.status === 'cancelled' ? 'neutral' : 'info'}>{run.status}</Badge>
-                    <strong>{run.stage} · {Math.round(run.progress * 100)}%</strong>
-                    <span>{formatDate(run.completedAt ?? run.startedAt ?? run.createdAt)}</span>
-                    {active && !run.cancellationRequested
-                      ? <Button variant="ghost" size="sm" disabled={cancelRunMutation.isPending} onClick={() => void cancelRun(run.id)}>Cancel</Button>
-                      : <span>{run.statusMessage ?? run.error}</span>}
-                  </div>
-                  {active && <progress className="maps-detail__progress" max={1} value={run.progress} aria-label={`${run.stage} progress`} />}
-                  {(run.failureCategory || run.failureDetails) && <Alert tone="danger"><strong>{run.failureCategory ?? 'Bake failure'}:</strong> {run.failureDetails ?? run.error}</Alert>}
-                  {(run.sourceRows !== undefined || run.tileCount !== undefined || run.artifactBytes !== undefined) && <p className="maps-detail__run-metrics">{run.sourceRows?.toLocaleString() ?? '—'} rows · {run.tileCount?.toLocaleString() ?? '—'} tiles · {formatBytes(run.artifactBytes)} · attempt {run.attempt}</p>}
-                </div>;
-              })}</div>}
+              <BakeRunHistory mapId={mapId} counts={detail.runCounts} />
             </PaddedCard>
 
             <PaddedCard className="maps-detail__card maps-detail__card--wide">

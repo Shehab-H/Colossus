@@ -22,8 +22,8 @@ public sealed class BakeSchedulingService(
     private async Task<BakeRun> QueueLatestUnderLeaseAsync(Guid mapId, CancellationToken ct)
     {
         CatalogMap map = await catalog.GetMapAsync(mapId, ct);
-        IReadOnlyList<BakeRun> history = await runs.ListForMapAsync(mapId, ct);
-        BakeRun? existing = history.FirstOrDefault(run =>
+        IReadOnlyList<BakeRun> active = await runs.ListActiveForMapAsync(mapId, ct);
+        BakeRun? existing = active.FirstOrDefault(run =>
             run.Status == BakeRunStatus.Queued && run.DraftRevision == map.Revision && !run.CancellationRequested);
         if (existing is not null)
         {
@@ -36,7 +36,7 @@ public sealed class BakeSchedulingService(
             return existing;
         }
 
-        foreach (BakeRun pending in history.Where(run =>
+        foreach (BakeRun pending in active.Where(run =>
                      run.Status == BakeRunStatus.Queued && run.DraftRevision < map.Revision))
         {
             BakeRun superseded = await runs.SupersedeQueuedAsync(
@@ -92,9 +92,9 @@ public sealed class BakeSchedulingService(
         var policy = await policies.FindAsync(mapId, ct);
         if (policy is not { Enabled: true, Interval: { } interval }) return null;
 
-        var history = await runs.ListForMapAsync(mapId, ct);
-        if (history.Any(run => !run.IsTerminal)) return null;
-        DateTimeOffset dueAt = (history.FirstOrDefault()?.CreatedAt ?? policy.UpdatedAt) + interval;
+        var history = await runs.GetOverviewForMapAsync(mapId, ct);
+        if (history.HasActive) return null;
+        DateTimeOffset dueAt = (history.Latest?.CreatedAt ?? policy.UpdatedAt) + interval;
         return clock.GetUtcNow() < dueAt ? null : await QueueLatestUnderLeaseAsync(mapId, ct);
     }
 

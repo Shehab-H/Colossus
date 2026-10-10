@@ -59,6 +59,18 @@ public sealed record ManagedBakeRun(
     bool CancellationRequested,
     int Attempt);
 
+public sealed record ManagedBakeRunCounts(int Queued, int Running, int Succeeded, int Failed, int Cancelled)
+{
+    public static ManagedBakeRunCounts From(BakeRunOverview overview) => new(
+        overview.Count(BakeRunStatus.Queued),
+        overview.Count(BakeRunStatus.Running),
+        overview.Count(BakeRunStatus.Succeeded),
+        overview.Count(BakeRunStatus.Failed),
+        overview.Count(BakeRunStatus.Cancelled));
+}
+
+public sealed record ManagedBakeRunPage(IReadOnlyList<ManagedBakeRun> Runs, string? NextCursor);
+
 public sealed record ManagedRelease(
     Guid Id,
     Guid BakeRunId,
@@ -78,7 +90,7 @@ public sealed record ManagedMapDetail(
     MapDraft Definition,
     ManagedDatasetSummary Dataset,
     BakePolicy? BakePolicy,
-    IReadOnlyList<ManagedBakeRun> Runs,
+    ManagedBakeRunCounts RunCounts,
     IReadOnlyList<ManagedRelease> Releases);
 
 /// <summary>
@@ -111,11 +123,11 @@ public sealed class MapManagementService(
         var connection = await connections.FindAsync(dataset.Draft.ConnectionId, ct)
             ?? throw new CatalogRelationshipException($"Unknown connection '{dataset.Draft.ConnectionId}'.");
         var policy = await policies.FindAsync(map.Id, ct);
-        var mapRuns = await runs.ListForMapAsync(map.Id, ct);
+        var history = await runs.GetOverviewForMapAsync(map.Id, ct);
         var mapReleases = await releases.ListForMapAsync(map.Id, ct);
 
         return new ManagedMapDetail(
-            Summarize(map, connection.Draft.Adapter, policy, mapRuns, mapReleases, CurrentVersion(map)),
+            Summarize(map, connection.Draft.Adapter, policy, history, mapReleases, CurrentVersion(map)),
             map.Draft,
             new ManagedDatasetSummary(
                 dataset.Id,
@@ -125,8 +137,16 @@ public sealed class MapManagementService(
                 connection.Draft.Adapter,
                 dataset.Draft.Source),
             policy,
-            mapRuns.Select(DescribeRun).ToArray(),
+            ManagedBakeRunCounts.From(history),
             mapReleases.Select(ToRelease).ToArray());
+    }
+
+    public async Task<ManagedBakeRunPage> ListRunsAsync(
+        Guid mapId, BakeRunPageRequest request, CancellationToken ct = default)
+    {
+        _ = await catalog.GetMapAsync(mapId, ct);
+        var page = await runs.ListPageForMapAsync(mapId, request.Validate(), ct);
+        return new ManagedBakeRunPage(page.Runs.Select(DescribeRun).ToArray(), page.Next?.Encode());
     }
 
     private async Task<ManagedMapSummary> SummarizeAsync(CatalogMap map, CancellationToken ct)
@@ -136,24 +156,24 @@ public sealed class MapManagementService(
         var connection = await connections.FindAsync(dataset.Draft.ConnectionId, ct)
             ?? throw new CatalogRelationshipException($"Unknown connection '{dataset.Draft.ConnectionId}'.");
         var policy = await policies.FindAsync(map.Id, ct);
-        var mapRuns = await runs.ListForMapAsync(map.Id, ct);
+        var history = await runs.GetOverviewForMapAsync(map.Id, ct);
         var mapReleases = await releases.ListForMapAsync(map.Id, ct);
-        return Summarize(map, connection.Draft.Adapter, policy, mapRuns, mapReleases, CurrentVersion(map));
+        return Summarize(map, connection.Draft.Adapter, policy, history, mapReleases, CurrentVersion(map));
     }
 
     private static ManagedMapSummary Summarize(
         CatalogMap map,
         string sourceType,
         BakePolicy? policy,
-        IReadOnlyList<BakeRun> mapRuns,
+        BakeRunOverview history,
         IReadOnlyList<CatalogRelease> mapReleases,
         string? currentVersion = null)
     {
-        var lastRun = mapRuns.FirstOrDefault();
+        var lastRun = history.Latest;
         var currentRelease = currentVersion is null
             ? mapReleases.FirstOrDefault()
             : mapReleases.FirstOrDefault(value => value.Version == currentVersion);
-        var lastFailure = mapRuns.FirstOrDefault(run => run.Status == BakeRunStatus.Failed);
+        var lastFailure = history.LatestFailure;
         var publicationState = map.Archived
             ? MapPublicationState.Archived
             : lastRun?.Status switch
