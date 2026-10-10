@@ -13,6 +13,12 @@
       "runtimeExecutable": "dotnet",
       "runtimeArgs": ["run", "--project", "src/Colossus.Server"],
       "port": 5174
+    },
+    {
+      "name": "server-no-schedule",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "src/Colossus.Server", "--", "--Scheduling:Enabled=false"],
+      "port": 5174
     }
   ]
 }
