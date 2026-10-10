@@ -1,0 +1,85 @@
+import { Meta } from '@storybook/addon-docs/blocks';
+import { DocTable } from './DocTable';
+
+<Meta title="Architecture/Frontend" />
+
+# Frontend architecture
+
+Everything is in `web/src`, addressed by one alias: `@/` maps to `src/`. The rules below are enforced by `src/architecture.test.ts`, which runs with `npm test`. More background is in `docs/review/02-folder-structure.md` and `docs/review/05-how-it-works.md`.
+
+## Folders
+
+<DocTable
+  columns={["Folder","Contents"]}
+  rows={[
+    ["`app/`","Application start-up and the screens. `main.tsx` mounts the app, `App.tsx` renders the router, `router.tsx` defines routes and loaders, `managementStyles.scss` lists the management stylesheets. `routes/` holds one page component per screen (`maps/`, `sources/`, `viewer/`), the two lazy route modules `managementRoutes.tsx` and `viewerRoutes.tsx`, and `RouteFeedback.tsx` (loading, not found, error)."],
+    ["`api/`","Every call to the backend. `client.ts` (base URLs, `request`, `CatalogApiError`), `queryClient.ts`, `queryKeys.ts`, and one file per resource: `maps.ts`, `bakes.ts`, `sources.ts`, `manifest.ts`."],
+    ["`types/`","Data shapes returned by the API and release files: `map.ts`, `bake.ts`, `source.ts`, `manifest.ts`, `viewConfig.ts`, `theme.ts`."],
+    ["`components/ui/`","Design-system primitives: `Badge`, `Button` and `ButtonLink`, `buttonStyles`, `Card`, `Dialog`, `Feedback`, `Field`, `Page`, `RouteLink`, `ThemeToggle`, with an `index.ts`."],
+    ["`components/layouts/`","`ManagementLayout`."],
+    ["`features/maps/`","Map catalog, bake run history, configuration builder, color encoding editor, map mutations."],
+    ["`features/sources/`","Connection and dataset forms and lists, preview panel, source mutations."],
+    ["`features/map-viewer/`","The public viewer and embed: layout components, hooks, embed URL and event contract, diagnostics, route-state helpers and the `engine/`."],
+    ["`lib/`","The project's own non-React libraries: `color/` (scales, legends, schemes, encoding helpers) and `perf/` (event recording and timing)."],
+    ["`hooks/`","`useTheme`."],
+    ["`config/`","`paths.ts`: viewer and embed URLs."],
+    ["`styles/`","`_tokens.scss`, `_primitives.scss`, `_mixins.scss`, `global.scss`, `index.scss`."],
+    ["`utils/`","`classNames.ts` (`cx`) and `format.ts` (dates, bytes, durations)."],
+  ]}
+/>
+
+Inside a feature the folder names are the same wherever they exist: `components/`, `hooks/`, `forms/` (pure form-to-draft functions) and `utils/`. `map-viewer` adds `engine/`, `embed/`, `diagnostics/` and `components/layout/`. Each feature exposes a single `index.ts`.
+
+## Import rules
+
+`architecture.test.ts` reads every `.ts` and `.tsx` file under `src` and under `.storybook`. It finds static imports, dynamic `import()` calls and side-effect imports, and resolves both `@/` and relative specifiers. Packages are only looked at by the engine rule. A violation fails `npm test` and names the offending file and specifier.
+
+<DocTable
+  columns={["Rule","What the test checks"]}
+  rows={[
+    ["Retired folders stay gone","`src/domain`, `src/infrastructure`, `src/entities`, `src/widgets`, `src/pages`, `src/shared` and `src/renderer` must not exist, and no directory named `model` may exist anywhere under `src`."],
+    ["Features are independent","A file in `features/a` never imports a file in `features/b`."],
+    ["Shared folders stay below features","Files in `api`, `types`, `components`, `hooks`, `lib`, `config`, `styles` and `utils` never import from `features/` or `app/`."],
+    ["One door per feature","Code outside a feature (including `app/` and `.storybook/`) imports it only through its `index.ts`. Stylesheet imports (`.scss`, `.css`) are exempt."],
+    ["One door to the engine","Inside `features/map-viewer`, code outside `engine/` imports the engine only through `engine/index.ts`."],
+    ["The engine has no UI","Files in `engine/` import none of `react`, `react-dom`, `react-router`, `react-map-gl`, `@deck.gl/react` or `@tanstack/react-query` (including subpaths), and nothing from `src/components`."],
+    ["The engine has no hooks","Files in `engine/` never import `src/hooks` or any feature's `hooks/` folder."],
+    ["Engine stages are acyclic","The graph of imports between the folders directly under `engine/` has no cycle."],
+  ]}
+/>
+
+The test does not check file length, where tests are placed, or which stage may import which, only that no cycle exists. Stories are source files too, so they follow the same rules.
+
+## Management data flow
+
+The management screens (`/sources`, `/maps`, `/maps/new`, `/maps/manage/:mapId`, `/maps/manage/:mapId/edit`) load data like this:
+
+1. **Router loader.** `router.tsx` attaches a loader to each route. It calls `queryClient.ensureQueryData(...)` with a query-options object from `api/`, using the shared `queryClient` from `api/queryClient.ts`, so navigation waits for the data and fills the cache. Each route has `RouteFallback` as `HydrateFallback` and `RouteErrorBoundary` as `ErrorBoundary`.
+2. **Query options.** `api/maps.ts`, `api/bakes.ts` and `api/sources.ts` export functions that call `request(path)` from `api/client.ts`, and `queryOptions` / `infiniteQueryOptions` objects built on them (`managedMapsQuery`, `managedMapQuery`, `mapRunsQuery`, `datasetsQuery`, `connectionsQuery`, `sourceAdaptersQuery`). Keys come from `catalogQueryKeys` in `api/queryKeys.ts`. `request` sends JSON to `API_BASE` and throws `CatalogApiError` (status and per-field `errors`) when the response is not OK.
+3. **Page component.** The route module (`managementRoutes.tsx`, a lazy chunk) renders a page from `app/routes/`. The page calls `useQuery` with the same options object, which reads the cache the loader filled, and composes feature components with `ManagementLayout` from `components/layouts`.
+4. **Feature hooks and components.** Components in `features/maps` and `features/sources` are mostly presentational: data and callbacks arrive as props. Hooks in `features/*/hooks` own writes: `mapMutations.ts` wraps `useMutation` and invalidates the map list and map detail keys on success; `sourceMutations.ts` does the same for connections and datasets through the shared `queryClient`. `useMapRuns` wraps `useInfiniteQuery` for the run history.
+5. **Polling.** While a map has queued or running runs (`hasActiveRuns`), `managedMapQuery` and the run history refetch every `ACTIVE_RUN_POLL_MS` (1.5 s).
+
+The default query client uses a 30 s stale time, a 10 minute garbage-collection time, one retry for queries and none for mutations.
+
+The viewer does not use this path. `/maps/:mapId` and `/embed/:mapId` have no loader; `MapViewerPage` calls the viewer hooks, and `useViewData` fetches the release manifest through `loadManifest` in `api/manifest.ts` with plain `fetch` and React state. The two viewer routes are a separate lazy chunk, and `npm run build` fails (`scripts/verify-bundle.mjs`) if the viewer leaks into the initial graph or the initial JavaScript exceeds 450 KiB.
+
+## Viewer engine stages
+
+`features/map-viewer/engine` is a React-free library with one folder per pipeline stage and a single entry, `engine/index.ts`.
+
+<DocTable
+  columns={["Stage","Responsibility","Files","Imports today"]}
+  rows={[
+    ["`network`","Fetching from the tile server and the service worker cache","`arrowFetch`, `inflate`, `packFetch`, `serviceWorkerCache`, `tileUrls`, `zstd`","none"],
+    ["`view`","What each manifest channel is for; the measure grammar","`channelRoles`, `colorDomain`, `measureGrammar`","`network`"],
+    ["`filters`","Filter values and routing between GPU slots and measure folds","`discoverOptions`, `filterControls`, `filterRouting`, `filterValue`, `gpuFilterSlots`","`network`, `view`"],
+    ["`decode`","Raw bytes to typed arrays","`columnSource`, `columns`, `decodeTile`, `filterValues`, `geometryCodec`, `points`, `polygons`, `tileData`, `tileSchema`","`filters`, `view`"],
+    ["`tiles`","Which tiles the camera needs; the in-memory tile cache","`camera`, `tileCache`, `tileGrid`, `tileSelection`","`decode`"],
+    ["`draw`","Hand data to deck.gl and MapLibre","`basemap`, `colorLut`, `colorScaleExtension`, `tileDeckData`","`decode`"],
+    ["`fold`","Recompute measures when a filter changes them","`aggregators`, `companion`, `foldContext`, `remoteFold`, `rowFold`, `slab/`","`decode`, `filters`, `network`, `view`"],
+    ["`workers`","Decoding on background threads","`jobs`, `tile.worker`, `tileLoader`","`decode`, `filters`, `fold`, `network`"],
+  ]}
+/>
+
+The "imports today" column is read from the code, not a rule. The test forbids cycles, so a new edge is allowed unless it closes one. The hooks that drive the engine live outside it, in `features/map-viewer/hooks`: `useViewData`, `useTiles` and `useMeasureFold`.

@@ -1,0 +1,89 @@
+import { Meta } from '@storybook/addon-docs/blocks';
+import { DocTable } from './DocTable';
+
+<Meta title="Introduction" />
+
+# Colossus UI
+
+This Storybook documents the `web/` frontend: the shared design system, the feature components and the architecture rules that keep them apart. Every story renders from fixtures and needs no running backend.
+
+## What the app contains
+
+<DocTable
+  columns={["Area","Routes","Source"]}
+  rows={[
+    ["Management app: sources, maps, bake runs and releases","`/sources`, `/maps`, `/maps/new`, `/maps/manage/:mapId`, `/maps/manage/:mapId/edit`","`src/app/routes/maps`, `src/app/routes/sources`, `src/features/maps`, `src/features/sources`"],
+    ["Map viewer","`/maps/:mapId`","`src/app/routes/viewer`, `src/features/map-viewer`"],
+    ["Embedded map","`/embed/:mapId`","the same page with `surface=\"embed\"`"],
+  ]}
+/>
+
+The management app talks to the JSON API under `/api`. The viewer reads static release files and has its own rendering engine (`src/features/map-viewer/engine`).
+
+## Running it
+
+Run the commands from `web/`.
+
+<DocTable
+  columns={["Command","What it does"]}
+  rows={[
+    ["`npm run storybook`","Starts the dev server on port 6006."],
+    ["`npm run build:storybook`","Builds the static site into `storybook-static/`."],
+    ["`npm run test:storybook`","Runs every story in headless Chromium through Vitest, once per theme (`storybook-light` and `storybook-dark`). Play functions run, and accessibility violations fail the story."],
+    ["`npm test`","Runs the `unit` Vitest project: `src/**/*.test.ts`, including `src/architecture.test.ts`."],
+    ["`npm run test:visual`","Compares Playwright screenshots in `.storybook/visual-tests` with the committed ones. It starts Storybook itself unless it is already running on port 6006."],
+    ["`npm run test:visual:update`","Rewrites those screenshots."],
+    ["`npm run test:browser:install`","Installs the Chromium build Playwright uses."],
+  ]}
+/>
+
+## How the sidebar is organised
+
+<DocTable
+  columns={["Section","Contents"]}
+  rows={[
+    ["Introduction","This page."],
+    ["Architecture","The folder layout, import rules, data flow and viewer engine stages."],
+    ["Foundations","Colors, Typography, Spacing, Radius & elevation, Theming. Values are read from the loaded stylesheets at runtime."],
+    ["Components","One entry per primitive in `src/components/ui`, plus the layouts in `src/components/layouts`."],
+    ["Maps","Components of `src/features/maps`: catalog table, bake run history, configuration builder, color encoding editor."],
+    ["Sources","Components of `src/features/sources`: connection and dataset forms and lists, preview panel."],
+    ["Map Viewer","The viewer workspace, legend, inspection panel, controls, embed disclosure and the layout pieces."],
+  ]}
+/>
+
+Each component entry has a Docs tab generated from its stories, with a controls table. Every story can also be opened on its own and switched between the light and dark themes in the toolbar.
+
+## Adding a story
+
+**Where the file goes.** Put `Name.stories.tsx` in the same folder as the component. A component that is internal to a feature (for example `ColorEncodingEditor`, which the feature `index.ts` does not export) can only be reached from inside its feature, so colocation is what lets it be documented.
+
+Stories that belong to no single component live under `.storybook/`: `docs/` for MDX pages and `foundations/` for the token pages. `architecture.test.ts` scans `.storybook` as well, and treats it as outside every feature, so code there may import a feature only through its `index.ts`.
+
+Stories never reach the product build or the unit tests:
+
+- `tsconfig.app.json` excludes `*.stories.ts(x)`; `tsconfig.storybook.json` type-checks them together with `.storybook`.
+- The `unit` project only matches `*.test.ts`.
+- Nothing imported from `src/app/main.tsx` imports a story.
+
+**Title.** `Components/<File>`, `Maps/<Component>`, `Sources/<Component>` or `Map Viewer/<Component>`. The order in the sidebar is set by `storySort` in `.storybook/preview.tsx`.
+
+**Documentation.** Put explanations in `parameters.docs.description.component` (the component) and `parameters.docs.description.story` (one story), or in MDX. Describe props with `argTypes[...].description`. Product components carry no documentation comments for Storybook.
+
+**Mock data.** Fixtures live in `.storybook/fixtures/` and are typed with `@/types/*`, so a change to an API type breaks them at compile time. Optional fields are omitted rather than set to `null`, as the API does. Builders such as `managedMap(overrides)` and `bakeRun(id, overrides)` create variations. Stories import them by relative path.
+
+**Providers.** `.storybook/support/withAppProviders.tsx` is a global decorator that wraps every story in a fresh `QueryClient` (queries do not retry) and a `MemoryRouter`. Components that use TanStack Query hooks or router links need nothing else.
+
+**Network.** Components that fetch data run their real hooks and `api/` functions. Replace `fetch` for the duration of a story with `mockApi` from `.storybook/support/mockApi.ts`:
+
+```ts
+beforeEach: () => mockApi([
+  { method: 'GET', path: '/maps/map-1/runs', reply: () => ({ body: { runs: [] } }) },
+]),
+```
+
+Paths are relative to `API_BASE`. A request with no matching route gets a 404 response. `mockApi` returns a function that restores `fetch`, which Storybook calls after the story. `neverResolves` keeps a request pending, to show a loading state.
+
+**The test gate.** Every story is a test. It must render without errors and, if it has a `play` function, finish it. After that, the accessibility check runs with `a11y.test: 'error'`, in both themes. Fix the component or the story instead of excluding a rule.
+
+**Stylesheets.** `.storybook/preview.tsx` loads the design tokens and primitives, `src/app/managementStyles.scss` (the management stylesheets, shared with `src/app/main.tsx`), the sources and viewer stylesheets and `.storybook/workbench.scss` (story-only layout helpers).

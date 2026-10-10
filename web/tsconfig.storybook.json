@@ -20,5 +20,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": [".storybook", "playwright.config.ts", "vitest.config.ts"]
+  "include": [".storybook/**/*.ts", ".storybook/**/*.tsx", "src/**/*.stories.ts", "src/**/*.stories.tsx", "playwright.config.ts", "vitest.config.ts"]
 }

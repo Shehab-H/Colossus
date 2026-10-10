@@ -1,7 +1,11 @@
 import type { StorybookConfig } from '@storybook/react-vite';
 
 const config: StorybookConfig = {
-  stories: ['./stories/**/*.stories.@(ts|tsx)'],
+  stories: [
+    './docs/**/*.mdx',
+    './foundations/**/*.stories.@(ts|tsx)',
+    '../src/**/*.stories.@(ts|tsx)',
+  ],
   addons: [
     '@storybook/addon-docs',
     '@storybook/addon-a11y',
@@ -12,7 +16,10 @@ const config: StorybookConfig = {
     name: '@storybook/react-vite',
     options: {},
   },
-  docs: { autodocs: 'tag' },
+  features: {
+    sidebarOnboardingChecklist: false,
+    menuOnboardingChecklist: false,
+  },
   staticDirs: ['../public'],
 };
 

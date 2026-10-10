@@ -2,28 +2,29 @@ import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect } from 'storybook/test';
 import { Badge, Button } from '@/components/ui';
-import { ViewerControls, InspectPanel, Legend, ViewerShell, MapWindow, PanelSection, ViewerHeader, ViewerPanel } from '@/features/map-viewer';
-import type { ChannelSpec, FilterSpec } from '@/types/viewConfig';
+import { viewerChannels, viewerControls, viewerOptions, gradientLegend } from '../../../../../.storybook/fixtures/viewer';
+import InspectPanel from '../InspectPanel';
+import Legend from '../Legend';
+import ViewerControls from '../ViewerControls';
+import { MapWindow } from './MapWindow';
+import { PanelSection } from './PanelSection';
+import { ViewerHeader } from './ViewerHeader';
+import { ViewerPanel } from './ViewerPanel';
+import { ViewerShell } from './ViewerShell';
 
 const meta = {
   title: 'Map Viewer/Workspace',
-  parameters: { layout: 'fullscreen' },
+  parameters: {
+    docs: {
+      description: {
+        component: 'The viewer shell composed from its layout pieces: header, two collapsible panels, the map window and its status bar. The map itself is a static placeholder; the real canvas needs tiles from a release.',
+      },
+    },
+  },
 } satisfies Meta;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
-
-const channels: ChannelSpec[] = [
-  { name: 'feature_class', column: 'feature_class', role: 'dimension', type: 'dict' },
-  { name: 'country_code', column: 'country_code', role: 'dimension', type: 'dict' },
-  { name: 'modification_date', column: 'modification_date', role: 'temporal', type: 'date' },
-];
-
-const controls: Record<string, FilterSpec['control']> = {
-  feature_class: 'select',
-  country_code: 'select',
-  modification_date: 'dateRange',
-};
 
 function ViewerWorkspace() {
   const [controlsOpen, setControlsOpen] = useState(true);
@@ -43,16 +44,12 @@ function ViewerWorkspace() {
       <ViewerPanel side="left" open={controlsOpen} onToggle={() => setControlsOpen((open) => !open)} label="Map controls">
         <PanelSection eyebrow="Map controls" title="Layers & filters">
           <ViewerControls
-            colorChannels={channels}
+            colorChannels={viewerChannels}
             colorChannel={colorChannel}
             onColorChannelChange={setColorChannel}
-            channels={channels}
-            controls={controls}
-            options={{
-              feature_class: ['A', 'H', 'L', 'P', 'S'],
-              country_code: ['DE', 'EG', 'GB', 'US'],
-              modification_date: ['2026-01-01', '2026-08-14'],
-            }}
+            channels={viewerChannels}
+            controls={viewerControls}
+            options={viewerOptions}
             filters={filters}
             onFilterChange={(name, value) => setFilters((current) => ({ ...current, [name]: value }))}
           />
@@ -64,10 +61,7 @@ function ViewerWorkspace() {
       />
       <ViewerPanel side="right" open={detailsOpen} onToggle={() => setDetailsOpen((open) => !open)} label="Map details">
         <PanelSection eyebrow="Visible data" title="Legend">
-          <Legend legend={{
-            channel: 'signal_strength', note: 'gradient', kind: 'continuous',
-            gradient: [[255, 239, 160], [230, 0, 0], [105, 0, 45]], min: -120, midpoint: -80, max: -40,
-          }} />
+          <Legend legend={gradientLegend} />
         </PanelSection>
         <PanelSection eyebrow="Pinned mark" title="Inspection">
           {inspectionOpen ? (
