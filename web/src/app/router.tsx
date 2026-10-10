@@ -52,10 +52,20 @@ function legacyViewerLoader({ request }: LoaderFunctionArgs) {
   return redirect(`${canonical.pathname}${canonical.search}${canonical.hash}`);
 }
 
+function homeLoader(args: LoaderFunctionArgs) {
+  return legacyViewerLoader(args) ?? redirect('/maps');
+}
+
 const managementModule = () => import('@/app/routes/managementRoutes');
 const viewerModule = () => import('@/app/routes/viewerRoutes');
 
 export const router = createBrowserRouter([
+  {
+    path: '/',
+    loader: homeLoader,
+    HydrateFallback: RouteFallback,
+    ErrorBoundary: RouteErrorBoundary,
+  },
   {
     path: '/sources',
     loader: sourcesLoader,
