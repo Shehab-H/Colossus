@@ -11,6 +11,8 @@ The frontend layout was agreed and applied to `web/src` on 2026-10-10 (see [Fron
 
 ## Repository top level
 
+Status: **decided** — the full split below. Root clean-up done on 2026-10-10 (stray root `bin/`/`obj/`, publish output, tool logs, empty `.github/`, merged worktrees and branches removed). The folder moves follow the preconditions below.
+
 ```
 Colossus/
 ├─ README.md  CLAUDE.md  AGENTS.md
@@ -93,7 +95,7 @@ src/
 │     ├─ managementRoutes.tsx, viewerRoutes.tsx   route modules (the viewer one is the lazy chunk)
 │     ├─ maps/           MapCatalogPage, MapDetailPage, MapEditorPage
 │     ├─ sources/        SourcesPage
-│     ├─ viewer/         MapViewerPage, MapEmbedPage
+│     ├─ viewer/         MapViewerPage (serves /maps/:id and /embed/:id; MapEmbedPage is planned, see Big files)
 │     └─ RouteFeedback.tsx   loading, not found, error
 │
 ├─ features/             one folder per product area
@@ -124,10 +126,12 @@ src/
 ```
 features/maps/
 ├─ index.ts
-├─ components/   MapCatalogTable, MapConfigurationBuilder, ColorEncodingEditor
-├─ hooks/        mapMutations.ts: save, archive, run, cancel, bake policy, pin and reconcile releases
+├─ components/   MapCatalogTable, MapConfigurationBuilder, ColorEncodingEditor,
+│                BakeRunHistory, BakeRunFilterBar, BakeRunTable
+├─ hooks/        mapMutations.ts: save, archive, run, cancel, bake policy, pin and reconcile releases;
+│                useMapRuns.ts: paged run history
 ├─ forms/        mapForm.ts: form values ↔ map definition, validation
-└─ utils/        publicationStatus.ts, catalogState.ts
+└─ utils/        publicationStatus.ts, catalogState.ts, bakeRunStatus.ts
 
 features/sources/
 ├─ index.ts
@@ -137,11 +141,11 @@ features/sources/
 
 features/map-viewer/
 ├─ index.ts
-├─ components/   MapCanvas, ViewerControls, Legend, InspectPanel, EmbedDisclosure
+├─ components/   ViewerControls, Legend, InspectPanel, EmbedDisclosure (MapCanvas is planned)
 │  └─ layout/    ViewerShell, ViewerHeader, ViewerPanel, PanelSection, MapWindow,
 │                EmbedShell, EmbedSidebar, EmbedStage — one file each
-├─ hooks/        useViewData, useTiles, useMeasureFold, useViewerLayers,
-│                useViewerPicking, useViewerUrl, useEmbedBridge
+├─ hooks/        useViewData, useTiles, useMeasureFold
+│                (planned: useViewerLayers, useViewerPicking, useViewerUrl, useEmbedBridge)
 ├─ embed/        embedUrl.ts, embedEvents.ts: the contract with sites that embed a map
 ├─ diagnostics/  PerfDashboard and its sections, stats, totals, frame probe; loaded only with ?perf=1
 ├─ utils/        viewerRoute.ts
@@ -154,7 +158,7 @@ Today the engine is 22 files in one folder. The target is eight folders, one per
 
 **view → tiles → network → decode → filters → fold → draw → workers**
 
-A short `engine/README.md` lists the stages in that order.
+A short `engine/README.md` listing the stages in that order is planned; it does not exist yet.
 
 ```
 features/map-viewer/engine/
