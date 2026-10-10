@@ -1,5 +1,5 @@
 import type { ChannelSpec, ViewConfig } from '@/types/viewConfig';
-import { parseMeasure } from '../fold/measureGrammar';
+import { parseMeasure } from './measureGrammar';
 import type { Manifest } from '@/types/manifest';
 
 /** Channel types that carry a real number line (so continuous/binned color scales apply). Everything

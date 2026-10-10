@@ -1,4 +1,4 @@
-import type { Theme } from '@/hooks/useTheme';
+import type { Theme } from '@/types/theme';
 import type { ColorSpec, ScaleType } from '@/types/viewConfig';
 
 // Embeddable maps: a view is fully addressable by URL, so an <iframe> reproduces an exact map — the

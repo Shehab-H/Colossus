@@ -3,10 +3,10 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect } from 'storybook/test';
 import { Badge, Button } from '@/components/ui';
 import { ViewerControls, InspectPanel, Legend, ViewerShell, MapWindow, PanelSection, ViewerHeader, ViewerPanel } from '@/features/map-viewer';
-import type { ChannelSpec } from '@/types/viewConfig';
+import type { ChannelSpec, FilterSpec } from '@/types/viewConfig';
 
 const meta = {
-  title: 'Widgets/Map Viewer',
+  title: 'Map Viewer/Workspace',
   parameters: { layout: 'fullscreen' },
 } satisfies Meta;
 
@@ -14,10 +14,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 const channels: ChannelSpec[] = [
-  { name: 'feature_class', column: 'feature_class', role: 'dimension', type: 'string' },
-  { name: 'country_code', column: 'country_code', role: 'dimension', type: 'string' },
+  { name: 'feature_class', column: 'feature_class', role: 'dimension', type: 'dict' },
+  { name: 'country_code', column: 'country_code', role: 'dimension', type: 'dict' },
   { name: 'modification_date', column: 'modification_date', role: 'temporal', type: 'date' },
 ];
+
+const controls: Record<string, FilterSpec['control']> = {
+  feature_class: 'select',
+  country_code: 'select',
+  modification_date: 'dateRange',
+};
 
 function ViewerWorkspace() {
   const [controlsOpen, setControlsOpen] = useState(true);
@@ -41,6 +47,7 @@ function ViewerWorkspace() {
             colorChannel={colorChannel}
             onColorChannelChange={setColorChannel}
             channels={channels}
+            controls={controls}
             options={{
               feature_class: ['A', 'H', 'L', 'P', 'S'],
               country_code: ['DE', 'EG', 'GB', 'US'],

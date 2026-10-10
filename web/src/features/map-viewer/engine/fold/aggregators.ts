@@ -1,5 +1,5 @@
 import type { CompanionData } from './companion';
-import type { Agg } from './measureGrammar';
+import type { Agg } from '../view/measureGrammar';
 
 /** Argmax code for a mark with no surviving facts — past any real domain, so the colour LUT paints it
  *  the unknown colour, exactly like the empty-set numeric NaN. */

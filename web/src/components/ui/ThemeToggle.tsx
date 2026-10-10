@@ -1,4 +1,4 @@
-import type { Theme } from '@/hooks/useTheme';
+import type { Theme } from '@/types/theme';
 import { Button } from './Button';
 
 /** Shared dark/light control. The icon describes the mode the action will activate. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { tileDeckData } from './deckAttributes';
+import { tileDeckData } from './tileDeckData';
 import type { TileData } from '../decode/tileData';
 
 type Attrs = {

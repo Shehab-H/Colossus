@@ -1,5 +1,5 @@
 import type { SlabData } from './slabDecode';
-import type { MeasureExpr } from '../measureGrammar';
+import type { MeasureExpr } from '../../view/measureGrammar';
 import type { FoldContext } from '../foldContext';
 import { foldSparse } from './sparseFold';
 import { foldDense } from './denseFold';

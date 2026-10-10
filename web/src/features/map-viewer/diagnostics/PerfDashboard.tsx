@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Manifest } from '@/types/manifest';
-import { reloadViewerCold } from './viewerDiagnostics';
+import { reloadViewerCold } from './reloadViewerCold';
 import { Button, Card } from '@/components/ui';
 import type { CacheGauge } from './cacheGauge';
 import { clearPerf, cumulative, deckSnapshot, frameSamples, perfEvents, perfStore } from '@/lib/perf/recorder';

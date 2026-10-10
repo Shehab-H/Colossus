@@ -1,4 +1,4 @@
-import { type Agg, type MeasureExpr, parseMeasure } from '../measureGrammar';
+import { type Agg, type MeasureExpr, parseMeasure } from '../../view/measureGrammar';
 import { type Manifest, tileLayoutOf, type CompanionSlab } from '@/types/manifest';
 import type { FoldContext } from '../foldContext';
 import { computeStrides, resolveBins } from './slabAxes';

@@ -6,7 +6,7 @@ import type { PerfEvent, Cumulative, DeckSnapshot } from './events';
 //
 // This module is imported by BOTH the main thread and the decode worker. They are separate realms, so
 // each gets its own instance: the worker fills its ring and `takeEvents()` drains it into the response
-// message; the main thread's instance is the one the dashboard subscribes to (see workerPool, which
+// message; the main thread's instance is the one the dashboard subscribes to (see tileLoader, which
 // re-emits the worker's events after they cross the boundary with their timings intact).
 
 const CAP = 4000;

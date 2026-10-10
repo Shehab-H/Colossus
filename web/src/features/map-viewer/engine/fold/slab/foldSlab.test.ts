@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { type CompanionSlab, type SlabAxis, tileLayoutOf } from '@/types/manifest';
-import { type MeasureExpr, parseMeasure } from '../measureGrammar';
+import { type MeasureExpr, parseMeasure } from '../../view/measureGrammar';
 import { dayNumber } from '../../filters/filterValue';
 import { assembleDenseSlab, mergeSlab, type SlabData } from './slabDecode';
 import { buildFoldContext } from '../foldContext';

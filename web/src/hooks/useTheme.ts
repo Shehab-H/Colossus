@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-
-export type Theme = 'dark' | 'light';
+import type { Theme } from '@/types/theme';
 
 const KEY = 'colossus-theme';
 

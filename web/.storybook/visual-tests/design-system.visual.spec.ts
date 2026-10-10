@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 const stories = [
   { id: 'foundations-design-system--showcase', snapshot: 'design-system' },
-  { id: 'widgets-map-viewer--workspace', snapshot: 'viewer-workspace' },
+  { id: 'map-viewer-workspace--workspace', snapshot: 'viewer-workspace' },
 ] as const;
 
 for (const theme of ['light', 'dark'] as const) {

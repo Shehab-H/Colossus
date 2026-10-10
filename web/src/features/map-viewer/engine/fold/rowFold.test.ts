@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { type MeasureExpr, parseMeasure } from './measureGrammar';
+import { type MeasureExpr, parseMeasure } from '../view/measureGrammar';
 import { ARGMAX_UNKNOWN } from './aggregators';
 import type { CompanionData } from './companion';
 import type { FoldContext } from './foldContext';

@@ -19,7 +19,7 @@ const preview: Preview = {
   parameters: {
     layout: 'fullscreen',
     controls: { expanded: true },
-    options: { storySort: { order: ['Foundations', 'Components', 'Widgets'] } },
+    options: { storySort: { order: ['Foundations', 'Components', 'Map Viewer'] } },
     a11y: { test: 'error' },
   },
   tags: ['autodocs', 'test'],

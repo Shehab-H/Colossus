@@ -114,7 +114,7 @@ ctx.onmessage = async (e) => {
   const ac = new AbortController();
   inflight.set(id, ac);
   // The worker can't see the page's ?perf=1 (self.location is the worker script), so the flag rides on
-  // each request. `takeEvents` drains this request's events into the response; workerPool re-emits them
+  // each request. `takeEvents` drains this request's events into the response; tileLoader re-emits them
   // on the main thread, where the dashboard lives.
   setPerfEnabled(e.data.perf === true);
   try {

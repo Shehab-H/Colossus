@@ -13,7 +13,7 @@ export type TileColumn = Float32Array | DictColumn | Utf8Column | string[];
  *  moves, measure switches, and filter changes); the per-mark channel values ride along so recoloring —
  *  and answering a click — is a client-side scan, not a re-fetch. Filtering is GPU-side: `filterValues`
  *  is a per-slot binary attribute the DataFilterExtension tests against uniforms (see filters/gpuFilterSlots).
- *  Colors are derived at layer time (see draw/deckAttributes). */
+ *  Colors are derived at layer time (see draw/tileDeckData). */
 export interface TileData {
   count: number; // marks in the tile (polygons or points) — resident, pre-filter
   // Polygon marks: deck SolidPolygonLayer binary layout, mostly zero-copy from Arrow's list buffers.

@@ -1,5 +1,5 @@
 import type { SlabData } from './slabDecode';
-import type { MeasureExpr, Agg } from '../measureGrammar';
+import type { MeasureExpr, Agg } from '../../view/measureGrammar';
 import type { FoldContext } from '../foldContext';
 import { axisIndex, resolveBins } from './slabAxes';
 import { DenseAgg, argmaxFinalize, shareFinalize, plainFinalize } from '../aggregators';

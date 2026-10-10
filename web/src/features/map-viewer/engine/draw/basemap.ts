@@ -1,4 +1,4 @@
-import type { Theme } from '@/hooks/useTheme';
+import type { Theme } from '@/types/theme';
 
 // Basemap style for geo (map) views — rendered by MapLibre GL underneath the deck.gl marks, with
 // deck.gl driving the shared camera. MapLibre is the token-free renderer that integrates best with

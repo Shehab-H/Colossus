@@ -6,7 +6,7 @@ import type { Manifest } from '@/types/manifest';
 vi.mock('../network/arrowFetch', () => ({ fetchArrowTable: vi.fn(() => Promise.reject(new Error('unexpected tile fetch'))) }));
 import { fetchArrowTable } from '../network/arrowFetch';
 import type { ViewConfig } from '@/types/viewConfig';
-import { discoverOptions } from './filterOptions';
+import { discoverOptions } from './discoverOptions';
 
 const view: ViewConfig = {
   id: 'v',

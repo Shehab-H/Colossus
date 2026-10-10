@@ -59,8 +59,33 @@ const area = (path: string): string => path.split('/')[1] ?? '';
 const featureOf = (path: string): string | null => (path.startsWith('src/features/') ? path.split('/')[2] : null);
 const isStyle = (specifier: string): boolean => /\.s?css$/.test(specifier);
 const isIndex = (target: string, feature: string): boolean => target === `src/features/${feature}` || target === `src/features/${feature}/index`;
+const engineRoot = 'src/features/map-viewer/engine/';
+const stageOf = (path: string): string | null => (path.startsWith(engineRoot) && path.split('/').length > 5 ? path.split('/')[4] : null);
 const { edges, externals } = collectEdges();
 const report = (found: Edge[]): string[] => found.map((edge) => `${edge.file} -> ${edge.specifier}`);
+
+function findCycle(graph: Map<string, Set<string>>): string[] | null {
+  const done = new Set<string>();
+  const path: string[] = [];
+  const visit = (node: string): string[] | null => {
+    const at = path.indexOf(node);
+    if (at >= 0) return [...path.slice(at), node];
+    if (done.has(node)) return null;
+    path.push(node);
+    for (const next of graph.get(node) ?? []) {
+      const cycle = visit(next);
+      if (cycle) return cycle;
+    }
+    path.pop();
+    done.add(node);
+    return null;
+  };
+  for (const node of graph.keys()) {
+    const cycle = visit(node);
+    if (cycle) return cycle;
+  }
+  return null;
+}
 
 describe('frontend architecture', () => {
   it('keeps the retired layer folders out of src', () => {
@@ -110,5 +135,23 @@ describe('frontend architecture', () => {
     const outsiders = externals.filter((item) => item.file.startsWith('src/features/map-viewer/engine/') && forbidden.test(item.specifier));
     const components = edges.filter((edge) => edge.file.startsWith('src/features/map-viewer/engine/') && area(edge.target) === 'components');
     expect([...outsiders.map((item) => `${item.file} -> ${item.specifier}`), ...report(components)]).toEqual([]);
+  });
+
+  it('keeps the engine free of hooks', () => {
+    const violations = edges.filter((edge) =>
+      edge.file.startsWith(engineRoot) &&
+      (edge.target === 'src/hooks' || edge.target.startsWith('src/hooks/') || /^src\/features\/[^/]+\/hooks(\/|$)/.test(edge.target)));
+    expect(report(violations)).toEqual([]);
+  });
+
+  it('keeps the engine stage folders acyclic', () => {
+    const graph = new Map<string, Set<string>>();
+    for (const edge of edges) {
+      const from = stageOf(edge.file);
+      const to = stageOf(edge.target);
+      if (from === null || to === null || from === to) continue;
+      graph.set(from, (graph.get(from) ?? new Set()).add(to));
+    }
+    expect(findCycle(graph)?.join(' -> ') ?? 'acyclic').toBe('acyclic');
   });
 });

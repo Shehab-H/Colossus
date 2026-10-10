@@ -1,5 +1,5 @@
 import type { CompanionData, CompanionDim } from './companion';
-import { type MeasureExpr, aggCh, aggW, type Agg } from './measureGrammar';
+import { type MeasureExpr, aggCh, aggW, type Agg } from '../view/measureGrammar';
 import { InnerAgg, ARGMAX_UNKNOWN } from './aggregators';
 import type { FoldContext } from './foldContext';
 import { parseNumericRange, MAX_SAFE_F32, dayNumberOfIso } from '../filters/filterValue';

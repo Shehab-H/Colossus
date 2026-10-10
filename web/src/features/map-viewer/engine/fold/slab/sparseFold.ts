@@ -1,7 +1,7 @@
 import type { SlabData } from './slabDecode';
 import type { FoldContext } from '../foldContext';
 import { axisIndex, resolveBins } from './slabAxes';
-import { type MeasureExpr, aggCh, aggW, type Agg } from '../measureGrammar';
+import { type MeasureExpr, aggCh, aggW, type Agg } from '../../view/measureGrammar';
 import type { CompanionData } from '../companion';
 import { InnerAgg, argmaxFinalize, shareFinalize, plainFinalize } from '../aggregators';
 import type { Folder } from './slabFolder';
