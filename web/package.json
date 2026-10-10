@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "vite",
+    "dev:deployed": "vite --mode deployed",
     "build": "tsc -b && vite build && node scripts/verify-bundle.mjs",
     "storybook": "storybook dev -p 6006 --no-open",
     "build:storybook": "storybook build",
