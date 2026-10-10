@@ -5,7 +5,7 @@
 .map-catalog__table td { padding: var(--space-4); vertical-align: middle; border-top: 1px solid var(--color-border-default); }
 .map-catalog__table tr { transition: background var(--duration-fast) var(--ease-standard); }
 .map-catalog__table tbody tr:hover { background: var(--color-bg-subtle); }
-.map-catalog__table tr.is-muted { opacity: 0.58; }
+.map-catalog__table tr.is-muted { opacity: 0.85; }
 .map-catalog__title { min-width: 13rem; display: block; color: var(--color-text-primary); font-weight: var(--font-weight-semibold); text-decoration: none; }
 .map-catalog__title:hover { color: var(--color-brand); text-decoration: underline; text-underline-offset: 0.2em; }
 .map-catalog__meta,.map-catalog__failure { margin-top: var(--space-1); display: block; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.6875rem; }

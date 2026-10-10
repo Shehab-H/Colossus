@@ -159,7 +159,7 @@
   gap: var(--space-6);
 
   &__copy { min-width: 0; }
-  &__eyebrow { margin-bottom: var(--space-2); display: block; color: var(--color-brand); font-size: var(--font-size-xs); font-weight: var(--font-weight-bold); letter-spacing: 0.1em; text-transform: uppercase; }
+  &__eyebrow { margin-bottom: var(--space-2); display: block; color: var(--color-brand-on-soft); font-size: var(--font-size-xs); font-weight: var(--font-weight-bold); letter-spacing: 0.1em; text-transform: uppercase; }
   h1 { margin: 0; color: var(--color-text-primary); font-size: var(--font-size-3xl); line-height: var(--line-height-tight); letter-spacing: -0.04em; }
   p { max-width: 48rem; margin: var(--space-3) 0 0; color: var(--color-text-secondary); font-size: var(--font-size-md); line-height: var(--line-height-body); }
   &__actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
