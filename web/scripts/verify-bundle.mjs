@@ -14,6 +14,22 @@ if (!(entry.dynamicImports ?? []).includes(viewerKey)) {
   throw new Error('The application entry no longer exposes the map viewer as a dynamic route.');
 }
 
+const settled = new Set();
+const trail = [];
+const rejectCycles = (key) => {
+  const start = trail.indexOf(key);
+  if (start !== -1) {
+    const cycle = [...trail.slice(start), key].map((part) => manifest[part]?.file ?? part);
+    throw new Error(`Static chunk imports form a cycle: ${cycle.join(' -> ')}`);
+  }
+  if (settled.has(key)) return;
+  trail.push(key);
+  for (const dependency of manifest[key]?.imports ?? []) rejectCycles(dependency);
+  trail.pop();
+  settled.add(key);
+};
+for (const key of Object.keys(manifest)) rejectCycles(key);
+
 const staticKeys = new Set();
 const visitStatic = (key) => {
   if (staticKeys.has(key)) return;

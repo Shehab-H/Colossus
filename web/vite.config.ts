@@ -10,26 +10,6 @@ export default defineConfig({
     // MapLibre currently ships as one large module and is loaded only by the
     // lazy viewer route. Warn on regressions above that known isolated cost.
     chunkSizeWarningLimit: 1100,
-    rolldownOptions: {
-      output: {
-        codeSplitting: {
-          groups: [
-            {
-              name: 'map-renderer',
-              test: /node_modules[\\/](@deck\.gl|@luma\.gl|@math\.gl|react-map-gl|mjolnir\.js|probe\.gl)/,
-              maxSize: 450 * 1024,
-              priority: 30,
-            },
-            {
-              name: 'map-data',
-              test: /node_modules[\\/](apache-arrow|flatbuffers|@bokuweb[\\/]zstd-wasm)/,
-              maxSize: 450 * 1024,
-              priority: 20,
-            },
-          ],
-        },
-      },
-    },
   },
   resolve: {
     alias: {
